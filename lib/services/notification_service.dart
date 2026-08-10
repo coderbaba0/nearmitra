@@ -12,6 +12,9 @@ class NotificationService {
   final StreamController<String?> _onNotificationClick = StreamController<String?>.broadcast();
   Stream<String?> get onNotificationClick => _onNotificationClick.stream;
 
+  final StreamController<Map<String, String>> _onNotificationReply = StreamController<Map<String, String>>.broadcast();
+  Stream<Map<String, String>> get onNotificationReply => _onNotificationReply.stream;
+
   Future<void> init() async {
     if (_initialized) return;
 
@@ -21,7 +24,16 @@ class NotificationService {
     await _notifications.initialize(
       initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse details) {
-        if (details.payload != null) {
+        if (details.notificationResponseType == NotificationResponseType.selectedNotificationAction &&
+            details.actionId == 'reply_action' &&
+            details.input != null &&
+            details.input!.trim().isNotEmpty &&
+            details.payload != null) {
+          _onNotificationReply.add({
+            'peerId': details.payload!,
+            'text': details.input!.trim(),
+          });
+        } else if (details.payload != null) {
           _onNotificationClick.add(details.payload);
         }
       },
@@ -66,6 +78,17 @@ class NotificationService {
         summaryText: 'Farmitra Nearby',
       ),
       icon: '@mipmap/ic_launcher',
+      actions: <AndroidNotificationAction>[
+        const AndroidNotificationAction(
+          'reply_action',
+          'Reply',
+          inputs: <AndroidNotificationActionInput>[
+            AndroidNotificationActionInput(
+              label: 'Type a reply…',
+            ),
+          ],
+        ),
+      ],
     );
 
     final details = NotificationDetails(android: androidDetails);

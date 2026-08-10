@@ -1,16 +1,27 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:permission_handler/permission_handler.dart';
 
+
+import 'about_screen.dart';
+import 'qr_scanner_screen.dart';
 import '../main.dart';
 import '../models/chat_item.dart';
+import '../models/p2p_peer.dart';
 import '../models/peer.dart';
 import '../services/history_service.dart';
 import '../services/nearby_service.dart';
+import '../services/notification_service.dart';
+import '../services/wifi_direct_service.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/p2p_qr_widget.dart';
+import '../widgets/p2p_radar_view.dart';
 import '../widgets/peer_tile.dart';
 import '../widgets/transfer_card.dart';
 
@@ -24,34 +35,121 @@ class HomeScreen extends StatefulWidget {
 }
 
 enum ChatMode { people, ai }
+enum ConnectionMode { lan, p2p }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _message = TextEditingController();
   final _scroll = ScrollController();
   final _historyService = HistoryService();
+  final _wifiDirectService = WifiDirectService();
+  StreamSubscription<String?>? _notificationSub;
+  StreamSubscription<Map<String, String>>? _replySub;
+  ConnectionMode _connectionMode = ConnectionMode.lan;
   final List<ChatItem> _history = [];
   String? _selectedPeerId;
   bool _showLogs = false;
   bool _scanning = false;
   ChatMode _chatMode = ChatMode.people;
   bool _aiThinking = false;
+  int _chatDisplayCount = 20;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.service.addListener(_onServiceChanged);
+    _scroll.addListener(_onScroll);
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      widget.service.isAppInForeground = true;
+    } else if (state == AppLifecycleState.paused ||
+               state == AppLifecycleState.inactive ||
+               state == AppLifecycleState.hidden) {
+      widget.service.isAppInForeground = false;
+    }
+  }
+
+  void _onScroll() {
+    if (_scroll.hasClients && _scroll.position.pixels <= 40) {
+      final fullLen = _fullCurrentChat.length;
+      if (_chatDisplayCount < fullLen) {
+        setState(() {
+          _chatDisplayCount = math.min(_chatDisplayCount + 20, fullLen);
+        });
+      }
+    }
   }
 
   Future<void> _init() async {
     _history.addAll(await _historyService.load());
     await widget.service.start();
+
+    _notificationSub = NotificationService().onNotificationClick.listen((peerId) {
+      if (peerId != null && mounted) {
+        final peer = widget.service.peers.where(
+          (p) => p.id == peerId || p.ip == peerId,
+        ).firstOrNull;
+        if (peer != null) {
+          _selectPeer(peer);
+        }
+      }
+    });
+
+    _replySub = NotificationService().onNotificationReply.listen((data) async {
+      final targetPeerId = data['peerId'];
+      final replyText = data['text'];
+      if (targetPeerId != null && replyText != null && replyText.isNotEmpty) {
+        final peer = widget.service.peers.where(
+          (p) => p.id == targetPeerId || p.ip == targetPeerId,
+        ).firstOrNull;
+        if (peer != null) {
+          final ok = await widget.service.sendChat(peer, replyText);
+          if (ok) {
+            _history.add(ChatItem(
+              peerId: peer.id,
+              sender: widget.service.deviceName,
+              mine: true,
+              createdAt: DateTime.now(),
+              kind: ChatKind.text,
+              text: replyText,
+              isAi: false,
+            ));
+            await _historyService.save(_history);
+            if (mounted) setState(() {});
+          }
+        }
+      }
+    });
+
+    widget.service.onPeerAutoConnected = (peerId) {
+      if (!mounted) return;
+      setState(() {});
+    };
+
+    _wifiDirectService.onP2pConnected = (peerIp, localIp) async {
+      await widget.service.bindP2pPeer(peerIp, localIp);
+      if (mounted) {
+        setState(() {});
+      }
+    };
+
+    await _wifiDirectService.init();
     if (mounted) setState(() {});
     _scan(); // Automatic scan on launch
   }
 
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _notificationSub?.cancel();
+    _replySub?.cancel();
+    _scroll.removeListener(_onScroll);
     widget.service.removeListener(_onServiceChanged);
     widget.service.stop();
     _message.dispose();
@@ -76,6 +174,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedPeerId = p.id;
       _lastSelectedPeer = p;
       p.unreadCount = 0;
+      _chatDisplayCount = 20;
+      widget.service.activeChatPeerId = p.id;
     });
     _triggerScrollToBottom();
   }
@@ -100,7 +200,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return _lastSelectedPeer;
   }
 
-  List<ChatItem> get _currentChat {
+  List<ChatItem> get _fullCurrentChat {
     final peer = _selectedPeer;
     if (peer == null) return [];
     return _history.where((e) {
@@ -111,6 +211,40 @@ class _HomeScreenState extends State<HomeScreen> {
       if (e.isAi && (e.text == null || e.text!.isEmpty)) return false;
       return _chatMode == ChatMode.ai ? e.isAi : !e.isAi;
     }).toList();
+  }
+
+  List<ChatItem> get _currentChat {
+    final full = _fullCurrentChat;
+    if (full.length <= _chatDisplayCount) return full;
+    return full.sublist(full.length - _chatDisplayCount);
+  }
+
+  void _confirmClearChat(Peer peer) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Chat History?'),
+        content: Text('Are you sure you want to delete all messages with ${peer.name}? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                _history.removeWhere((item) => item.peerId == peer.id || item.peerId == peer.ip);
+                _historyService.save(_history);
+              });
+              _toast('Chat history cleared for ${peer.name}');
+            },
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text('Clear Chat'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _scan() async {
@@ -308,6 +442,16 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text), behavior: SnackBarBehavior.floating));
   }
 
+  Future<void> _openFolderLocation(String folderPath) async {
+    Clipboard.setData(ClipboardData(text: folderPath));
+    _toast('Opening location: $folderPath');
+    final opened = await _wifiDirectService.openFolder(folderPath);
+    if (!opened) {
+      await OpenFilex.open(folderPath);
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
@@ -347,12 +491,28 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Row(
         children: [
-          // Compact Title on Left (No icon, No description to prevent overflow)
-          const Text(
-            'Farmitra',
-            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, letterSpacing: -0.3),
+          // Title and Subtitle on Left
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Farmitra',
+                style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.w800, letterSpacing: -0.3, height: 1.1),
+              ),
+              const Text(
+                'Nearby',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF10B981),
+                  letterSpacing: 1.1,
+                  height: 1.0,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
@@ -421,155 +581,224 @@ class _HomeScreenState extends State<HomeScreen> {
             final isDark = theme.brightness == Brightness.dark;
 
             return Container(
-              padding: const EdgeInsets.all(22),
               decoration: BoxDecoration(
                 color: isDark ? const Color(0xFF1F2C34) : Colors.white,
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 38,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.grey[400],
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(22, 20, 22, MediaQuery.of(context).viewInsets.bottom + 32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF169B62).withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(Icons.settings_rounded, color: Color(0xFF169B62)),
-                      ),
-                      const SizedBox(width: 12),
-                      const Text(
-                        'Settings',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                      ),
-                    ],
-                  ),
-                  const Divider(height: 28),
-                  
-                  // 1. App Theme Mode Switcher
-                  const Text('App Theme', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _themeOptionCard(
-                          context,
-                          title: 'System',
-                          icon: Icons.brightness_auto_rounded,
-                          mode: ThemeMode.system,
-                          current: themeNotifier.value,
-                          onTap: () {
-                            themeNotifier.value = ThemeMode.system;
-                            setModalState(() {});
-                            setState(() {});
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _themeOptionCard(
-                          context,
-                          title: 'Light',
-                          icon: Icons.light_mode_rounded,
-                          mode: ThemeMode.light,
-                          current: themeNotifier.value,
-                          onTap: () {
-                            themeNotifier.value = ThemeMode.light;
-                            setModalState(() {});
-                            setState(() {});
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _themeOptionCard(
-                          context,
-                          title: 'Dark',
-                          icon: Icons.dark_mode_rounded,
-                          mode: ThemeMode.dark,
-                          current: themeNotifier.value,
-                          onTap: () {
-                            themeNotifier.value = ThemeMode.dark;
-                            setModalState(() {});
-                            setState(() {});
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-
-                  // 2. Local Notifications Toggle
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    activeThumbColor: const Color(0xFF169B62),
-                    title: const Text('Local Notifications', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
-                    subtitle: const Text('Show alerts when chat messages or files arrive', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                    value: widget.service.notificationsEnabled,
-                    onChanged: (val) {
-                      setModalState(() {
-                        widget.service.notificationsEnabled = val;
-                      });
-                      setState(() {});
-                    },
-                  ),
-                  const SizedBox(height: 12),
-
-                  // 3. Received File Save Location
-                  const Text('Received File Storage Location', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(height: 6),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: isDark ? Colors.black26 : Colors.grey[100],
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.folder_open_rounded, color: Color(0xFF169B62), size: 22),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            widget.service.customSavePath ?? currentDir.path,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 11.5, fontFamily: 'monospace'),
+                      Center(
+                        child: Container(
+                          width: 38,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.grey[400],
+                            borderRadius: BorderRadius.circular(10),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        TextButton(
-                          onPressed: () async {
-                            final selected = await FilePicker.platform.getDirectoryPath();
-                            if (selected != null) {
-                              setModalState(() {
-                                widget.service.customSavePath = selected;
-                              });
-                              setState(() {});
-                            }
-                          },
-                          child: const Text('Change', style: TextStyle(color: Color(0xFF169B62), fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF169B62).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(Icons.settings_rounded, color: Color(0xFF169B62)),
+                          ),
+                          const SizedBox(width: 12),
+                          const Text(
+                            'Settings',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 28),
+                      
+                      // 1. App Theme Mode Switcher
+                      const Text('App Theme', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _themeOptionCard(
+                              context,
+                              title: 'System',
+                              icon: Icons.brightness_auto_rounded,
+                              mode: ThemeMode.system,
+                              current: themeNotifier.value,
+                              onTap: () {
+                                themeNotifier.value = ThemeMode.system;
+                                setModalState(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _themeOptionCard(
+                              context,
+                              title: 'Light',
+                              icon: Icons.light_mode_rounded,
+                              mode: ThemeMode.light,
+                              current: themeNotifier.value,
+                              onTap: () {
+                                themeNotifier.value = ThemeMode.light;
+                                setModalState(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: _themeOptionCard(
+                              context,
+                              title: 'Dark',
+                              icon: Icons.dark_mode_rounded,
+                              mode: ThemeMode.dark,
+                              current: themeNotifier.value,
+                              onTap: () {
+                                themeNotifier.value = ThemeMode.dark;
+                                setModalState(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+
+                      // 2. Local Notifications Toggle
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF169B62),
+                        title: const Text('Local Notifications', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text('Show alerts when chat messages or files arrive', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        value: widget.service.notificationsEnabled,
+                        onChanged: (val) {
+                          setModalState(() {
+                            widget.service.notificationsEnabled = val;
+                          });
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 12),
+
+                      // 3. Received File Save Location
+                      const Text('Received File Storage Location', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isDark ? Colors.black26 : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
                         ),
-                      ],
-                    ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.folder_open_rounded, color: Color(0xFF169B62), size: 22),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                widget.service.customSavePath ?? currentDir.path,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11.5, fontFamily: 'monospace'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  onPressed: () async {
+                                    final path = widget.service.customSavePath ?? currentDir.path;
+                                    await _openFolderLocation(path);
+                                  },
+
+                                  icon: const Icon(Icons.folder_open_rounded, size: 16, color: Color(0xFF169B62)),
+                                  label: const Text('Open Location', style: TextStyle(color: Color(0xFF169B62), fontWeight: FontWeight.bold, fontSize: 12)),
+                                ),
+                                const SizedBox(width: 2),
+                                TextButton(
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  onPressed: () async {
+                                    if (Platform.isAndroid) {
+                                      if (!await Permission.manageExternalStorage.isGranted) {
+                                        await Permission.manageExternalStorage.request();
+                                      }
+                                    }
+                                    final selected = await FilePicker.platform.getDirectoryPath();
+                                    if (selected != null && selected.trim().isNotEmpty) {
+                                      try {
+                                        final dir = Directory(selected.trim());
+                                        if (!await dir.exists()) await dir.create(recursive: true);
+
+                                        setModalState(() {
+                                          widget.service.customSavePath = selected.trim();
+                                        });
+                                        setState(() {});
+                                        _toast('Storage location updated: $selected');
+                                      } catch (e) {
+                                        _toast('Selected folder permission error. Please pick an accessible folder.');
+                                      }
+                                    }
+                                  },
+                                  child: const Text('Change', style: TextStyle(color: Color(0xFF169B62), fontWeight: FontWeight.bold, fontSize: 12)),
+                                ),
+                              ],
+                            ),
+
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Divider(),
+                      const SizedBox(height: 4),
+
+                      // 4. About App Button
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.info_outline_rounded, color: Color(0xFF10B981), size: 22),
+                        ),
+                        title: const Text('About Farmitra Nearby', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text('App overview, offline P2P info & branding', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        trailing: const Icon(Icons.chevron_right_rounded, size: 22),
+                        onTap: () {
+                          Navigator.pop(context);
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const AboutScreen()),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                   ),
-                  const SizedBox(height: 18),
-                ],
+                ),
               ),
             );
           },
@@ -629,7 +858,11 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (context) {
         final theme = Theme.of(context);
         final isDark = theme.brightness == Brightness.dark;
-        final receivedFiles = _history.where((e) => e.kind != ChatKind.text && !e.mine).toList();
+        final receivedFiles = _history
+            .where((e) => e.kind != ChatKind.text && !e.mine)
+            .toList()
+            .reversed
+            .toList();
 
         return Container(
           height: MediaQuery.sizeOf(context).height * 0.75,
@@ -685,13 +918,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF169B62),
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
-                    onPressed: () {
-                      OpenFilex.open(dir.path);
+                    onPressed: () async {
+                      await _openFolderLocation(dir.path);
                     },
-                    icon: const Icon(Icons.folder_open_rounded, size: 18),
-                    label: const Text('Open Folder'),
+
+                    icon: const Icon(Icons.folder_open_rounded, size: 16),
+                    label: const Text('Open Folder', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
@@ -717,34 +951,95 @@ class _HomeScreenState extends State<HomeScreen> {
                         separatorBuilder: (_, __) => const Divider(height: 1, indent: 56),
                         itemBuilder: (context, index) {
                           final item = receivedFiles[index];
-                          return ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: Container(
-                              width: 42,
-                              height: 42,
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF169B62).withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Icon(
-                                item.kind == ChatKind.folder ? Icons.folder_rounded : Icons.insert_drive_file_rounded,
-                                color: const Color(0xFF169B62),
-                              ),
-                            ),
-                            title: Text(
-                              item.fileName ?? 'File',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                            ),
-                            subtitle: Text(
-                              'From ${item.sender} • ${item.formattedTime}',
-                              style: const TextStyle(fontSize: 11.5, color: Colors.grey),
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF169B62)),
-                              onPressed: item.filePath == null ? null : () => OpenFilex.open(item.filePath!),
-                              tooltip: 'Open File',
+                          final hasPath = item.filePath != null;
+                          final parentDir = hasPath ? File(item.filePath!).parent.path : null;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  onTap: !hasPath ? null : () async {
+                                    final file = File(item.filePath!);
+                                    if (!await file.exists()) {
+                                      _toast('File not found at: ${item.filePath}');
+                                      return;
+                                    }
+                                    final res = await OpenFilex.open(item.filePath!);
+                                    if (res.type != ResultType.done && parentDir != null) {
+                                      await _openFolderLocation(parentDir);
+                                    }
+                                  },
+                                  leading: Container(
+                                    width: 42,
+                                    height: 42,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF169B62).withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(
+                                      item.kind == ChatKind.folder ? Icons.folder_rounded : Icons.insert_drive_file_rounded,
+                                      color: const Color(0xFF169B62),
+                                    ),
+                                  ),
+                                  title: Text(
+                                    item.fileName ?? 'File',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                  ),
+                                  subtitle: Text(
+                                    'From ${item.sender} • ${item.formattedTime}${item.formattedSize.isNotEmpty ? " • ${item.formattedSize}" : ""}',
+                                    style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                                  ),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF169B62)),
+                                    onPressed: !hasPath ? null : () async {
+                                      final file = File(item.filePath!);
+                                      if (!await file.exists()) {
+                                        _toast('File not found at: ${item.filePath}');
+                                        return;
+                                      }
+                                      final res = await OpenFilex.open(item.filePath!);
+                                      if (res.type != ResultType.done && parentDir != null) {
+                                        await _openFolderLocation(parentDir);
+                                      }
+                                    },
+                                    tooltip: 'Open File',
+                                  ),
+                                ),
+                                if (hasPath && parentDir != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 56, bottom: 2),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(6),
+                                      onTap: () async {
+                                        await _openFolderLocation(parentDir);
+                                      },
+
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.folder_open_rounded, size: 14, color: Color(0xFF169B62)),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'Open File Location',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold,
+                                                color: isDark ? const Color(0xFF4ADE80) : const Color(0xFF169B62),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           );
                         },
@@ -790,6 +1085,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => setState(() {
               _selectedPeerId = null;
               _lastSelectedPeer = null;
+              widget.service.activeChatPeerId = null;
             }),
           ),
           Stack(
@@ -858,10 +1154,131 @@ class _HomeScreenState extends State<HomeScreen> {
             tooltip: 'Send file',
             onPressed: _pickAndSend,
           ),
-          IconButton(
-            icon: Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, color: Colors.white),
-            tooltip: 'Activity log',
-            onPressed: () => setState(() => _showLogs = !_showLogs),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
+            tooltip: 'More options',
+            onSelected: (value) {
+              if (value == 'files') {
+                _openReceivedFilesModal();
+              } else if (value == 'log') {
+                setState(() => _showLogs = !_showLogs);
+              } else if (value == 'clear') {
+                _confirmClearChat(peer);
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'files',
+                child: Row(
+                  children: [
+                    Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                    SizedBox(width: 10),
+                    Text('View Received Files'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'log',
+                child: Row(
+                  children: [
+                    Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                    const SizedBox(width: 10),
+                    Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'clear',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                    SizedBox(width: 10),
+                    Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConnectionModeSwitch(bool isDark) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFE2E8F0),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _connectionMode = ConnectionMode.lan),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: _connectionMode == ConnectionMode.lan
+                      ? (isDark ? const Color(0xFF005C4B) : const Color(0xFF075E54))
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.wifi_rounded,
+                      size: 14,
+                      color: _connectionMode == ConnectionMode.lan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Nearby',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: _connectionMode == ConnectionMode.lan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _connectionMode = ConnectionMode.p2p),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: _connectionMode == ConnectionMode.p2p
+                      ? const Color(0xFF10B981)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.radar_rounded,
+                      size: 14,
+                      color: _connectionMode == ConnectionMode.p2p ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Direct P2P',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.bold,
+                        color: _connectionMode == ConnectionMode.p2p ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -869,89 +1286,377 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _devicePane() {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final peers = widget.service.peers;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Text('Nearby devices', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '${peers.length} active',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.primary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
+          _buildConnectionModeSwitch(isDark),
+          if (_connectionMode == ConnectionMode.p2p)
+            Expanded(
+              child: P2pRadarView(
+                p2pService: _wifiDirectService,
+                onPeerConnectedTap: (peerName) {
+                  Peer? matched;
+                  for (final p in widget.service.peers) {
+                    if (p.name.toLowerCase().contains(peerName.toLowerCase()) ||
+                        peerName.toLowerCase().contains(p.name.toLowerCase()) ||
+                        p.ip.startsWith('192.168.49.') ||
+                        p.id == peerName ||
+                        p.ip == peerName) {
+                      matched = p;
+                      break;
+                    }
+                  }
+                  if (matched != null) {
+                    _selectPeer(matched);
+                  } else if (widget.service.peers.isNotEmpty) {
+                    _selectPeer(widget.service.peers.first);
+                  }
+                },
+                onManualPairingTap: _openManualPairingModal,
+              ),
+            )
+
+          else ...[
+            Row(
+              children: [
+                const Text('Nearby devices', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
                   ),
+                  child: Text(
+                    '${peers.length} active',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (_scanning && peers.isNotEmpty) ...[
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  children: [
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF10B981),
+                      ),
+                    ),
+                    SizedBox(width: 10),
+                    Text(
+                      'Scanning local network for devices…',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF10B981),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 10),
-          if (_scanning && peers.isNotEmpty) ...[
-            Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF10B981).withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
-              ),
-              child: const Row(
-                children: [
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Color(0xFF10B981),
+            Expanded(
+              child: peers.isEmpty
+                  ? _RadarPulseScanner(
+                      isScanning: _scanning,
+                      onScanPressed: _scan,
+                    )
+                  : ListView.separated(
+                      itemCount: peers.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      itemBuilder: (context, index) {
+                        final p = peers[index];
+                        return PeerTile(
+                          peer: p,
+                          selected: p.id == _selectedPeerId,
+                          onTap: () => _selectPeer(p),
+                        );
+                      },
                     ),
-                  ),
-                  SizedBox(width: 10),
-                  Text(
-                    'Scanning local network for devices…',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF10B981),
-                    ),
-                  ),
-                ],
-              ),
             ),
           ],
-          Expanded(
-            child: peers.isEmpty
-                ? _RadarPulseScanner(
-                    isScanning: _scanning,
-                    onScanPressed: _scan,
-                  )
-                : ListView.separated(
-                    itemCount: peers.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final p = peers[index];
-                      return PeerTile(
-                        peer: p,
-                        selected: p.id == _selectedPeerId,
-                        onTap: () => _selectPeer(p),
-                      );
-                    },
-                  ),
-          ),
         ],
       ),
     );
   }
+
+  Future<void> _processP2pPairingInput(String rawInput) async {
+    final input = rawInput.trim();
+    if (input.isEmpty) return;
+
+    String? targetMac;
+    String? targetIp;
+
+    if (input.startsWith('farmitra_p2p:')) {
+      final parts = input.split(':');
+      // Format: farmitra_p2p:deviceName:macAddress:ip OR farmitra_p2p:deviceName:ip
+      if (parts.length >= 4) {
+        targetIp = parts.last;
+        final middle = parts.sublist(2, parts.length - 1).join(':');
+        if (middle.contains(':') || middle.length >= 12) {
+          targetMac = middle;
+        }
+      } else if (parts.length == 3) {
+        targetIp = parts[2];
+      }
+    } else if (input.contains(':') && input.length >= 12 && !input.contains('.')) {
+      targetMac = input;
+    } else {
+      targetIp = input;
+    }
+
+    // 1. If MAC address is present, trigger native Wi-Fi Direct connection directly!
+    if (targetMac != null && targetMac.isNotEmpty) {
+      _toast('Sending native P2P connection request to MAC $targetMac…');
+      final ok = await _wifiDirectService.connectP2pByAddress(targetMac);
+      if (ok) {
+        _toast('Native P2P request sent! Accept prompt on target device.');
+        return;
+      }
+    }
+
+    // 2. Check if matching peer exists in current scanned peers list
+    P2pPeer? matchedPeer;
+    for (final p in _wifiDirectService.peers) {
+      if ((targetMac != null && p.deviceAddress.toLowerCase() == targetMac.toLowerCase()) ||
+          (targetIp != null && (p.name.contains(targetIp) || p.deviceAddress.contains(targetIp)))) {
+        matchedPeer = p;
+        break;
+      }
+    }
+
+    if (matchedPeer != null) {
+      _toast('Connecting to ${matchedPeer.name}…');
+      await _wifiDirectService.connectP2p(matchedPeer);
+      return;
+    }
+
+    // 3. Fallback: bind via socket link
+    if (targetIp != null && targetIp.isNotEmpty) {
+      final peerId = await widget.service.bindP2pPeer(targetIp, null);
+      if (peerId != null && mounted) {
+        setState(() {});
+        _toast('P2P connected to $targetIp!');
+      } else {
+        _toast('Pairing invitation sent to $targetIp');
+      }
+    }
+  }
+
+  Future<void> _openManualPairingModal() async {
+    final ipController = TextEditingController();
+    int activeTab = 0; // 0 = QR Code, 1 = Manual IP
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final theme = Theme.of(context);
+            final isDark = theme.brightness == Brightness.dark;
+            final myMac = _wifiDirectService.thisDeviceAddress ?? '';
+            final myIp = _wifiDirectService.localP2pIp ?? '192.168.49.1';
+            final qrData = 'farmitra_p2p:${widget.service.deviceName}:$myMac:$myIp';
+
+            return Container(
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1F2C34) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+              ),
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 36),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF10B981)),
+                          const SizedBox(width: 8),
+                          const Text('P2P QR Code & Manual Pairing', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                          const Spacer(),
+                          IconButton(icon: const Icon(Icons.close_rounded), onPressed: () => Navigator.pop(context)),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Tab Switcher (My QR Code | Direct IP Input)
+                      Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF0F172A) : const Color(0xFFE2E8F0),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setModalState(() => activeTab = 0),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: activeTab == 0 ? const Color(0xFF10B981) : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(9),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.qr_code_rounded, size: 16, color: activeTab == 0 ? Colors.white : Colors.grey),
+                                      const SizedBox(width: 6),
+                                      Text('My QR Code', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: activeTab == 0 ? Colors.white : Colors.grey)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () => setModalState(() => activeTab = 1),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: activeTab == 1 ? const Color(0xFF10B981) : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(9),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.lan_rounded, size: 16, color: activeTab == 1 ? Colors.white : Colors.grey),
+                                      const SizedBox(width: 6),
+                                      Text('Direct IP Input', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: activeTab == 1 ? Colors.white : Colors.grey)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      if (activeTab == 0) ...[
+                        // QR Code Display
+                        P2pQrWidget(data: qrData, size: 210),
+                        const SizedBox(height: 14),
+                        Text(
+                          '${widget.service.deviceName} ${myMac.isNotEmpty ? "• $myMac" : ""} • $myIp',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Show this QR code to peer device for instant P2P pairing',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  Clipboard.setData(ClipboardData(text: myMac.isNotEmpty ? myMac : myIp));
+                                  _toast('Copied: ${myMac.isNotEmpty ? myMac : myIp}');
+                                },
+                                icon: const Icon(Icons.copy_rounded, size: 16),
+                                label: const Text('Copy Address'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: () async {
+                                  Navigator.pop(context);
+                                  final rawScanned = await Navigator.push<String>(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+                                  );
+                                  if (rawScanned != null && rawScanned.isNotEmpty) {
+                                    await _processP2pPairingInput(rawScanned);
+                                  }
+                                },
+                                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                                icon: const Icon(Icons.camera_alt_rounded, size: 18),
+                                label: const Text('Scan QR Code', style: TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ] else ...[
+                        // Direct IP / Payload Input View
+                        Text(
+                          'Enter target device IP address (e.g. 192.168.49.1) or MAC Address / QR payload to pair directly.',
+                          style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                        ),
+                        const SizedBox(height: 14),
+                        TextField(
+                          controller: ipController,
+                          keyboardType: TextInputType.text,
+                          decoration: InputDecoration(
+                            labelText: 'Target Device IP or QR Payload / MAC',
+                            hintText: '192.168.49.1 or fa:4b:9c:12:34:56',
+                            prefixIcon: const Icon(Icons.lan_rounded),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: () async {
+                              final input = ipController.text.trim();
+                              if (input.isNotEmpty) {
+                                Navigator.pop(context);
+                                await _processP2pPairingInput(input);
+                              }
+                            },
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xFF10B981),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: const Icon(Icons.link_rounded),
+                            label: const Text('Connect IP / MAC Directly', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
 
   Widget _chatPane({bool isMobile = false}) {
     final peer = _selectedPeer;
@@ -1006,6 +1711,51 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   IconButton(onPressed: _pickAndSend, tooltip: 'Send file', icon: const Icon(Icons.attach_file_rounded)),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert_rounded),
+                    tooltip: 'More options',
+                    onSelected: (value) {
+                      if (value == 'files') {
+                        _openReceivedFilesModal();
+                      } else if (value == 'log') {
+                        setState(() => _showLogs = !_showLogs);
+                      } else if (value == 'clear') {
+                        _confirmClearChat(peer);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      const PopupMenuItem(
+                        value: 'files',
+                        child: Row(
+                          children: [
+                            Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                            SizedBox(width: 10),
+                            Text('View Received Files'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'log',
+                        child: Row(
+                          children: [
+                            Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                            const SizedBox(width: 10),
+                            Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'clear',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                            SizedBox(width: 10),
+                            Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -1036,19 +1786,60 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   )
-                : ListView.builder(
-                    controller: _scroll,
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-                    itemCount: chat.length + (_aiThinking ? 1 : 0),
-                    itemBuilder: (context, index) {
-                      if (_aiThinking && index == chat.length) {
-                        return _buildAiThinkingBubble(isDark, peer);
-                      }
-                      return ChatBubble(item: chat[index]);
+                : Builder(
+                    builder: (context) {
+                      final hasMore = chat.length < _fullCurrentChat.length;
+                      final totalCount = chat.length + (hasMore ? 1 : 0) + (_aiThinking ? 1 : 0);
+
+                      return ListView.builder(
+                        controller: _scroll,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        itemCount: totalCount,
+                        itemBuilder: (context, index) {
+                          if (hasMore && index == 0) {
+                            final remaining = _fullCurrentChat.length - chat.length;
+                            return Center(
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    _chatDisplayCount += 20;
+                                  });
+                                },
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFE2E8F0),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.arrow_upward_rounded, size: 14, color: Color(0xFF10B981)),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Load earlier messages ($remaining more)',
+                                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+
+                          final itemIndex = index - (hasMore ? 1 : 0);
+                          if (_aiThinking && itemIndex == chat.length) {
+                            return _buildAiThinkingBubble(isDark, peer);
+                          }
+                          return ChatBubble(item: chat[itemIndex]);
+                        },
+                      );
                     },
                   ),
           ),
-          if (_chatMode == ChatMode.people) TransferCard(state: widget.service.transfer),
+          if (_chatMode == ChatMode.people && widget.service.transfer.active) TransferCard(state: widget.service.transfer),
           if (_showLogs) ...[
             Container(
               height: 120,

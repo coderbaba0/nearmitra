@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/chat_item.dart';
 import '../models/peer.dart';
@@ -23,10 +24,37 @@ class NearbyService extends ChangeNotifier {
   final AndroidNetworkBridge _bridge = AndroidNetworkBridge();
   final NotificationService _notificationService = NotificationService();
 
-  String? customSavePath;
+  String? _customSavePath;
+  String? get customSavePath => _customSavePath;
+  set customSavePath(String? val) {
+    _customSavePath = val;
+    _saveCustomSavePath(val);
+    notifyListeners();
+  }
+
+  Future<void> _saveCustomSavePath(String? val) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (val == null || val.isEmpty) {
+        await prefs.remove('custom_save_path');
+      } else {
+        await prefs.setString('custom_save_path', val);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _loadCustomSavePath() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _customSavePath = prefs.getString('custom_save_path');
+    } catch (_) {}
+  }
+
   bool notificationsEnabled = true;
+  Function(String peerId)? onPeerAutoConnected;
 
   final Map<String, Peer> _peers = {};
+
   final List<ChatItem> _incomingItems = [];
   final List<String> _logs = [];
   TransferState _transfer = const TransferState();
@@ -53,9 +81,19 @@ class NearbyService extends ChangeNotifier {
   List<String> get logs => List.unmodifiable(_logs);
   TransferState get transfer => _transfer;
 
+  bool isAppInForeground = true;
+  String? activeChatPeerId;
+
+  bool _isChatActive(String resolvedPeerId, String remoteIp) {
+    if (!isAppInForeground) return false;
+    if (activeChatPeerId == null) return false;
+    return activeChatPeerId == resolvedPeerId || activeChatPeerId == remoteIp;
+  }
+
   Future<void> start() async {
     if (_started) return;
     _started = true;
+    await _loadCustomSavePath();
     await _bridge.acquireMulticastLock();
     await _startTransferServer();
     await _startDiscovery();
@@ -66,8 +104,10 @@ class NearbyService extends ChangeNotifier {
     });
     _keepaliveTimer = Timer.periodic(const Duration(seconds: 15), (_) => _pingPeers());
     announce();
+    scanSubnet();
     log('Farmitra Nearby is ready on local network');
   }
+
 
   Future<void> _pingPeers() async {
     for (final p in _peers.values.toList()) {
@@ -129,6 +169,15 @@ class NearbyService extends ChangeNotifier {
     final data = utf8.encode(jsonEncode({'id': deviceId, 'name': deviceName}));
     try {
       _udp?.send(data, multicastAddress, discoveryPort);
+      _udp?.send(data, InternetAddress('255.255.255.255'), discoveryPort);
+      final localIp = await _findLocalIpv4();
+      if (localIp != null && localIp.contains('.')) {
+        final parts = localIp.split('.');
+        if (parts.length == 4) {
+          final bcastIp = '${parts[0]}.${parts[1]}.${parts[2]}.255';
+          _udp?.send(data, InternetAddress(bcastIp), discoveryPort);
+        }
+      }
     } catch (_) {
       try {
         _udp?.close();
@@ -137,6 +186,7 @@ class NearbyService extends ChangeNotifier {
       await _startDiscovery();
     }
   }
+
 
   Future<void> scanSubnet() async {
     final localIp = await _findLocalIpv4();
@@ -162,27 +212,67 @@ class NearbyService extends ChangeNotifier {
     log('Network scan complete');
   }
 
-  Future<void> _probe(String ip) async {
+  Future<String?> bindP2pPeer(String peerIp, String? localIp) async {
+    log('P2P link active. Peer IP: $peerIp, Local IP: ${localIp ?? "Unknown"}');
+    await announce();
+    String? connectedId;
+    if (peerIp.isNotEmpty) {
+      // Retry probing target peerIp up to 3 times
+      for (int attempt = 0; attempt < 3; attempt++) {
+        connectedId = await _probe(peerIp);
+        if (connectedId != null) break;
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
+      if (connectedId == null && peerIp != '192.168.49.1') {
+        connectedId = await _probe('192.168.49.1');
+      }
+      if (connectedId == null && peerIp != '192.168.49.2') {
+        connectedId = await _probe('192.168.49.2');
+      }
+      // If still null on P2P subnet, check common client IPs
+      if (connectedId == null && (peerIp.startsWith('192.168.49.') || (localIp != null && localIp.startsWith('192.168.49.')))) {
+        for (int i = 100; i <= 105; i++) {
+          final testIp = '192.168.49.$i';
+          if (testIp != localIp && testIp != peerIp) {
+            connectedId = await _probe(testIp);
+            if (connectedId != null) break;
+          }
+        }
+      }
+    }
+    if (connectedId != null) {
+      onPeerAutoConnected?.call(connectedId);
+    }
+    return connectedId;
+  }
+
+
+  Future<String?> _probe(String ip) async {
     Socket? socket;
     try {
-      socket = await Socket.connect(ip, transferPort, timeout: const Duration(milliseconds: 600));
+      socket = await Socket.connect(ip, transferPort, timeout: const Duration(milliseconds: 3000));
       socket.write('${jsonEncode({'type': 'hello', 'sender': deviceName, 'sender_id': deviceId})}\n');
       await socket.flush();
-      final line = await _readLine(socket, timeout: const Duration(milliseconds: 800));
-      if (line == null) return;
+      final line = await _readLine(socket, timeout: const Duration(milliseconds: 3000));
+      if (line == null) return null;
       final map = jsonDecode(line) as Map<String, dynamic>;
       if (map['type'] == 'hello') {
         final id = map['sender_id']?.toString() ?? '';
+        final peerId = id.isNotEmpty ? id : ip;
         if (id != deviceId) {
-          _upsertPeer(id.isNotEmpty ? id : ip, map['sender']?.toString() ?? 'Nearby device', ip);
+          _upsertPeer(peerId, map['sender']?.toString() ?? 'Nearby device', ip);
+          return peerId;
         }
       }
-    } catch (_) {
-      // A closed port is expected for most addresses.
+
+    } catch (e) {
+      log('Probe error for $ip: $e');
     } finally {
       socket?.destroy();
     }
+    return null;
   }
+
 
   Future<void> _startTransferServer() async {
     try {
@@ -229,8 +319,10 @@ class NearbyService extends ChangeNotifier {
       if (type == 'hello') {
         socket.write('${jsonEncode({'type': 'hello', 'sender': deviceName, 'sender_id': deviceId})}\n');
         await socket.flush();
+        // Do NOT auto-open chat here — incoming hello is from ANY LAN device probing us
         return;
       }
+
 
       final isAiPacket = type == 'ai_response' ||
           type == 'ai_chat' ||
@@ -294,7 +386,8 @@ class NearbyService extends ChangeNotifier {
       if (type == 'chat') {
         final text = h['message']?.toString() ?? '';
         if (text.isNotEmpty) {
-          if (_peers.containsKey(resolvedPeerId)) {
+          final isCurrentlyOpen = _isChatActive(resolvedPeerId, remoteIp);
+          if (!isCurrentlyOpen && _peers.containsKey(resolvedPeerId)) {
             _peers[resolvedPeerId]!.unreadCount++;
           }
           _incomingItems.add(ChatItem(
@@ -306,7 +399,7 @@ class NearbyService extends ChangeNotifier {
             text: text,
           ));
           log('Message received from $sender');
-          if (notificationsEnabled) {
+          if (notificationsEnabled && !isCurrentlyOpen) {
             _notificationService.showIncomingMessageNotification(
               peerId: resolvedPeerId,
               senderName: sender,
@@ -359,7 +452,8 @@ class NearbyService extends ChangeNotifier {
         await sink.flush();
         await sink.close();
         _setTransfer(TransferState(label: 'Received $name', progress: 1));
-        if (_peers.containsKey(resolvedPeerId)) {
+        final isCurrentlyOpen = _isChatActive(resolvedPeerId, remoteIp);
+        if (!isCurrentlyOpen && _peers.containsKey(resolvedPeerId)) {
           _peers[resolvedPeerId]!.unreadCount++;
         }
         _incomingItems.add(ChatItem(
@@ -374,7 +468,7 @@ class NearbyService extends ChangeNotifier {
           status: 'Received',
         ));
         log('Received $name from $sender');
-        if (notificationsEnabled) {
+        if (notificationsEnabled && !isCurrentlyOpen) {
           _notificationService.showIncomingFileNotification(
             peerId: resolvedPeerId,
             senderName: sender,
@@ -383,6 +477,7 @@ class NearbyService extends ChangeNotifier {
           );
         }
         notifyListeners();
+        return;
       }
     } catch (e) {
       log('Incoming connection error: $e');
@@ -640,9 +735,10 @@ class NearbyService extends ChangeNotifier {
         ..name = name
         ..ip = ip
         ..lastSeen = DateTime.now();
-      notifyListeners();
     }
+    notifyListeners();
   }
+
 
   Future<String?> _findLocalIpv4() async {
     final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
@@ -663,13 +759,41 @@ class NearbyService extends ChangeNotifier {
     return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
   }
 
+  Future<String?> getLocalIp() => _findLocalIpv4();
+
   Future<Directory> getReceiveDirectory() => _receiveDirectory();
 
+
   Future<Directory> _receiveDirectory() async {
+    if (_customSavePath != null && _customSavePath!.trim().isNotEmpty) {
+      final customDir = Directory(_customSavePath!.trim());
+      try {
+        if (!await customDir.exists()) {
+          await customDir.create(recursive: true);
+        }
+        return customDir;
+      } catch (e) {
+        log('Error accessing custom save directory ($e)');
+      }
+    }
+
+    if (Platform.isAndroid) {
+      final pubDownload = Directory('/storage/emulated/0/Download/Farmitra Nearby');
+      try {
+        if (!await pubDownload.exists()) {
+          await pubDownload.create(recursive: true);
+        }
+        return pubDownload;
+      } catch (_) {}
+    }
+
+
     final external = await getExternalStorageDirectory();
     final base = external ?? await getApplicationDocumentsDirectory();
     final dir = Directory('${base.path}/Farmitra Nearby');
-    await dir.create(recursive: true);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
     return dir;
   }
 

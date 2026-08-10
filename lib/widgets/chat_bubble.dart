@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -232,10 +234,44 @@ class ChatBubble extends StatelessWidget {
     );
   }
 
+  Future<void> _openFileOrCopyPath(BuildContext context, String filePath) async {
+    final file = File(filePath);
+    final dir = Directory(filePath);
+
+    if (!await file.exists() && !await dir.exists()) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('File not found: $filePath'),
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    final res = await OpenFilex.open(filePath);
+    if (res.type != ResultType.done && context.mounted) {
+      Clipboard.setData(ClipboardData(text: filePath));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('File saved at: $filePath (Path copied to clipboard)'),
+          duration: const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'COPY',
+            onPressed: () => Clipboard.setData(ClipboardData(text: filePath)),
+          ),
+        ),
+      );
+    }
+  }
+
   Widget _buildFileCard(BuildContext context, bool isDark, Color textColor) {
     final isFolder = item.kind == ChatKind.folder;
     return InkWell(
-      onTap: item.filePath == null ? null : () => OpenFilex.open(item.filePath!),
+      onTap: item.filePath == null ? null : () => _openFileOrCopyPath(context, item.filePath!),
       borderRadius: BorderRadius.circular(12),
       child: Container(
         padding: const EdgeInsets.all(10),

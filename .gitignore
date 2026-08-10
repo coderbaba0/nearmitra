@@ -5,7 +5,10 @@ build/
 .flutter-plugins
 .flutter-plugins-dependencies
 android/.gradle/
+android/.kotlin/
 android/local.properties
 *.iml
+*.log
 .idea/
 .vscode/
+

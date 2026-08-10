@@ -34,6 +34,16 @@ class ChatItem {
     return '$hour:$minute $period';
   }
 
+  String get formattedSize {
+    if (fileSize == null || fileSize! <= 0) return '';
+    final bytes = fileSize!;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+  }
+
+
   Map<String, dynamic> toJson() => {
         'peerId': peerId,
         'sender': sender,
