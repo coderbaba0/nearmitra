@@ -27,6 +27,7 @@ import '../services/streaming_service.dart';
 import '../models/chat_item.dart';
 import '../models/p2p_peer.dart';
 import '../models/peer.dart';
+import '../services/file_opener_service.dart';
 import '../services/history_service.dart';
 import '../services/nearby_service.dart';
 import '../services/notification_service.dart';
@@ -577,6 +578,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     CallService().registerCallDeclinedCallback((peer) {
       widget.service.sendCallSignal(peer, 'call_declined');
     });
+
+    // Auto-sync outbox status updates in chat history
+    widget.service.onOutboxItemStatusChanged = (itemId, newStatus) {
+      if (!mounted) return;
+      final idx = _history.indexWhere((x) => x.id == itemId);
+      if (idx != -1) {
+        _history[idx].status = newStatus;
+        _historyService.save(_history);
+        if (mounted) setState(() {});
+      }
+    };
+
+    // Handle native Kotlin background / killed-state call accept / decline events
+    const MethodChannel('farmitra_nearby/network').setMethodCallHandler((call) async {
+      if (call.method == 'onNativeCallEvent' && call.arguments is Map) {
+        _handleNativeCallEvent(Map<String, dynamic>.from(call.arguments as Map));
+      }
+    });
+
+    // Check if app was launched via Accept button from cold start
+    Future.microtask(() async {
+      try {
+        final pending = await const MethodChannel('farmitra_nearby/network')
+            .invokeMethod<Map<dynamic, dynamic>>('getPendingCallEvent');
+        if (pending != null && mounted) {
+          _handleNativeCallEvent(Map<String, dynamic>.from(pending));
+        }
+      } catch (_) {}
+    });
+  }
+
+  void _handleNativeCallEvent(Map<String, dynamic> data) {
+    final action = data['action']?.toString() ?? 'accept';
+    final peerId = data['peerId']?.toString() ?? '';
+    final peerName = data['peerName']?.toString() ?? 'Peer Device';
+    final peerIp = data['peerIp']?.toString() ?? '';
+    final isVideo = data['isVideo'] == true;
+
+    final peer = widget.service.peers.where(
+      (p) => p.id == peerId || p.ip == peerId || (peerIp.isNotEmpty && p.ip == peerIp),
+    ).firstOrNull ?? Peer(id: peerId.isNotEmpty ? peerId : peerIp, name: peerName, ip: peerIp);
+
+    if (action == 'accept') {
+      if (!mounted) return;
+      _openActiveCallScreen(peer, isVideo, true);
+    } else if (action == 'decline') {
+      widget.service.sendCallSignal(peer, 'call_declined');
+    }
   }
 
   void _openActiveCallScreen(Peer peer, bool isVideoCall, bool isIncoming) {
@@ -972,20 +1021,46 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       return;
     }
 
+    final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
     final ok = await widget.service.sendChat(peer, text);
-    if (!ok) return;
+    final status = ok ? 'Sent' : 'Queued';
+
+    if (!ok) {
+      await widget.service.queueOutboxItem(QueuedOutboxItem(
+        id: itemId,
+        peerId: peer.id,
+        peerName: peer.name,
+        kind: ChatKind.text,
+        text: text,
+        createdAt: DateTime.now(),
+      ));
+      _toast('Peer is offline • Message queued (auto-sends when online)');
+    }
+
     _history.add(ChatItem(
+      id: itemId,
       peerId: peer.id,
       sender: widget.service.deviceName,
       mine: true,
       createdAt: DateTime.now(),
       kind: ChatKind.text,
       text: text,
+      status: status,
       isAi: false,
     ));
     await _historyService.save(_history);
     setState(() {});
     _triggerScrollToBottom();
+  }
+
+  Future<void> _cancelQueuedMessage(ChatItem item) async {
+    await widget.service.cancelQueuedItem(item.id);
+    item.status = 'Cancelled';
+    await _historyService.save(_history);
+    if (mounted) {
+      setState(() {});
+      _toast('Queued message cancelled');
+    }
   }
 
   Future<void> _pickAndSend() async {
@@ -1000,9 +1075,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final file = File(path);
     final name = result!.files.single.name;
     final size = await file.length();
+    final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
     final ok = await widget.service.sendFile(peer, file, displayName: name);
-    if (!ok) return;
-    _history.add(ChatItem(peerId: peer.id, sender: widget.service.deviceName, mine: true, createdAt: DateTime.now(), kind: ChatKind.file, fileName: name, filePath: path, fileSize: size, status: 'Sent'));
+    final status = ok ? 'Sent' : 'Queued';
+
+    if (!ok) {
+      await widget.service.queueOutboxItem(QueuedOutboxItem(
+        id: itemId,
+        peerId: peer.id,
+        peerName: peer.name,
+        kind: ChatKind.file,
+        fileName: name,
+        filePath: path,
+        fileSize: size,
+        createdAt: DateTime.now(),
+      ));
+      _toast('Peer is offline • File queued (auto-sends when online)');
+    }
+
+    _history.add(ChatItem(
+      id: itemId,
+      peerId: peer.id,
+      sender: widget.service.deviceName,
+      mine: true,
+      createdAt: DateTime.now(),
+      kind: ChatKind.file,
+      fileName: name,
+      filePath: path,
+      fileSize: size,
+      status: status,
+    ));
     await _historyService.save(_history);
     setState(() {});
     _triggerScrollToBottom();
@@ -1952,6 +2054,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           final item = receivedFiles[index];
                           final hasPath = item.filePath != null;
                           final parentDir = hasPath ? File(item.filePath!).parent.path : null;
+                          final isApk = FileOpenerService.isApkFile(item.fileName ?? item.filePath);
 
                           return Padding(
                             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -1960,27 +2063,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               children: [
                                 ListTile(
                                   contentPadding: EdgeInsets.zero,
-                                  onTap: !hasPath ? null : () async {
-                                    final file = File(item.filePath!);
-                                    if (!await file.exists()) {
-                                      _toast('File not found at: ${item.filePath}');
-                                      return;
-                                    }
-                                    final res = await OpenFilex.open(item.filePath!);
-                                    if (res.type != ResultType.done && parentDir != null) {
-                                      await _openFolderLocation(parentDir);
-                                    }
-                                  },
+                                  onTap: !hasPath
+                                      ? null
+                                      : () => FileOpenerService.openOrInstallFile(context, item.filePath!),
                                   leading: Container(
                                     width: 42,
                                     height: 42,
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF169B62).withValues(alpha: 0.12),
+                                      color: isApk
+                                          ? const Color(0xFF10B981).withValues(alpha: 0.18)
+                                          : const Color(0xFF169B62).withValues(alpha: 0.12),
                                       borderRadius: BorderRadius.circular(12),
                                     ),
                                     child: Icon(
-                                      item.kind == ChatKind.folder ? Icons.folder_rounded : Icons.insert_drive_file_rounded,
-                                      color: const Color(0xFF169B62),
+                                      isApk
+                                          ? Icons.android_rounded
+                                          : (item.kind == ChatKind.folder
+                                              ? Icons.folder_rounded
+                                              : Icons.insert_drive_file_rounded),
+                                      color: isApk ? const Color(0xFF10B981) : const Color(0xFF169B62),
                                     ),
                                   ),
                                   title: Text(
@@ -1993,21 +2094,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                     'From ${item.sender} • ${item.formattedTime}${item.formattedSize.isNotEmpty ? " • ${item.formattedSize}" : ""}',
                                     style: const TextStyle(fontSize: 11.5, color: Colors.grey),
                                   ),
-                                  trailing: IconButton(
-                                    icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF169B62)),
-                                    onPressed: !hasPath ? null : () async {
-                                      final file = File(item.filePath!);
-                                      if (!await file.exists()) {
-                                        _toast('File not found at: ${item.filePath}');
-                                        return;
-                                      }
-                                      final res = await OpenFilex.open(item.filePath!);
-                                      if (res.type != ResultType.done && parentDir != null) {
-                                        await _openFolderLocation(parentDir);
-                                      }
-                                    },
-                                    tooltip: 'Open File',
-                                  ),
+                                  trailing: isApk
+                                      ? FilledButton.icon(
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor: const Color(0xFF10B981),
+                                            foregroundColor: Colors.white,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            visualDensity: VisualDensity.compact,
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(10),
+                                            ),
+                                          ),
+                                          onPressed: !hasPath
+                                              ? null
+                                              : () => FileOpenerService.openOrInstallFile(context, item.filePath!),
+                                          icon: const Icon(Icons.install_mobile_rounded, size: 15),
+                                          label: const Text(
+                                            'Install',
+                                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                          ),
+                                        )
+                                      : IconButton(
+                                          icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF169B62)),
+                                          onPressed: !hasPath
+                                              ? null
+                                              : () => FileOpenerService.openOrInstallFile(context, item.filePath!),
+                                          tooltip: 'Open File',
+                                        ),
                                 ),
                                 if (hasPath && parentDir != null)
                                   Padding(
@@ -3002,7 +3115,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           if (showTyping && itemIndex == (chat.length + (_aiThinking ? 1 : 0))) {
                             return _buildTypingBubble(isDark, peer);
                           }
-                          return ChatBubble(item: chat[itemIndex]);
+                          return ChatBubble(
+                            item: chat[itemIndex],
+                            onCancel: chat[itemIndex].status == 'Queued'
+                                ? () => _cancelQueuedMessage(chat[itemIndex])
+                                : null,
+                          );
                         },
                       );
                     },

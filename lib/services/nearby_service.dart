@@ -17,12 +17,66 @@ import 'android_network_bridge.dart';
 import 'call_service.dart';
 import 'notification_service.dart';
 
+class QueuedOutboxItem {
+  final String id;
+  final String peerId;
+  final String peerName;
+  final ChatKind kind;
+  final String? text;
+  final String? filePath;
+  final String? fileName;
+  final int? fileSize;
+  final DateTime createdAt;
+
+  QueuedOutboxItem({
+    required this.id,
+    required this.peerId,
+    required this.peerName,
+    required this.kind,
+    this.text,
+    this.filePath,
+    this.fileName,
+    this.fileSize,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'peerId': peerId,
+        'peerName': peerName,
+        'kind': kind.name,
+        'text': text,
+        'filePath': filePath,
+        'fileName': fileName,
+        'fileSize': fileSize,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory QueuedOutboxItem.fromJson(Map<String, dynamic> json) =>
+      QueuedOutboxItem(
+        id: json['id'] as String,
+        peerId: json['peerId'] as String,
+        peerName: json['peerName'] as String? ?? 'Peer Device',
+        kind: ChatKind.values.firstWhere(
+          (e) => e.name == json['kind'],
+          orElse: () => ChatKind.text,
+        ),
+        text: json['text'] as String?,
+        filePath: json['filePath'] as String?,
+        fileName: json['fileName'] as String?,
+        fileSize: json['fileSize'] as int?,
+        createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
+            DateTime.now(),
+      );
+}
+
 class NearbyService extends ChangeNotifier {
   static NearbyService? _instance;
   static NearbyService get instance => _instance!;
 
   NearbyService({required this.deviceId, required this.deviceName}) {
     _instance = this;
+    _loadOutbox();
   }
 
   static const int discoveryPort = 43888;
@@ -166,6 +220,118 @@ class NearbyService extends ChangeNotifier {
 
   final Map<String, Peer> _peers = {};
 
+  final List<QueuedOutboxItem> _outbox = [];
+  List<QueuedOutboxItem> get outbox => List.unmodifiable(_outbox);
+  Function(String itemId, String newStatus)? onOutboxItemStatusChanged;
+  static const _kOutboxKey = 'nearby_outbox_queue_v1';
+  bool _isFlushingQueue = false;
+
+  Future<void> _loadOutbox() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_kOutboxKey) ?? [];
+      _outbox.clear();
+      for (final raw in list) {
+        try {
+          final map = jsonDecode(raw) as Map<String, dynamic>;
+          _outbox.add(QueuedOutboxItem.fromJson(map));
+        } catch (_) {}
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> _saveOutbox() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rawList = _outbox.map((e) => jsonEncode(e.toJson())).toList();
+      await prefs.setStringList(_kOutboxKey, rawList);
+    } catch (_) {}
+  }
+
+  Future<void> queueOutboxItem(QueuedOutboxItem item) async {
+    _outbox.removeWhere((x) => x.id == item.id);
+    _outbox.add(item);
+    await _saveOutbox();
+    notifyListeners();
+    log('[Outbox] Queued item ${item.id} (${item.kind.name}) for ${item.peerName}');
+  }
+
+  Future<bool> cancelQueuedItem(String itemId) async {
+    final index = _outbox.indexWhere((x) => x.id == itemId);
+    if (index != -1) {
+      final removed = _outbox.removeAt(index);
+      await _saveOutbox();
+      onOutboxItemStatusChanged?.call(itemId, 'Cancelled');
+      notifyListeners();
+      log('[Outbox] Cancelled queued item $itemId for ${removed.peerName}');
+      return true;
+    }
+    return false;
+  }
+
+  bool isItemQueued(String itemId) {
+    return _outbox.any((x) => x.id == itemId);
+  }
+
+  Future<void> flushQueueForPeer(Peer peer) async {
+    if (_isFlushingQueue) return;
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) {
+      return;
+    }
+
+    final pendingForPeer = _outbox
+        .where((x) =>
+            x.peerId == peer.id ||
+            x.peerId == peer.ip ||
+            (targetIp.isNotEmpty && x.peerId == targetIp))
+        .toList();
+
+    if (pendingForPeer.isEmpty) return;
+
+    _isFlushingQueue = true;
+    log('[Outbox] Flushing ${pendingForPeer.length} pending items to ${peer.name} ($targetIp)');
+
+    for (final item in pendingForPeer) {
+      if (!_outbox.any((x) => x.id == item.id)) {
+        // Was cancelled while flushing
+        continue;
+      }
+
+      bool success = false;
+      if (item.kind == ChatKind.text &&
+          item.text != null &&
+          item.text!.isNotEmpty) {
+        success = await sendChat(peer, item.text!);
+      } else if (item.kind == ChatKind.file && item.filePath != null) {
+        final file = File(item.filePath!);
+        if (await file.exists()) {
+          success = await sendFile(peer, file, displayName: item.fileName);
+        } else {
+          // File was deleted on disk
+          _outbox.removeWhere((x) => x.id == item.id);
+          await _saveOutbox();
+          onOutboxItemStatusChanged?.call(item.id, 'Failed (File missing)');
+          continue;
+        }
+      }
+
+      if (success) {
+        _outbox.removeWhere((x) => x.id == item.id);
+        await _saveOutbox();
+        onOutboxItemStatusChanged?.call(item.id, 'Sent');
+        notifyListeners();
+        log('[Outbox] Successfully delivered queued item ${item.id} to ${peer.name}');
+      } else {
+        log('[Outbox] Failed delivering queued item ${item.id} to ${peer.name}, will retry later');
+        break; // Stop flushing this peer if connection failed
+      }
+    }
+
+    _isFlushingQueue = false;
+  }
+
   final List<ChatItem> _incomingItems = [];
   final List<String> _logs = [];
   TransferState _transfer = const TransferState();
@@ -215,9 +381,14 @@ class NearbyService extends ChangeNotifier {
   Function(String peerId, Map<String, dynamic> data)? onStreamStopped;
 
   Future<void> sendCallInvite(Peer peer, bool isVideoCall) async {
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty) {
+      log('[CallInvite] Cannot send invite: IP not resolved for ${peer.name} (${peer.id})');
+      return;
+    }
     try {
-      final socket = await Socket.connect(peer.ip, transferPort,
-          timeout: const Duration(seconds: 3));
+      final socket = await Socket.connect(targetIp, transferPort,
+          timeout: const Duration(seconds: 4));
       final payload = jsonEncode({
         'type': 'call_invite',
         'sender': deviceName,
@@ -227,16 +398,40 @@ class NearbyService extends ChangeNotifier {
       socket.write('$payload\n');
       await socket.flush();
       socket.destroy();
+      log('[CallInvite] Sent call_invite to ${peer.name} ($targetIp)');
     } catch (e) {
-      log('Error sending call invite to ${peer.name}: $e');
+      log('Error sending call invite to ${peer.name} ($targetIp): $e');
     }
+  }
+
+  String _resolveTargetIp(Peer peer) {
+    if (peer.ip.trim().isNotEmpty && peer.ip != '0.0.0.0' && !peer.ip.startsWith('127.')) {
+      return peer.ip.trim();
+    }
+    if (_peers.containsKey(peer.id) && _peers[peer.id]!.ip.trim().isNotEmpty) {
+      return _peers[peer.id]!.ip.trim();
+    }
+    for (final p in _peers.values) {
+      if ((p.id == peer.id || p.name == peer.name) && p.ip.trim().isNotEmpty) {
+        return p.ip.trim();
+      }
+    }
+    if (peer.id.contains('.') && !peer.id.contains(':')) {
+      return peer.id.trim();
+    }
+    return peer.ip.trim();
   }
 
   Future<void> sendCallSignal(Peer peer, String signalType,
       {bool? isVideo}) async {
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty) {
+      log('[CallSignal] Cannot send $signalType: IP not resolved for ${peer.name} (${peer.id})');
+      return;
+    }
     try {
-      final socket = await Socket.connect(peer.ip, transferPort,
-          timeout: const Duration(seconds: 3));
+      final socket = await Socket.connect(targetIp, transferPort,
+          timeout: const Duration(seconds: 4));
       final payload = jsonEncode({
         'type': signalType,
         'sender': deviceName,
@@ -246,8 +441,9 @@ class NearbyService extends ChangeNotifier {
       socket.write('$payload\n');
       await socket.flush();
       socket.destroy();
+      log('[CallSignal] Sent $signalType to ${peer.name} ($targetIp)');
     } catch (e) {
-      log('Error sending call signal $signalType to ${peer.name}: $e');
+      log('Error sending call signal $signalType to ${peer.name} ($targetIp): $e');
     }
   }
 
@@ -256,9 +452,14 @@ class NearbyService extends ChangeNotifier {
     String signalType,
     Map<String, dynamic> data,
   ) async {
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty) {
+      log('[WebRtcSignal] Cannot send $signalType: IP not resolved for ${peer.name} (${peer.id})');
+      return;
+    }
     try {
-      final socket = await Socket.connect(peer.ip, transferPort,
-          timeout: const Duration(seconds: 3));
+      final socket = await Socket.connect(targetIp, transferPort,
+          timeout: const Duration(seconds: 4));
       final payload = jsonEncode({
         'type': signalType,
         'sender': deviceName,
@@ -268,8 +469,9 @@ class NearbyService extends ChangeNotifier {
       socket.write('$payload\n');
       await socket.flush();
       socket.destroy();
+      log('[WebRtcSignal] Sent $signalType to ${peer.name} ($targetIp)');
     } catch (e) {
-      log('Error sending WebRTC signal $signalType to ${peer.name}: $e');
+      log('Error sending WebRTC signal $signalType to ${peer.name} ($targetIp): $e');
     }
   }
 
@@ -604,7 +806,10 @@ class NearbyService extends ChangeNotifier {
               'sender_id': deviceId
             })}\n');
         await socket.flush();
-        // Do NOT auto-open chat here — incoming hello is from ANY LAN device probing us
+        final peerObj = _peers[resolvedPeerId] ?? _peers[remoteIp];
+        if (peerObj != null && peerObj.ip.isNotEmpty) {
+          Future.microtask(() => flushQueueForPeer(peerObj));
+        }
         return;
       }
 
@@ -1427,7 +1632,13 @@ class NearbyService extends ChangeNotifier {
       if (ip.isNotEmpty) _peers[ip] = existing;
     }
     notifyListeners();
-    return existing;
+    final targetPeer = existing;
+    if (targetPeer.ip.isNotEmpty &&
+        targetPeer.ip != '0.0.0.0' &&
+        !targetPeer.ip.startsWith('127.')) {
+      Future.microtask(() => flushQueueForPeer(targetPeer));
+    }
+    return targetPeer;
   }
 
   Future<String?> _findLocalIpv4() async {

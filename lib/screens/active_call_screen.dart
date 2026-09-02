@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/peer.dart';
 import '../services/call_service.dart';
 import '../services/nearby_service.dart';
@@ -166,11 +167,22 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   Future<void> _prepareWebRtc() async {
     if (_peerConnection != null) return;
     try {
-      if (widget.isVideoCall) {
-        try {
-          await _localRenderer.initialize();
-        } catch (_) {}
+      // 1. Ensure audio permission is granted
+      final micStatus = await Permission.microphone.status;
+      if (!micStatus.isGranted) {
+        await Permission.microphone.request();
       }
+
+      // 2. Ensure camera permission if video call
+      if (widget.isVideoCall) {
+        final camStatus = await Permission.camera.status;
+        if (!camStatus.isGranted) {
+          await Permission.camera.request();
+        }
+      }
+      try {
+        await _localRenderer.initialize();
+      } catch (_) {}
       try {
         await _remoteRenderer.initialize();
       } catch (_) {}
@@ -192,10 +204,21 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             : false,
       };
 
-      _localStream =
-          await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      try {
+        _localStream =
+            await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      } catch (mediaError) {
+        debugPrint('[ActiveCall] Media capture error: $mediaError, attempting audio-only fallback');
+        // Fallback to audio-only if camera failed
+        _localStream = await navigator.mediaDevices.getUserMedia({'audio': true, 'video': false});
+        if (mounted) {
+          setState(() {
+            _isVideoEnabled = false;
+          });
+        }
+      }
 
-      if (widget.isVideoCall && _isVideoEnabled) {
+      if (widget.isVideoCall && _isVideoEnabled && _localStream != null) {
         try {
           _localRenderer.srcObject = _localStream;
         } catch (_) {}
@@ -213,9 +236,11 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         ],
       });
 
-      for (final track in _localStream!.getTracks()) {
-        track.enabled = true;
-        await pc.addTrack(track, _localStream!);
+      if (_localStream != null) {
+        for (final track in _localStream!.getTracks()) {
+          track.enabled = true;
+          await pc.addTrack(track, _localStream!);
+        }
       }
 
       pc.onIceCandidate = (candidate) {
@@ -661,24 +686,52 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
 
   Future<void> _closeWebRtc() async {
     try {
-      for (final track in _screenStream?.getTracks() ?? <MediaStreamTrack>[]) {
-        await track.stop();
+      if (_screenStream != null) {
+        for (final track in _screenStream!.getTracks()) {
+          try {
+            await track.stop();
+          } catch (_) {}
+        }
+        try {
+          await _screenStream!.dispose();
+        } catch (_) {}
+        _screenStream = null;
       }
-      await _screenStream?.dispose();
-      _screenStream = null;
 
-      for (final track in _localStream?.getTracks() ?? <MediaStreamTrack>[]) {
-        await track.stop();
+      if (_localStream != null) {
+        for (final track in _localStream!.getTracks()) {
+          try {
+            await track.stop();
+          } catch (_) {}
+        }
+        try {
+          await _localStream!.dispose();
+        } catch (_) {}
+        _localStream = null;
       }
-      await _localStream?.dispose();
-      await _remoteRenderer.srcObject?.dispose();
-      await _peerConnection?.close();
-      await _peerConnection?.dispose();
-      await _localRenderer.dispose();
-      await _remoteRenderer.dispose();
+
+      try {
+        _localRenderer.srcObject = null;
+        _remoteRenderer.srcObject = null;
+      } catch (_) {}
+
+      if (_peerConnection != null) {
+        try {
+          await _peerConnection!.close();
+        } catch (_) {}
+        try {
+          await _peerConnection!.dispose();
+        } catch (_) {}
+        _peerConnection = null;
+      }
+
+      try {
+        await _localRenderer.dispose();
+      } catch (_) {}
+      try {
+        await _remoteRenderer.dispose();
+      } catch (_) {}
     } catch (_) {}
-    _localStream = null;
-    _peerConnection = null;
   }
 
   @override

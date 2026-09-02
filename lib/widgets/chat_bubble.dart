@@ -1,16 +1,19 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
-import 'package:open_filex/open_filex.dart';
 
 import '../models/chat_item.dart';
+import '../services/file_opener_service.dart';
 
 class ChatBubble extends StatelessWidget {
-  const ChatBubble({super.key, required this.item});
+  const ChatBubble({
+    super.key,
+    required this.item,
+    this.onCancel,
+  });
 
   final ChatItem item;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -248,11 +251,65 @@ class ChatBubble extends StatelessWidget {
                   ),
                   if (mine) ...[
                     const SizedBox(width: 4),
-                    const Icon(
-                      Icons.done_all_rounded,
-                      size: 16,
-                      color: Color(0xFF53BDEB),
-                    ),
+                    if (item.status == 'Queued') ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF59E0B).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.schedule_rounded, size: 11, color: Color(0xFFF59E0B)),
+                            const SizedBox(width: 3),
+                            const Text(
+                              'Queued',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFFF59E0B),
+                              ),
+                            ),
+                            if (onCancel != null) ...[
+                              const SizedBox(width: 4),
+                              InkWell(
+                                onTap: onCancel,
+                                borderRadius: BorderRadius.circular(4),
+                                child: const Icon(Icons.close_rounded, size: 12, color: Color(0xFFEF4444)),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ] else if (item.status == 'Cancelled') ...[
+                      const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.block_rounded, size: 13, color: Color(0xFFEF4444)),
+                          SizedBox(width: 3),
+                          Text('Cancelled',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: Color(0xFFEF4444),
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ] else if (item.status == 'Sending…') ...[
+                      const SizedBox(
+                        width: 11,
+                        height: 11,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 1.5, color: Colors.white70),
+                      ),
+                    ] else ...[
+                      const Icon(
+                        Icons.done_all_rounded,
+                        size: 16,
+                        color: Color(0xFF53BDEB),
+                      ),
+                    ],
                   ],
                 ],
               ),
@@ -264,41 +321,13 @@ class ChatBubble extends StatelessWidget {
   }
 
   Future<void> _openFileOrCopyPath(BuildContext context, String filePath) async {
-    final file = File(filePath);
-    final dir = Directory(filePath);
-
-    if (!await file.exists() && !await dir.exists()) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File not found: $filePath'),
-            duration: const Duration(seconds: 3),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-      return;
-    }
-
-    final res = await OpenFilex.open(filePath);
-    if (res.type != ResultType.done && context.mounted) {
-      Clipboard.setData(ClipboardData(text: filePath));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('File saved at: $filePath (Path copied to clipboard)'),
-          duration: const Duration(seconds: 4),
-          behavior: SnackBarBehavior.floating,
-          action: SnackBarAction(
-            label: 'COPY',
-            onPressed: () => Clipboard.setData(ClipboardData(text: filePath)),
-          ),
-        ),
-      );
-    }
+    await FileOpenerService.openOrInstallFile(context, filePath);
   }
 
   Widget _buildFileCard(BuildContext context, bool isDark, Color textColor) {
     final isFolder = item.kind == ChatKind.folder;
+    final isApk = FileOpenerService.isApkFile(item.fileName ?? item.filePath);
+
     return InkWell(
       onTap: item.filePath == null ? null : () => _openFileOrCopyPath(context, item.filePath!),
       borderRadius: BorderRadius.circular(12),
@@ -307,6 +336,12 @@ class ChatBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: isDark ? Colors.black.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.04),
           borderRadius: BorderRadius.circular(12),
+          border: isApk
+              ? Border.all(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                  width: 1,
+                )
+              : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -315,11 +350,15 @@ class ChatBubble extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54),
+                color: isApk
+                    ? const Color(0xFF10B981)
+                    : (item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54)),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(
-                isFolder ? Icons.folder_rounded : Icons.insert_drive_file_rounded,
+                isApk
+                    ? Icons.android_rounded
+                    : (isFolder ? Icons.folder_rounded : Icons.insert_drive_file_rounded),
                 color: Colors.white,
                 size: 24,
               ),
@@ -331,7 +370,7 @@ class ChatBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    item.fileName ?? 'Attachment',
+                    item.fileName ?? (isApk ? 'Application Package' : 'Attachment'),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -342,10 +381,13 @@ class ChatBubble extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${_size(item.fileSize ?? 0)} • ${item.status ?? 'Received'}',
+                    '${_size(item.fileSize ?? 0)} • ${isApk ? (item.mine ? "APK Sent" : "Tap to Install") : (item.status ?? 'Received')}',
                     style: TextStyle(
-                      color: textColor.withValues(alpha: 0.7),
+                      color: isApk && !item.mine
+                          ? const Color(0xFF10B981)
+                          : textColor.withValues(alpha: 0.7),
                       fontSize: 11.5,
+                      fontWeight: isApk && !item.mine ? FontWeight.bold : FontWeight.normal,
                     ),
                   ),
                 ],
@@ -353,9 +395,9 @@ class ChatBubble extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Icon(
-              Icons.open_in_new_rounded,
-              size: 18,
-              color: textColor.withValues(alpha: 0.7),
+              isApk ? Icons.install_mobile_rounded : Icons.open_in_new_rounded,
+              size: 19,
+              color: isApk ? const Color(0xFF10B981) : textColor.withValues(alpha: 0.7),
             ),
           ],
         ),

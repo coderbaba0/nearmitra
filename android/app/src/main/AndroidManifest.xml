@@ -27,6 +27,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
@@ -46,6 +47,16 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|phoneCall|microphone" />
+
+        <receiver
+            android:name=".CallActionReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.farmitra.nearby.ACTION_CALL_ACCEPT" />
+                <action android:name="com.farmitra.nearby.ACTION_CALL_DECLINE" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name="com.hiennv.flutter_callkit_incoming.CallkitNotificationService"
@@ -87,7 +98,7 @@
         <!-- System Quick Settings Tile in Top Notification Bar -->
         <service
             android:name=".FarmitraQuickTileService"
-            android:icon="@mipmap/ic_launcher"
+            android:icon="@drawable/ic_qs_nearmitra"
             android:label="NearMitra Share"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">

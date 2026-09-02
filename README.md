@@ -104,11 +104,22 @@ NearMitra bridges mobile devices and desktop computers seamlessly across your lo
 - **Flexible Path Selection**: Pick any custom save folder for incoming files.
 - **Instant Write Permission Test**: Tests write access upon folder selection and provides fail-safe fallback to Public Downloads (`/storage/emulated/0/Download/NearMitra`).
 
-### 10. Native Android Background Foreground Service
-- **Persistent Socket Listener**: Native `FarmitraForegroundService` with `WAKE_LOCK`, `WifiLock`, and `MulticastLock` keeps TCP/UDP socket listeners alive even when the app is minimized or closed.
-- **Settings Switch (Default: ON)**: \"Run in Background\" toggle in App Settings. When enabled, incoming messages & file transfers arrive seamlessly with heads-up notifications even when the app is in the background or killed state.
+### 10. Offline Message & File Auto-Queue (Store & Forward Auto-Sync)
+- **Persistent Outbox Queue**: When sending messages or sharing files with an offline or unreachable peer, NearMitra automatically stores them in a persistent local Outbox queue (`SharedPreferences`).
+- **Visual Status Badges**: Queued messages display an amber **🕒 Queued** badge in the chat bubble.
+- **Auto-Sync on Reconnect**: As soon as the target peer comes back online (detected via UDP beacon, Wi-Fi Direct link, or TCP hello), the background queue manager automatically delivers pending items in chronological order and updates their status to **Delivered (Double Blue Checkmarks)**.
+- **1-Tap Cancellation**: Users can tap the inline **✕ Cancel** button on any queued message/file card to delete it from the outbox before it is sent.
 
-### 11. Fully Persistent Settings (Local Storage)
+### 11. Android Quick Settings Tile (`NearMitra Share`)
+- **Native Notification Shade Tile**: Integrated `TileService` allows 1-tap quick access directly from the Android Quick Settings shade (alongside Wi-Fi, Bluetooth, and Torch).
+- **Monochrome Dynamic Vector Icon**: Crisp vector icon (`ic_qs_nearmitra.xml`) styled to match Android's Dark and Light system themes.
+- **Live Status Subtitle**: Displays `P2P Active` when the background service is running or `Ready to Share` when idle.
+
+### 12. Native Android Background Foreground Service
+- **Persistent Socket Listener**: Native `FarmitraForegroundService` with `WAKE_LOCK`, `WifiLock`, and `MulticastLock` keeps TCP/UDP socket listeners alive even when the app is minimized or closed.
+- **Settings Switch (Default: ON)**: \"Run in Background\" toggle in App Settings. When enabled, incoming messages, calls, and file transfers arrive seamlessly with heads-up notifications even when the app is in the background or killed state.
+
+### 13. Fully Persistent Settings (Local Storage)
 All user preferences and security settings are saved locally and restored on every app launch:
 
 | Setting | Default | Storage Key |
@@ -121,6 +132,45 @@ All user preferences and security settings are saved locally and restored on eve
 | Streaming Audio Permission | OFF | `streaming_audio_enabled` |
 | Streaming Security Mode | OFF | `streaming_security_enabled` |
 | Trusted Streaming Devices | — | `streaming_trusted_devices` |
+
+---
+
+## 🔮 Upcoming Features & Roadmap
+
+NearMitra is evolving into the ultimate off-grid decentralized communication and intelligence platform:
+
+```
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                           NearMitra Future Roadmap                            │
+├───────────────────────┬───────────────────────────────┬───────────────────────┤
+│    Edge AI & Vision   │     Acoustic Protection       │ Universal Ecosystem   │
+│  • On-Device SLMs     │  • Dog Bark & Theft Audio     │  • iOS, macOS, Linux  │
+│  • Real-Time CV Alert │  • Anomaly Sound Detection    │  • Multi-Hop Mesh P2P │
+│  • Edge Object Filter │  • Acoustic Alarm Trigger     │  • Shared Clipboard   │
+└───────────────────────┴───────────────────────────────┴───────────────────────┘
+```
+
+### 🧠 1. On-Device Offline AI Models (Local SLM / NPU Execution)
+- **Zero-Cloud Generative AI**: Run quantized Small Language Models (e.g., Google Gemma 2B, Llama 3.2 1B/3B, Microsoft Phi-3) directly on-device using mobile NPU/GPU hardware acceleration (MediaPipe / GGML / TFLite).
+- **100% Offline Intelligence**: Query AI assistants for document summarization, code generation, medical first-aid, farming diagnosis, and translations in remote areas with **0% internet dependency**.
+
+### 🌐 2. Universal Cross-Platform Ecosystem (iOS, macOS & Linux)
+- **Unified P2P Protocol**: Expanding native Wi-Fi Direct, Multipeer Connectivity, and LAN discovery across **iOS, macOS, and Linux** devices.
+- **Decentralized Multi-Hop Mesh Network**: Automatic packet relaying across intermediate neighbor nodes, enabling long-range multi-hop message forwarding through dense crowds, campsites, and university campuses without central routers.
+- **Universal Cross-Device Clipboard**: Seamless, encrypted copy-paste synchronization across all active devices on your local network.
+
+### 👁️ 3. Condition-Based AI Vision Filtering in Live Camera Streaming
+- **Edge AI Video Analytics**: Real-time on-device computer vision processing applied directly over CCTV video streams:
+  - **Intruder & Human Motion Detection**: Automatically triggers silent alerts to connected peers when human presence is detected in restricted zones.
+  - **Property & Crop Protection**: Recognizes livestock, stray animals, or vehicle entry with bounding-box metadata sent over P2P.
+  - **Fire, Smoke & Hazard Detection**: Edge alert triggers during live field or warehouse surveillance.
+- **Smart Bandwidth Optimization**: Streams high-bitrate video only when AI condition triggers are met, conserving device battery and local network bandwidth.
+
+### 🎙️ 4. AI-Powered Audio Protection & Voice Anomaly Streaming
+- **Acoustic Threat & Theft Recognition**: Real-time sound classification running locally on audio streams:
+  - **Dog Barking & Distress Detection**: Identifies aggressive dog barking, cattle distress sounds, or unusual nocturnal livestock noise to prevent farm/property theft.
+  - **Burglary & Break-In Acoustic Alerts**: Detects glass shattering, door tampering, and distress calls.
+  - **Automated P2P Siren / Deterrence Broadcast**: Triggers automated audible alarms or flashlights on remote CCTV nodes upon anomaly detection.
 
 ---
 
@@ -170,12 +220,13 @@ To build the release APK for Android:
 
 ```bash
 flutter pub get
-flutter build apk --no-tree-shake-icons
+flutter build apk --split-per-abi
 ```
 
-**Output APK Path**:
+**Output Split APKs**:
 ```text
-build/app/outputs/flutter-apk/app-release.apk
+build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
 ```
 
 To install directly to a connected Android phone via USB:
@@ -194,4 +245,5 @@ flutter install
 
 ---
 
-© 2026 **NearMitra / Farmitra Ecosystem** • Built with Flutter & Kotlin Native.
+© 2026 **NearMitra Ecosystem** • Built with Flutter & Kotlin Native.
+

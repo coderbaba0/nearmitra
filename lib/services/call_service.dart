@@ -40,10 +40,6 @@ class CallService {
     _initialized = true;
 
     try {
-      // Fix 4: Clear any stale CallKit sessions from previous app runs
-      await FlutterCallkitIncoming.endAllCalls();
-      debugPrint('[CallService] Cleared stale CallKit sessions on startup');
-
       FlutterCallkitIncoming.onEvent.listen((event) {
         if (event == null) return;
         final ev = event.event;
@@ -194,14 +190,12 @@ class CallService {
   Future<void> _checkActiveCalls() async {
     try {
       final calls = await FlutterCallkitIncoming.activeCalls();
+      debugPrint('[CallService] Active calls on startup: $calls');
       if (calls is List && calls.isNotEmpty) {
         for (final item in calls) {
           if (item is Map<dynamic, dynamic>) {
-            final isAccepted = item['isAccepted'] == true;
-            if (isAccepted) {
-              _handleAcceptedCallEvent(item);
-              break;
-            }
+            _handleAcceptedCallEvent(item);
+            break;
           }
         }
       }

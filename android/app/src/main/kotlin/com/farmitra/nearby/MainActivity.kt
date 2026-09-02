@@ -36,12 +36,14 @@ class MainActivity : FlutterActivity() {
     private var localP2pIp: String? = null
 
     private var initialSharedFiles = mutableListOf<String>()
+    private var pendingCallEvent: Map<String, Any?>? = null
     private var flutterEngineInstance: FlutterEngine? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngineInstance = flutterEngine
         handleSendIntent(intent)
+        handleCallIntent(intent)
 
         // Multicast & Background Network Lock Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannelName).setMethodCallHandler { call, result ->
@@ -174,7 +176,7 @@ class MainActivity : FlutterActivity() {
                                 as? android.app.NotificationManager
                             if (notifManager?.canUseFullScreenIntent() == false) {
                                 val intent = Intent(
-                                    android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENTS,
+                                    "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENTS",
                                     android.net.Uri.parse("package:$packageName")
                                 ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
                                 startActivity(intent)
@@ -188,6 +190,27 @@ class MainActivity : FlutterActivity() {
                     } else {
                         result.success(true) // Android < 14: always allowed
                     }
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("path")
+                    if (path != null) {
+                        result.success(installApkNative(path))
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "openFolder" -> {
+                    val path = call.argument<String>("path")
+                    if (path != null) {
+                        result.success(openFolderNative(path))
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "getPendingCallEvent" -> {
+                    val event = pendingCallEvent
+                    pendingCallEvent = null
+                    result.success(event)
                 }
                 else -> result.notImplemented()
             }
@@ -526,10 +549,61 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
+    private fun installApkNative(apkPath: String): Boolean {
+        try {
+            val file = java.io.File(apkPath)
+            if (file.exists()) {
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this,
+                    "$packageName.fileprovider",
+                    file
+                )
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                return true
+            }
+        } catch (e: Exception) {
+            Log.e("FarmitraInstall", "Error installing APK native: ${e.message}")
+        }
+        return false
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleSendIntent(intent)
+        handleCallIntent(intent)
+    }
+
+    private fun handleCallIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.getBooleanExtra("call_incoming", false) || intent.hasExtra("call_action")) {
+            val peerId = intent.getStringExtra("peer_id") ?: ""
+            val peerName = intent.getStringExtra("peer_name") ?: "Peer Device"
+            val peerIp = intent.getStringExtra("peer_ip") ?: ""
+            val isVideo = intent.getBooleanExtra("is_video", false)
+            val callAction = intent.getStringExtra("call_action") ?: "accept"
+
+            val eventData = mapOf(
+                "action" to callAction,
+                "peerId" to peerId,
+                "peerName" to peerName,
+                "peerIp" to peerIp,
+                "isVideo" to isVideo
+            )
+
+            pendingCallEvent = eventData
+
+            flutterEngineInstance?.dartExecutor?.binaryMessenger?.let { messenger ->
+                runOnUiThread {
+                    MethodChannel(messenger, networkChannelName).invokeMethod("onNativeCallEvent", eventData)
+                }
+            }
+        }
     }
 
     private fun handleSendIntent(intent: Intent?) {

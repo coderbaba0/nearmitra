@@ -22,7 +22,7 @@ class AiConfig {
     this.openaiModel = 'gpt-4o-mini',
     this.temperature = 0.7,
     this.systemPrompt =
-        'You are NearMitra AI, a helpful, intelligent assistant for local off-grid communication.',
+        'You are NearMitra AI, a helpful, knowledgeable and friendly assistant.',
     this.isEnabled = true,
   });
 
@@ -179,6 +179,14 @@ class AiSettingsService extends ChangeNotifier {
       _revokedPeerIds.clear();
       _revokedPeerIds.addAll(savedRevoked);
 
+      var savedPrompt = prefs.getString(_kSystemPrompt);
+      if (savedPrompt == null ||
+          savedPrompt.contains('Farmitra') ||
+          savedPrompt.toLowerCase().contains('farmer')) {
+        savedPrompt =
+            'You are NearMitra AI, a helpful, knowledgeable and friendly assistant.';
+      }
+
       _config = AiConfig(
         provider: provider,
         geminiApiKey: prefs.getString(_kGeminiKey) ?? '',
@@ -186,8 +194,7 @@ class AiSettingsService extends ChangeNotifier {
         openaiApiKey: prefs.getString(_kOpenaiKey) ?? '',
         openaiModel: prefs.getString(_kOpenaiModel) ?? 'gpt-4o-mini',
         temperature: prefs.getDouble(_kTemp) ?? 0.7,
-        systemPrompt: prefs.getString(_kSystemPrompt) ??
-            'You are NearMitra AI, a helpful, intelligent assistant for local off-grid communication.',
+        systemPrompt: savedPrompt,
         isEnabled: prefs.getBool(_kIsEnabled) ?? true,
       );
       notifyListeners();

@@ -1,9 +1,8 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:open_filex/open_filex.dart';
 import '../models/chat_item.dart';
 import '../models/peer.dart';
+import '../services/file_opener_service.dart';
 import '../services/history_service.dart';
 import '../services/nearby_service.dart';
 
@@ -196,42 +195,7 @@ class _ActivityLogsScreenState extends ConsumerState<ActivityLogsScreen>
   }
 
   Future<void> _openFile(String path) async {
-    final file = File(path);
-    if (!await file.exists()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('File not found in local storage.'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-      return;
-    }
-
-    try {
-      final res = await OpenFilex.open(path);
-      if (res.type != ResultType.done && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not open file: ${res.message}'),
-            backgroundColor: Colors.orangeAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error opening file: $e'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
+    await FileOpenerService.openOrInstallFile(context, path);
   }
 
   Future<void> _clearLogs(bool forCalls) async {
@@ -1255,18 +1219,27 @@ class _ActivityLogsScreenState extends ConsumerState<ActivityLogsScreen>
                         ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: FilledButton.icon(
-                            onPressed: () => _openFile(filePath),
-                            icon:
-                                const Icon(Icons.open_in_new_rounded, size: 14),
-                            label: const Text('Open File',
-                                style: TextStyle(fontSize: 11.5)),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF10B981),
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
-                            ),
+                          child: Builder(
+                            builder: (context) {
+                              final isApk = FileOpenerService.isApkFile(fileName);
+                              return FilledButton.icon(
+                                onPressed: () => _openFile(filePath),
+                                icon: Icon(
+                                  isApk ? Icons.install_mobile_rounded : Icons.open_in_new_rounded,
+                                  size: 14,
+                                ),
+                                label: Text(
+                                  isApk ? 'Install APK' : 'Open File',
+                                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                                ),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFF10B981),
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10)),
+                                ),
+                              );
+                            },
                           ),
                         ),
                       ],
@@ -1393,11 +1366,13 @@ class _ActivityLogsScreenState extends ConsumerState<ActivityLogsScreen>
         lower.endsWith('.aac')) {
       return const _FileIconInfo(Icons.audio_file_rounded, Color(0xFF8B5CF6));
     }
+    if (lower.endsWith('.apk')) {
+      return const _FileIconInfo(Icons.android_rounded, Color(0xFF10B981));
+    }
     if (lower.endsWith('.zip') ||
         lower.endsWith('.rar') ||
         lower.endsWith('.7z') ||
-        lower.endsWith('.tar') ||
-        lower.endsWith('.apk')) {
+        lower.endsWith('.tar')) {
       return const _FileIconInfo(Icons.inventory_2_rounded, Color(0xFFEC4899));
     }
     return const _FileIconInfo(Icons.insert_drive_file_rounded, Color(0xFF64748B));

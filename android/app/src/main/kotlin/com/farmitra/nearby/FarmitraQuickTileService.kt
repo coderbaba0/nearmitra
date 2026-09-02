@@ -1,6 +1,7 @@
 package com.farmitra.nearby
 
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -38,8 +39,11 @@ class FarmitraQuickTileService : TileService() {
 
     private fun updateTileState() {
         val tile = qsTile ?: return
+        try {
+            tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_nearmitra)
+        } catch (_: Exception) {}
         tile.state = if (FarmitraForegroundService.isRunning) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-        tile.label = "Farmitra Share"
+        tile.label = "NearMitra Share"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = if (FarmitraForegroundService.isRunning) "P2P Active" else "Ready to Share"
         }

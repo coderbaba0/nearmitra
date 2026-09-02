@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
+import '../models/p2p_peer.dart';
 import '../services/wifi_direct_service.dart';
 
 class P2pRadarView extends StatefulWidget {
@@ -387,7 +388,7 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
     return Icons.phone_android_rounded;
   }
 
-  Widget _buildWifiDirectNode(dynamic p, bool isDark) {
+  Widget _buildWifiDirectNode(P2pPeer p, bool isDark) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -421,7 +422,7 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
             alignment: Alignment.center,
             children: [
               Icon(
-                _getRadarDeviceIcon(p.name, p.address),
+                _getRadarDeviceIcon(p.name, p.deviceAddress),
                 color: p.isConnected ? Colors.white : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
                 size: 21,
               ),

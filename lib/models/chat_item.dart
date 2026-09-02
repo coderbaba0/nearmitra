@@ -2,6 +2,7 @@ enum ChatKind { text, file, folder }
 
 class ChatItem {
   ChatItem({
+    String? id,
     required this.peerId,
     required this.sender,
     required this.mine,
@@ -15,8 +16,9 @@ class ChatItem {
     this.isAi = false,
     this.isMeshRelay = false,
     this.relayHops,
-  });
+  }) : id = id ?? '${createdAt.millisecondsSinceEpoch}_$peerId';
 
+  final String id;
   final String peerId;
   final String sender;
   final bool mine;
@@ -26,7 +28,7 @@ class ChatItem {
   final String? fileName;
   final String? filePath;
   final int? fileSize;
-  final String? status;
+  String? status;
   final bool isAi;
   final bool isMeshRelay;
   final List<String>? relayHops;
@@ -52,6 +54,7 @@ class ChatItem {
   }
 
   Map<String, dynamic> toJson() => {
+        'id': id,
         'peerId': peerId,
         'sender': sender,
         'mine': mine,
@@ -68,6 +71,7 @@ class ChatItem {
       };
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
+        id: json['id'] as String?,
         peerId: json['peerId'] as String,
         sender: json['sender'] as String,
         mine: json['mine'] as bool,

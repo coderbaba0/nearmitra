@@ -11,6 +11,9 @@ class P2pPeer {
   int status;
   final String primaryDeviceType;
 
+  String get address => deviceAddress;
+  String get id => deviceAddress;
+
   factory P2pPeer.fromMap(Map<dynamic, dynamic> map) {
     return P2pPeer(
       name: map['name']?.toString() ?? 'Nearby Device',

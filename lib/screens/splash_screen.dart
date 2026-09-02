@@ -42,13 +42,10 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   void initState() {
     super.initState();
 
-    // If a call was already accepted from background / killed mode, immediately jump to HomeScreen
-    CallService().registerCallAcceptedCallback((peer, isVideo, isIncoming) {
-      _navigateToHome();
-    });
-
     if (CallService().hasPendingAcceptedCall) {
-      _navigateToHome();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _navigateToHome();
+      });
       return;
     }
 

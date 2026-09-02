@@ -834,7 +834,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Remote Streaming Hub',
+        title: const Text('Remote Streaming',
             style: TextStyle(fontWeight: FontWeight.bold)),
         bottom: TabBar(
           controller: _tabController,
@@ -844,7 +844,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
           tabs: const [
             Tab(icon: Icon(Icons.videocam_rounded), text: 'Camera CCTV'),
             Tab(icon: Icon(Icons.mic_rounded), text: 'Live Audio'),
-            Tab(icon: Icon(Icons.security_rounded), text: 'Security Hub'),
+            Tab(icon: Icon(Icons.security_rounded), text: 'Security'),
           ],
         ),
       ),
@@ -1875,179 +1875,184 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final trusted = _streamingService.trustedDevices.toList();
 
-    return ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        // Security Banner Card
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: isDark
-                  ? [const Color(0xFF064E3B).withValues(alpha: 0.5), const Color(0xFF0F172A)]
-                  : [const Color(0xFFECFDF5), const Color(0xFFF1F5F9)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.35)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.18),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.security_rounded, color: Color(0xFF10B981), size: 24),
-              ),
-              const SizedBox(width: 14),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'P2P Local Security Hub',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      'All permissions are stored locally on your device. Unverified peers must prompt for permission.',
-                      style: TextStyle(fontSize: 11.5, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-
-        const Text(
-          'STREAMING ACCESS PERMISSIONS',
-          style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey,
-              letterSpacing: 1.1),
-        ),
-        const SizedBox(height: 10),
-        Container(
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: isDark ? Colors.white10 : const Color(0xFFE2E8F0),
-            ),
-          ),
-          child: Column(
-            children: [
-              SwitchListTile(
-                activeThumbColor: const Color(0xFF10B981),
-                title: const Text('Allow Incoming Camera Access',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text(
-                    'Allows trusted nearby peers to request live CCTV stream',
-                    style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                value: _streamingService.allowCamera,
-                onChanged: (val) async {
-                  await _streamingService.setAllowCamera(val);
-                  setState(() {});
-                  _toast(val ? 'Camera Access Allowed 📹' : 'Camera Access Disabled 🚫');
-                },
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                activeThumbColor: const Color(0xFF10B981),
-                title: const Text('Allow Incoming Audio Access',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text('Allows peers to stream microphone audio',
-                    style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                value: _streamingService.allowAudio,
-                onChanged: (val) async {
-                  await _streamingService.setAllowAudio(val);
-                  setState(() {});
-                  _toast(val ? 'Audio Access Allowed 🎙️' : 'Audio Access Disabled 🚫');
-                },
-              ),
-              const Divider(height: 1),
-              SwitchListTile(
-                activeThumbColor: const Color(0xFF10B981),
-                title: const Text('Allow Screen Casting Stream',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: const Text('Allows remote viewing of phone screen',
-                    style: TextStyle(fontSize: 11.5, color: Colors.grey)),
-                value: _streamingService.allowScreen,
-                onChanged: (val) async {
-                  await _streamingService.setAllowScreen(val);
-                  setState(() {});
-                  _toast(val ? 'Screen Stream Allowed 📱' : 'Screen Stream Disabled 🚫');
-                },
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 24),
-        const Text(
-          'ALWAYS-TRUSTED DEVICES',
-          style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey,
-              letterSpacing: 1.1),
-        ),
-        const SizedBox(height: 10),
-        if (trusted.isEmpty)
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 64),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Security Banner Card
           Container(
-            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
-              borderRadius: BorderRadius.circular(16),
+              gradient: LinearGradient(
+                colors: isDark
+                    ? [const Color(0xFF064E3B).withValues(alpha: 0.5), const Color(0xFF0F172A)]
+                    : [const Color(0xFFECFDF5), const Color(0xFFF1F5F9)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.35)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.18),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.security_rounded, color: Color(0xFF10B981), size: 24),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'P2P Local Security',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'All permissions are stored locally on your device. Unverified peers must prompt for permission.',
+                        style: TextStyle(fontSize: 11.5, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          const Text(
+            'STREAMING ACCESS PERMISSIONS',
+            style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.bold,
+                color: Colors.grey,
+                letterSpacing: 1.1),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(18),
               border: Border.all(
                 color: isDark ? Colors.white10 : const Color(0xFFE2E8F0),
               ),
             ),
-            alignment: Alignment.center,
-            child: const Text(
-              'No always-trusted devices configured yet.\nWhen streaming requests arrive, you can choose "Always Trust".',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12, color: Colors.grey, height: 1.4),
-            ),
-          )
-        else
-          ...trusted.map((peerId) {
-            return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E293B) : Colors.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.3),
-                ),
-              ),
-              child: ListTile(
-                leading: const CircleAvatar(
-                  radius: 18,
-                  backgroundColor: Color(0xFF10B981),
-                  child: Icon(Icons.verified_user_rounded, color: Colors.white, size: 18),
-                ),
-                title: Text(peerId, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
-                subtitle: const Text('Auto-authorized for local media streams', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                  tooltip: 'Revoke Trust',
-                  onPressed: () async {
-                    await _streamingService.removeTrustedDevice(peerId);
+            child: Column(
+              children: [
+                SwitchListTile(
+                  activeThumbColor: const Color(0xFF10B981),
+                  title: const Text('Allow Incoming Camera Access',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text(
+                      'Allows trusted nearby peers to request live CCTV stream',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                  value: _streamingService.allowCamera,
+                  onChanged: (val) async {
+                    await _streamingService.setAllowCamera(val);
                     setState(() {});
-                    _toast('Revoked trust for $peerId');
+                    _toast(val ? 'Camera Access Allowed 📹' : 'Camera Access Disabled 🚫');
                   },
                 ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  activeThumbColor: const Color(0xFF10B981),
+                  title: const Text('Allow Incoming Audio Access',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text('Allows peers to stream microphone audio',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                  value: _streamingService.allowAudio,
+                  onChanged: (val) async {
+                    await _streamingService.setAllowAudio(val);
+                    setState(() {});
+                    _toast(val ? 'Audio Access Allowed 🎙️' : 'Audio Access Disabled 🚫');
+                  },
+                ),
+                const Divider(height: 1),
+                SwitchListTile(
+                  activeThumbColor: const Color(0xFF10B981),
+                  title: const Text('Allow Screen Casting Stream',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: const Text('Allows remote viewing of phone screen',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                  value: _streamingService.allowScreen,
+                  onChanged: (val) async {
+                    await _streamingService.setAllowScreen(val);
+                    setState(() {});
+                    _toast(val ? 'Screen Stream Allowed 📱' : 'Screen Stream Disabled 🚫');
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+          const Text(
+            'ALWAYS-TRUSTED DEVICES',
+            style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.bold,
+                color: Colors.grey,
+                letterSpacing: 1.1),
+          ),
+          const SizedBox(height: 10),
+          if (trusted.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isDark ? Colors.white10 : const Color(0xFFE2E8F0),
+                ),
               ),
-            );
-          }),
-      ],
+              alignment: Alignment.center,
+              child: const Text(
+                'No always-trusted devices configured yet.\nWhen streaming requests arrive, you can choose "Always Trust".',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: Colors.grey, height: 1.4),
+              ),
+            )
+          else
+            ...trusted.map((peerId) {
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.3),
+                  ),
+                ),
+                child: ListTile(
+                  leading: const CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Color(0xFF10B981),
+                    child: Icon(Icons.verified_user_rounded, color: Colors.white, size: 18),
+                  ),
+                  title: Text(peerId, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                  subtitle: const Text('Auto-authorized for local media streams', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                    tooltip: 'Revoke Trust',
+                    onPressed: () async {
+                      await _streamingService.removeTrustedDevice(peerId);
+                      setState(() {});
+                      _toast('Revoked trust for $peerId');
+                    },
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
     );
   }
 
