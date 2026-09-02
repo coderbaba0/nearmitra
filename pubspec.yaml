@@ -20,6 +20,10 @@ dependencies:
   flutter_markdown: ^0.7.3
   mobile_scanner: ^5.2.3
   qr_flutter: ^4.1.0
+  flutter_callkit_incoming: ^2.0.4
+  flutter_webrtc: ^1.6.0
+  archive: ^3.6.1
+  flutter_riverpod: ^2.5.1
 
 dev_dependencies:
 
@@ -40,4 +44,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
-

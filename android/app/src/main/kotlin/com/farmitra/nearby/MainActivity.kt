@@ -35,8 +35,13 @@ class MainActivity : FlutterActivity() {
     private var groupOwnerIp: String? = null
     private var localP2pIp: String? = null
 
+    private var initialSharedFiles = mutableListOf<String>()
+    private var flutterEngineInstance: FlutterEngine? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngineInstance = flutterEngine
+        handleSendIntent(intent)
 
         // Multicast & Background Network Lock Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannelName).setMethodCallHandler { call, result ->
@@ -77,6 +82,88 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.error("MULTICAST_UNLOCK", e.message, null)
                     }
+                }
+                "startForegroundService" -> {
+                    try {
+                        val intent = Intent(applicationContext, FarmitraForegroundService::class.java).apply {
+                            action = FarmitraForegroundService.ACTION_START_SERVICE
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            applicationContext.startForegroundService(intent)
+                        } else {
+                            applicationContext.startService(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SERVICE_START_ERR", e.message, null)
+                    }
+                }
+                "startMediaProjectionService" -> {
+                    try {
+                        val intent = Intent(applicationContext, FarmitraForegroundService::class.java).apply {
+                            action = FarmitraForegroundService.ACTION_START_MEDIA_PROJECTION
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            applicationContext.startForegroundService(intent)
+                        } else {
+                            applicationContext.startService(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SERVICE_START_ERR", e.message, null)
+                    }
+                }
+                "stopForegroundService" -> {
+                    try {
+                        val intent = Intent(applicationContext, FarmitraForegroundService::class.java).apply {
+                            action = FarmitraForegroundService.ACTION_STOP_SERVICE
+                        }
+                        applicationContext.startService(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("SERVICE_STOP_ERR", e.message, null)
+                    }
+                }
+                "isForegroundServiceRunning" -> {
+                    result.success(FarmitraForegroundService.isRunning)
+                }
+                "enterPipMode" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        try {
+                            val aspectRatio = android.util.Rational(9, 16)
+                            val params = android.app.PictureInPictureParams.Builder()
+                                .setAspectRatio(aspectRatio)
+                                .build()
+                            enterPictureInPictureMode(params)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "isPipSupported" -> {
+                    val supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                            packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)
+                    result.success(supported)
+                }
+                "minimizeApp" -> {
+                    try {
+                        moveTaskToBack(true)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "getInitialSharedFiles" -> {
+                    val list = ArrayList(initialSharedFiles)
+                    initialSharedFiles.clear()
+                    result.success(list)
+                }
+                "clearSharedFiles" -> {
+                    initialSharedFiles.clear()
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
@@ -413,6 +500,80 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {}
 
         return false
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleSendIntent(intent)
+    }
+
+    private fun handleSendIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val type = intent.type ?: return
+
+        val paths = mutableListOf<String>()
+
+        if (Intent.ACTION_SEND == action) {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            if (uri != null) {
+                resolveUriToPath(uri)?.let { paths.add(it) }
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE == action) {
+            val uris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+            }
+            uris?.forEach { uri ->
+                resolveUriToPath(uri)?.let { paths.add(it) }
+            }
+        }
+
+        if (paths.isNotEmpty()) {
+            initialSharedFiles.addAll(paths)
+            flutterEngineInstance?.dartExecutor?.binaryMessenger?.let { messenger ->
+                runOnUiThread {
+                    MethodChannel(messenger, networkChannelName).invokeMethod("onSharedFilesReceived", paths)
+                }
+            }
+        }
+    }
+
+    private fun resolveUriToPath(uri: android.net.Uri): String? {
+        if (uri.scheme == "file") {
+            return uri.path
+        }
+        if (uri.scheme == "content") {
+            try {
+                val returnCursor = contentResolver.query(uri, null, null, null, null)
+                val nameIndex = returnCursor?.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME) ?: -1
+                var fileName = "shared_${System.currentTimeMillis()}"
+                if (returnCursor != null && returnCursor.moveToFirst() && nameIndex != -1) {
+                    fileName = returnCursor.getString(nameIndex) ?: fileName
+                    returnCursor.close()
+                }
+
+                val cacheDir = java.io.File(cacheDir, "shared_incoming").apply { mkdirs() }
+                val cacheFile = java.io.File(cacheDir, fileName)
+                contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.FileOutputStream(cacheFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                return cacheFile.absolutePath
+            } catch (e: Exception) {
+                Log.e("FarmitraShare", "Error resolving shared URI: $e")
+            }
+        }
+        return null
     }
 
     override fun onDestroy() {

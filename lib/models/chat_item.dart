@@ -13,6 +13,8 @@ class ChatItem {
     this.fileSize,
     this.status,
     this.isAi = false,
+    this.isMeshRelay = false,
+    this.relayHops,
   });
 
   final String peerId;
@@ -26,9 +28,13 @@ class ChatItem {
   final int? fileSize;
   final String? status;
   final bool isAi;
+  final bool isMeshRelay;
+  final List<String>? relayHops;
 
   String get formattedTime {
-    final hour = createdAt.hour == 0 ? 12 : (createdAt.hour > 12 ? createdAt.hour - 12 : createdAt.hour);
+    final hour = createdAt.hour == 0
+        ? 12
+        : (createdAt.hour > 12 ? createdAt.hour - 12 : createdAt.hour);
     final minute = createdAt.minute.toString().padLeft(2, '0');
     final period = createdAt.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $period';
@@ -39,10 +45,11 @@ class ChatItem {
     final bytes = fileSize!;
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
-
 
   Map<String, dynamic> toJson() => {
         'peerId': peerId,
@@ -56,6 +63,8 @@ class ChatItem {
         'fileSize': fileSize,
         'status': status,
         'isAi': isAi,
+        'isMeshRelay': isMeshRelay,
+        if (relayHops != null) 'relayHops': relayHops,
       };
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
@@ -73,5 +82,9 @@ class ChatItem {
         fileSize: json['fileSize'] as int?,
         status: json['status'] as String?,
         isAi: json['isAi'] == true,
+        isMeshRelay: json['isMeshRelay'] == true,
+        relayHops: (json['relayHops'] as List<dynamic>?)
+            ?.map((e) => e.toString())
+            .toList(),
       );
 }

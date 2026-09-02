@@ -366,6 +366,27 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
     );
   }
 
+  IconData _getRadarDeviceIcon(String name, [String? id]) {
+    final lowerName = name.toLowerCase();
+    final lowerId = (id ?? '').toLowerCase();
+
+    // 1. Windows PC / Laptop -> Computer Icon
+    if (lowerName.contains('windows') ||
+        lowerName.contains('win-') ||
+        lowerName.contains('win_') ||
+        lowerName.contains('win1') ||
+        lowerName.contains('win') ||
+        lowerName.contains('desktop') ||
+        lowerName.contains('laptop') ||
+        lowerName.contains('pc') ||
+        lowerId.contains('win')) {
+      return Icons.computer_rounded;
+    }
+
+    // 2. All other devices in NearMitra ecosystem -> Phone Icon
+    return Icons.phone_android_rounded;
+  }
+
   Widget _buildWifiDirectNode(dynamic p, bool isDark) {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -400,9 +421,7 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
             alignment: Alignment.center,
             children: [
               Icon(
-                p.name.toLowerCase().contains('win') || p.name.toLowerCase().contains('pc')
-                    ? Icons.desktop_windows_rounded
-                    : Icons.devices_rounded,
+                _getRadarDeviceIcon(p.name, p.address),
                 color: p.isConnected ? Colors.white : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
                 size: 21,
               ),

@@ -208,6 +208,35 @@ class ChatBubble extends StatelessWidget {
                       ),
                     ),
                   ],
+                  if (item.isMeshRelay) ...[
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.hub_rounded,
+                              size: 11, color: Color(0xFF10B981)),
+                          const SizedBox(width: 3),
+                          Text(
+                            item.relayHops != null && item.relayHops!.length > 1
+                                ? 'Mesh (${item.relayHops!.length - 1} hops)'
+                                : 'Mesh',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF10B981),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   const Spacer(),
                   Text(
                     item.formattedTime,

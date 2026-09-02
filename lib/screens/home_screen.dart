@@ -5,13 +5,25 @@ import 'dart:math' as math;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 
 import 'about_screen.dart';
+import 'active_call_screen.dart';
+import 'activity_logs_screen.dart';
+import 'ai_fleet_screen.dart';
+import 'ai_settings_screen.dart';
 import 'qr_scanner_screen.dart';
+import 'stream_hub_screen.dart';
 import '../main.dart';
+import '../providers/ai_settings_providers.dart';
+import '../services/ai_settings_service.dart';
+import '../services/call_service.dart';
+import '../services/streaming_service.dart';
 import '../models/chat_item.dart';
 import '../models/p2p_peer.dart';
 import '../models/peer.dart';
@@ -25,19 +37,19 @@ import '../widgets/p2p_radar_view.dart';
 import '../widgets/peer_tile.dart';
 import '../widgets/transfer_card.dart';
 
-class HomeScreen extends StatefulWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, required this.service});
 
   final NearbyService service;
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
 enum ChatMode { people, ai }
 enum ConnectionMode { lan, p2p }
 
-class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   final _message = TextEditingController();
   final _scroll = ScrollController();
   final _historyService = HistoryService();
@@ -52,6 +64,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   ChatMode _chatMode = ChatMode.people;
   bool _aiThinking = false;
   int _chatDisplayCount = 20;
+  int _bottomNavIndex = 0;
 
   @override
   void initState() {
@@ -86,8 +99,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _init() async {
+    await AiSettingsService().load();
     _history.addAll(await _historyService.load());
     await widget.service.start();
+    _initCallService();
+    _initShareHandler();
 
     _notificationSub = NotificationService().onNotificationClick.listen((peerId) {
       if (peerId != null && mounted) {
@@ -140,7 +156,553 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     await _wifiDirectService.init();
     if (mounted) setState(() {});
+
+    widget.service.onStreamOffer = (peerId, offer) async {
+      if (!mounted) return;
+      final streamType = offer['stream_type']?.toString() ?? 'camera';
+      final peer = widget.service.peers.where(
+        (p) => p.id == peerId || p.ip == peerId,
+      ).firstOrNull ?? Peer(id: peerId, name: 'Remote Device ($peerId)', ip: peerId);
+
+      final streamingService = StreamingService();
+      final isPermitted = streamType == 'camera'
+          ? streamingService.allowCamera
+          : (streamType == 'audio'
+              ? streamingService.allowAudio
+              : streamingService.allowScreen);
+
+      // If already trusted and permitted, start stream directly
+      if (isPermitted &&
+          (streamingService.isTrusted(peer.id) ||
+              streamingService.isTrusted(peer.ip))) {
+        _respondToStreamOffer(peer, streamType, offer);
+        return;
+      }
+
+      // Otherwise, prompt user with explicit Security Authorization Dialog
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Icon(
+                streamType == 'camera'
+                    ? Icons.videocam_rounded
+                    : (streamType == 'audio'
+                        ? Icons.mic_rounded
+                        : Icons.screen_share_rounded),
+                color: const Color(0xFF10B981),
+              ),
+              const SizedBox(width: 8),
+              const Text('Stream Permission Request',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Text(
+            '${peer.name} (${peer.ip}) wants to access your live ${streamType.toUpperCase()} stream.\n\nDo you want to allow this remote session?',
+            style: const TextStyle(fontSize: 13.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                widget.service.sendWebRtcSignal(peer, 'stream_rejected', {
+                  'reason': 'Host user denied stream access request',
+                });
+              },
+              child: const Text('Deny',
+                  style: TextStyle(color: Colors.redAccent)),
+            ),
+            OutlinedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                if (streamType == 'camera') streamingService.setAllowCamera(true);
+                if (streamType == 'audio') streamingService.setAllowAudio(true);
+                if (streamType == 'screen') streamingService.setAllowScreen(true);
+                _respondToStreamOffer(peer, streamType, offer);
+              },
+              child: const Text('Allow Once'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                if (streamType == 'camera') streamingService.setAllowCamera(true);
+                if (streamType == 'audio') streamingService.setAllowAudio(true);
+                if (streamType == 'screen') streamingService.setAllowScreen(true);
+                streamingService.addTrustedDevice(peer.id);
+                streamingService.addTrustedDevice(peer.ip);
+                _respondToStreamOffer(peer, streamType, offer);
+              },
+              style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF10B981)),
+              child: const Text('Always Allow'),
+            ),
+          ],
+        ),
+      );
+    };
+
     _scan(); // Automatic scan on launch
+  }
+
+  Future<void> _respondToStreamOffer(
+      Peer peer, String streamType, Map<String, dynamic> offer) async {
+    try {
+      final sdp = offer['sdp']?.toString();
+      if (sdp == null || sdp.isEmpty) return;
+
+      final pc = await createPeerConnection({
+        'iceServers': [
+          {'urls': 'stun:stun.l.google.com:19302'},
+        ],
+        'sdpSemantics': 'unified-plan',
+      });
+
+      final mediaConstraints = <String, dynamic>{
+        'audio': streamType == 'audio' || streamType == 'camera',
+        'video': streamType == 'camera'
+            ? {
+                'facingMode': 'environment',
+                'width': {'ideal': 1280},
+                'height': {'ideal': 720},
+                'frameRate': {'ideal': 30},
+              }
+            : false,
+      };
+
+      pc.onIceCandidate = (candidate) {
+        if (candidate.candidate == null) return;
+        widget.service.sendWebRtcSignal(peer, 'stream_ice', {
+          'candidate': candidate.candidate,
+          'sdp_mid': candidate.sdpMid,
+          'sdp_mline_index': candidate.sdpMLineIndex,
+        });
+      };
+
+      widget.service.onStreamIceCandidate = (pId, data) async {
+        final candidateStr = data['candidate']?.toString();
+        if (candidateStr != null && candidateStr.isNotEmpty) {
+          final candidate = RTCIceCandidate(
+            candidateStr,
+            data['sdp_mid']?.toString(),
+            int.tryParse('${data['sdp_mline_index'] ?? 0}'),
+          );
+          try {
+            await pc.addCandidate(candidate);
+          } catch (_) {}
+        }
+      };
+
+      final localStream =
+          await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      for (final track in localStream.getTracks()) {
+        track.enabled = true;
+        await pc.addTrack(track, localStream);
+      }
+
+      widget.service.onStreamControl = (pId, control) async {
+        final action = control['action']?.toString();
+        if (action == 'toggle_torch') {
+          final val = control['value'] == true;
+          final videoTrack = localStream.getVideoTracks().firstOrNull;
+          if (videoTrack != null) {
+            try {
+              if (await videoTrack.hasTorch()) {
+                await videoTrack.setTorch(val);
+                widget.service.sendWebRtcSignal(peer, 'stream_control', {
+                  'action': 'torch_status',
+                  'value': val,
+                });
+              }
+            } catch (_) {}
+          }
+        } else if (action == 'switch_camera') {
+          final videoTrack = localStream.getVideoTracks().firstOrNull;
+          if (videoTrack != null) {
+            try {
+              await Helper.switchCamera(videoTrack);
+            } catch (_) {}
+          }
+        } else if (action == 'toggle_mic') {
+          final val = control['value'] == true;
+          for (final t in localStream.getAudioTracks()) {
+            t.enabled = !val;
+          }
+        }
+      };
+
+      await pc.setRemoteDescription(
+          RTCSessionDescription(sdp, offer['sdp_type']?.toString() ?? 'offer'));
+      final answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      widget.service.sendWebRtcSignal(peer, 'stream_answer', {
+        'sdp': answer.sdp,
+        'sdp_type': answer.type,
+      });
+
+      _toast('Streaming live ${streamType.toUpperCase()} to ${peer.name}');
+    } catch (e) {
+      debugPrint('Error responding to stream offer: $e');
+    }
+  }
+
+  void _initShareHandler() {
+    const MethodChannel('farmitra_nearby/network')
+        .setMethodCallHandler((call) async {
+      if (call.method == 'onSharedFilesReceived') {
+        final List<dynamic>? files = call.arguments as List<dynamic>?;
+        if (files != null && files.isNotEmpty) {
+          final paths = files.map((e) => e.toString()).toList();
+          _handleExternalSharedFiles(paths);
+        }
+      }
+    });
+
+    const MethodChannel('farmitra_nearby/network')
+        .invokeMethod<List<dynamic>>('getInitialSharedFiles')
+        .then((initial) {
+      if (initial != null && initial.isNotEmpty) {
+        final paths = initial.map((e) => e.toString()).toList();
+        _handleExternalSharedFiles(paths);
+      }
+    }).catchError((_) {});
+  }
+
+  void _handleExternalSharedFiles(List<String> paths) {
+    if (paths.isEmpty || !mounted) return;
+
+    if (_selectedPeer != null) {
+      _sendExternalFilesToPeer(_selectedPeer!, paths);
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        final peers = widget.service.peers;
+        return Container(
+          margin: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(
+              color: const Color(0xFF10B981).withValues(alpha: 0.35),
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black54,
+                blurRadius: 24,
+                offset: Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: const Icon(Icons.share_rounded,
+                        color: Color(0xFF10B981)),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'NearMitra Direct Share',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          '${paths.length} file(s) ready to send',
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'SELECT NEARBY DEVICE:',
+                style: TextStyle(
+                  color: Colors.grey,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.1,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (peers.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  alignment: Alignment.center,
+                  child: const Text(
+                    'No nearby devices discovered yet.\nMake sure the receiver device has NearMitra open.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white60, fontSize: 13),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: peers.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, idx) {
+                      final p = peers[idx];
+                      return ListTile(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.08)),
+                        ),
+                        tileColor: const Color(0xFF1E293B),
+                        leading: CircleAvatar(
+                          backgroundColor: const Color(0xFF10B981),
+                          child: Text(
+                            p.name.isNotEmpty ? p.name[0].toUpperCase() : '?',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        title: Text(
+                          p.name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Text(
+                          p.ip,
+                          style: const TextStyle(
+                              color: Colors.white60, fontSize: 12),
+                        ),
+                        trailing: const Icon(Icons.send_rounded,
+                            color: Color(0xFF10B981)),
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _selectPeer(p);
+                          _sendExternalFilesToPeer(p, paths);
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _sendExternalFilesToPeer(Peer peer, List<String> paths) async {
+    for (final path in paths) {
+      final isDir = await FileSystemEntity.isDirectory(path);
+      if (isDir) {
+        final folderName = path
+                .split(Platform.pathSeparator)
+                .where((s) => s.isNotEmpty)
+                .lastOrNull ??
+            'Folder';
+        _history.add(ChatItem(
+          peerId: peer.id,
+          sender: widget.service.deviceName,
+          mine: true,
+          createdAt: DateTime.now(),
+          kind: ChatKind.folder,
+          fileName: folderName,
+          filePath: path,
+          status: 'Sending…',
+        ));
+        await _historyService.save(_history);
+        if (mounted) setState(() {});
+        final ok = await widget.service.sendFolder(peer, path);
+        if (!ok) _toast('Failed to send folder $folderName');
+      } else {
+        final file = File(path);
+        if (await file.exists()) {
+          final name = path.split(Platform.pathSeparator).last;
+          final size = await file.length();
+          _history.add(ChatItem(
+            peerId: peer.id,
+            sender: widget.service.deviceName,
+            mine: true,
+            createdAt: DateTime.now(),
+            kind: ChatKind.file,
+            fileName: name,
+            filePath: path,
+            fileSize: size,
+            status: 'Sending…',
+          ));
+          await _historyService.save(_history);
+          if (mounted) setState(() {});
+          final ok = await widget.service.sendFile(peer, file);
+          if (!ok) _toast('Failed to send $name');
+        }
+      }
+    }
+  }
+
+  bool _isCallScreenOpen = false;
+
+  void _initCallService() {
+    CallService().registerCallAcceptedCallback((peer, isVideoCall, isIncoming) {
+      if (!mounted) return;
+      _openActiveCallScreen(peer, isVideoCall, true);
+    });
+
+    CallService().registerCallDeclinedCallback((peer) {
+      widget.service.sendCallSignal(peer, 'call_declined');
+    });
+  }
+
+  void _openActiveCallScreen(Peer peer, bool isVideoCall, bool isIncoming) {
+    if (_isCallScreenOpen) return;
+    _isCallScreenOpen = true;
+
+    final nav = rootNavigatorKey.currentState ?? Navigator.of(context);
+    nav.push<int>(
+      MaterialPageRoute(
+        builder: (_) => ActiveCallScreen(
+          peer: peer,
+          service: widget.service,
+          isVideoCall: isVideoCall,
+          isIncoming: isIncoming,
+        ),
+      ),
+    ).then((durationSecs) {
+      _isCallScreenOpen = false;
+      final callTypeStr = isVideoCall ? 'Video Call' : 'Audio Call';
+      final durationStr = durationSecs != null && durationSecs > 0
+          ? '${(durationSecs ~/ 60).toString().padLeft(2, '0')}:${(durationSecs % 60).toString().padLeft(2, '0')}'
+          : 'Ended';
+      widget.service.addCallLog(
+        peerId: peer.id,
+        peerName: peer.name,
+        text: '$callTypeStr • $durationStr',
+        mine: !isIncoming,
+      );
+      if (mounted) setState(() {});
+    });
+  }
+
+  bool _isWindowsDevice(Peer peer) {
+    final n = peer.name.toLowerCase();
+    final id = peer.id.toLowerCase();
+    return n.contains('win') ||
+        n.contains('pc') ||
+        n.contains('desktop') ||
+        n.contains('laptop') ||
+        id.contains('win');
+  }
+
+  Future<void> _startCall(Peer peer, bool isVideoCall) async {
+    if (_isWindowsDevice(peer)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.info_outline_rounded, color: Colors.white),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                    'Voice & Video calls are supported between mobile devices only (${peer.name} is a Windows PC).'),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF334155),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      return;
+    }
+
+    final micStatus = await Permission.microphone.request();
+    if (!micStatus.isGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Microphone permission is required for calling.')),
+        );
+      }
+      return;
+    }
+
+    if (isVideoCall) {
+      final camStatus = await Permission.camera.request();
+      if (!camStatus.isGranted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content:
+                    Text('Camera permission is required for video calling.')),
+          );
+        }
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    widget.service.sendCallInvite(peer, isVideoCall);
+    _openActiveCallScreen(peer, isVideoCall, false);
+  }
+
+  void _openActivityLogsScreen({int initialTabIndex = 0}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ActivityLogsScreen(
+          service: widget.service,
+          historyService: _historyService,
+          initialTabIndex: initialTabIndex,
+          onStartCall: (peer, isVideo) {
+            _startCall(peer, isVideo);
+          },
+          onOpenChatWithPeer: (peer) {
+            _selectPeer(peer);
+          },
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _openStreamingHubScreen({String initialType = 'camera'}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => StreamHubScreen(
+          service: widget.service,
+          targetPeer: _selectedPeer,
+          initialStreamType: initialType,
+        ),
+      ),
+    );
   }
 
 
@@ -203,13 +765,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<ChatItem> get _fullCurrentChat {
     final peer = _selectedPeer;
     if (peer == null) return [];
+    final pId = peer.id.toLowerCase();
+    final pIp = peer.ip.toLowerCase();
+    final pName = peer.name.toLowerCase();
+
     return _history.where((e) {
-      final isMatch = e.peerId == peer.id ||
-             e.peerId == peer.ip ||
-             (!e.mine && (e.sender == peer.name || e.sender.contains(peer.name) || peer.name.contains(e.sender)));
+      final eId = e.peerId.toLowerCase();
+      final eSender = e.sender.toLowerCase();
+
+      final isMatch = eId == pId ||
+          eId == pIp ||
+          (pIp.isNotEmpty && eId == pIp) ||
+          (!e.mine && (
+            eSender == pName ||
+            (pName.isNotEmpty && eSender.contains(pName)) ||
+            (eSender.isNotEmpty && pName.contains(eSender))
+          ));
       if (!isMatch) return false;
       if (e.isAi && (e.text == null || e.text!.isEmpty)) return false;
-      return _chatMode == ChatMode.ai ? e.isAi : !e.isAi;
+      return _chatMode == ChatMode.ai ? (e.isAi == true) : (e.isAi != true);
     }).toList();
   }
 
@@ -256,18 +830,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Timer? _typingDebounce;
+  DateTime? _lastTypingSent;
 
   void _onTextChanged(String text) {
     final peer = _selectedPeer;
     if (peer == null) return;
+    final now = DateTime.now();
     if (text.isNotEmpty) {
-      widget.service.sendTypingStatus(peer, true);
+      if (_lastTypingSent == null || now.difference(_lastTypingSent!).inMilliseconds > 1800) {
+        _lastTypingSent = now;
+        widget.service.sendTypingStatus(peer, true);
+      }
       _typingDebounce?.cancel();
-      _typingDebounce = Timer(const Duration(milliseconds: 2200), () {
+      _typingDebounce = Timer(const Duration(milliseconds: 3000), () {
+        _lastTypingSent = null;
         widget.service.sendTypingStatus(peer, false);
       });
     } else {
       _typingDebounce?.cancel();
+      _lastTypingSent = null;
       widget.service.sendTypingStatus(peer, false);
     }
   }
@@ -344,9 +925,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         processTypeQueue();
       });
 
-      await for (final chunk in widget.service.streamAiPrompt(peer, text)) {
-        if (chunk.isNotEmpty) {
-          typeQueue.addAll(chunk.split(''));
+      if (peer.id == 'local_ai_assistant') {
+        final res = await AiSettingsService().queryAi(text);
+        typeQueue.addAll(res.split(''));
+      } else {
+        await for (final chunk in widget.service.streamAiPrompt(peer, text)) {
+          if (chunk.isNotEmpty) {
+            typeQueue.addAll(chunk.split(''));
+          }
         }
       }
 
@@ -422,6 +1008,136 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _triggerScrollToBottom();
   }
 
+  Future<void> _pickAndSendFolder() async {
+    final peer = _selectedPeer;
+    if (peer == null) {
+      _toast('Select a nearby device first');
+      return;
+    }
+    final folderPath = await FilePicker.platform.getDirectoryPath();
+    if (folderPath == null || folderPath.isEmpty) return;
+
+    final dir = Directory(folderPath);
+    if (!await dir.exists()) return;
+
+    final folderName =
+        dir.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? 'Folder';
+    _toast('Compressing and sending folder: $folderName…');
+
+    final ok = await widget.service.sendFolder(peer, folderPath);
+    if (!ok) {
+      _toast('Failed to send folder');
+      return;
+    }
+
+    _history.add(ChatItem(
+      peerId: peer.id,
+      sender: widget.service.deviceName,
+      mine: true,
+      createdAt: DateTime.now(),
+      kind: ChatKind.folder,
+      fileName: folderName,
+      filePath: folderPath,
+      status: 'Sent',
+    ));
+    await _historyService.save(_history);
+    setState(() {});
+    _triggerScrollToBottom();
+  }
+
+  void _showAttachmentOptions() {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1F2C34) : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[400],
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _attachmentOption(
+                    icon: Icons.insert_drive_file_rounded,
+                    color: const Color(0xFF10B981),
+                    label: 'Send File',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSend();
+                    },
+                  ),
+                  _attachmentOption(
+                    icon: Icons.folder_rounded,
+                    color: const Color(0xFFF59E0B),
+                    label: 'Send Folder',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _pickAndSendFolder();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _attachmentOption({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+                border:
+                    Border.all(color: color.withValues(alpha: 0.35), width: 1.5),
+              ),
+              child: Icon(icon, color: color, size: 28),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _scrollToBottom() {
     if (!_scroll.hasClients) return;
     final max = _scroll.position.maxScrollExtent;
@@ -460,6 +1176,97 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
+      floatingActionButton: (_selectedPeer == null)
+          ? _AnimatedAiFab(
+              onPressed: () {
+                final aiConfig = AiSettingsService().config;
+                final isKeyConfigured = (aiConfig.provider == 'gemini' &&
+                        aiConfig.geminiApiKey.trim().isNotEmpty) ||
+                    (aiConfig.provider == 'openai' &&
+                        aiConfig.openaiApiKey.trim().isNotEmpty);
+
+                if (!isKeyConfigured) {
+                  _toast('Please configure your AI API key first');
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const AiSettingsScreen()),
+                  );
+                  return;
+                }
+
+                final aiPeer = Peer(
+                  id: 'local_ai_assistant',
+                  name: 'My AI',
+                  ip: '127.0.0.1',
+                  isAiHost: true,
+                );
+                _selectPeer(aiPeer);
+                setState(() {
+                  _chatMode = ChatMode.ai;
+                });
+              },
+            )
+          : null,
+      bottomNavigationBar: (compact && peer == null)
+          ? Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                border: Border(
+                  top: BorderSide(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .outlineVariant
+                        .withValues(alpha: 0.3),
+                  ),
+                ),
+              ),
+              child: NavigationBar(
+                selectedIndex: _bottomNavIndex,
+                height: 64,
+                labelBehavior:
+                    NavigationDestinationLabelBehavior.alwaysShow,
+                indicatorColor:
+                    const Color(0xFF10B981).withValues(alpha: 0.18),
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.devices_rounded),
+                    selectedIcon:
+                        Icon(Icons.devices_rounded, color: Color(0xFF10B981)),
+                    label: 'Home',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.sensors_rounded),
+                    selectedIcon:
+                        Icon(Icons.sensors_rounded, color: Color(0xFF10B981)),
+                    label: 'Streaming',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.sync_alt_rounded),
+                    selectedIcon:
+                        Icon(Icons.sync_alt_rounded, color: Color(0xFF10B981)),
+                    label: 'Recent',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.settings_rounded),
+                    selectedIcon:
+                        Icon(Icons.settings_rounded, color: Color(0xFF10B981)),
+                    label: 'Settings',
+                  ),
+                ],
+                onDestinationSelected: (index) {
+                  if (index == 0) {
+                    setState(() => _bottomNavIndex = 0);
+                  } else if (index == 1) {
+                    _openStreamingHubScreen();
+                  } else if (index == 2) {
+                    _openActivityLogsScreen(initialTabIndex: 0);
+                  } else if (index == 3) {
+                    _openSettingsModal();
+                  }
+                },
+              ),
+            )
+          : null,
       body: SafeArea(
         child: Column(
           children: [
@@ -484,59 +1291,107 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Widget _topBar() {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
       decoration: BoxDecoration(
         color: scheme.surface,
-        border: Border(bottom: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.25))),
+        border: Border(
+          bottom: BorderSide(
+            color: scheme.outlineVariant.withValues(alpha: 0.25),
+          ),
+        ),
       ),
       child: Row(
         children: [
-          // Title and Subtitle on Left
+          // Title and Status Stack on Left: NearMitra + Online
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                'Farmitra',
-                style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.w800, letterSpacing: -0.3, height: 1.1),
-              ),
-              const Text(
-                'Nearby',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF10B981),
-                  letterSpacing: 1.1,
-                  height: 1.0,
+              RichText(
+                text: TextSpan(
+                  children: [
+                    TextSpan(
+                      text: 'Near',
+                      style: TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.w800,
+                        color: scheme.onSurface,
+                        letterSpacing: -0.6,
+                        height: 1.1,
+                      ),
+                    ),
+                    const TextSpan(
+                      text: 'Mitra',
+                      style: TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.w900,
+                        color: Color(0xFF10B981),
+                        letterSpacing: -0.6,
+                        height: 1.1,
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+              const SizedBox(height: 3),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6.5,
+                    height: 6.5,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF22C55E),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4.5),
+                  const Text(
+                    'Online • Local Network',
+                    style: TextStyle(
+                      color: Color(0xFF10B981),
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      height: 1.0,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: const Color(0xFF22C55E).withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Text(
-              'Online',
-              style: TextStyle(color: Color(0xFF22C55E), fontSize: 10, fontWeight: FontWeight.bold),
-            ),
-          ),
           const Spacer(),
-          // Compact Right Action Icons (File History, Scan, Settings)
+          // 1. Simple Clean My AI Assistant Button
           IconButton(
             constraints: const BoxConstraints.tightFor(width: 36, height: 36),
             padding: EdgeInsets.zero,
-            iconSize: 19,
-            tooltip: 'Received Files',
-            style: IconButton.styleFrom(backgroundColor: const Color(0xFF169B62).withValues(alpha: 0.12)),
-            color: const Color(0xFF169B62),
-            onPressed: _openReceivedFilesModal,
-            icon: const Icon(Icons.folder_shared_rounded),
+            iconSize: 20,
+            tooltip: 'My AI Assistant',
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.15),
+            ),
+            color: const Color(0xFF10B981),
+            onPressed: _openMyAiAssistant,
+            icon: const Icon(Icons.auto_awesome_rounded),
+          ),
+          const SizedBox(width: 8),
+
+          // 2. Window / AI Fleet Dashboard Button
+          IconButton(
+            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+            padding: EdgeInsets.zero,
+            iconSize: 20,
+            tooltip: 'AI Fleet & Device Hub',
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF6366F1).withValues(alpha: 0.15),
+            ),
+            color: const Color(0xFF6366F1),
+            onPressed: _openAiFleetDashboardScreen,
+            icon: const Icon(Icons.window_rounded),
           ),
           const SizedBox(width: 6),
+
+          // 3. Scan Network Refresh Button
           IconButton(
             constraints: const BoxConstraints.tightFor(width: 36, height: 36),
             padding: EdgeInsets.zero,
@@ -550,18 +1405,51 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               child: const Icon(Icons.refresh_rounded),
             ),
           ),
-          const SizedBox(width: 6),
-          // Settings Icon (Replaces log icon)
-          IconButton(
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-            padding: EdgeInsets.zero,
-            iconSize: 19,
-            tooltip: 'Settings',
-            style: IconButton.styleFrom(backgroundColor: scheme.surfaceContainerHigh),
-            onPressed: _openSettingsModal,
-            icon: const Icon(Icons.settings_rounded),
-          ),
         ],
+      ),
+    );
+  }
+
+  void _openMyAiAssistant() {
+    final aiConfig = ref.read(aiConfigProvider);
+    final isKeyConfigured = (aiConfig.provider == 'gemini' &&
+            aiConfig.geminiApiKey.trim().isNotEmpty) ||
+        (aiConfig.provider == 'openai' &&
+            aiConfig.openaiApiKey.trim().isNotEmpty);
+
+    if (!isKeyConfigured) {
+      _toast('Please configure your AI API key first');
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const AiSettingsScreen()),
+      );
+      return;
+    }
+
+    final aiPeer = Peer(
+      id: 'local_ai_assistant',
+      name: 'My AI',
+      ip: '127.0.0.1',
+      isAiHost: true,
+    );
+    _selectPeer(aiPeer);
+    setState(() {
+      _chatMode = ChatMode.ai;
+    });
+  }
+
+  void _openAiFleetDashboardScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AiFleetScreen(
+          service: widget.service,
+          onOpenChatWithPeer: (peer) {
+            _selectPeer(peer);
+          },
+          onStartCall: (peer, isVideo) {
+            _startCall(peer, isVideo);
+          },
+        ),
       ),
     );
   }
@@ -619,6 +1507,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             'Settings',
                             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
                           ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded),
+                            tooltip: 'Close Settings',
+                            onPressed: () => Navigator.pop(context),
+                          ),
                         ],
                       ),
                       const Divider(height: 28),
@@ -635,8 +1529,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               icon: Icons.brightness_auto_rounded,
                               mode: ThemeMode.system,
                               current: themeNotifier.value,
-                              onTap: () {
+                              onTap: () async {
                                 themeNotifier.value = ThemeMode.system;
+                                try {
+                                  final prefs = await SharedPreferences.getInstance();
+                                  await prefs.setString('app_theme_mode', 'system');
+                                } catch (_) {}
                                 setModalState(() {});
                                 setState(() {});
                               },
@@ -650,8 +1548,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               icon: Icons.light_mode_rounded,
                               mode: ThemeMode.light,
                               current: themeNotifier.value,
-                              onTap: () {
+                              onTap: () async {
                                 themeNotifier.value = ThemeMode.light;
+                                try {
+                                  final prefs = await SharedPreferences.getInstance();
+                                  await prefs.setString('app_theme_mode', 'light');
+                                } catch (_) {}
                                 setModalState(() {});
                                 setState(() {});
                               },
@@ -665,8 +1567,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               icon: Icons.dark_mode_rounded,
                               mode: ThemeMode.dark,
                               current: themeNotifier.value,
-                              onTap: () {
+                              onTap: () async {
                                 themeNotifier.value = ThemeMode.dark;
+                                try {
+                                  final prefs = await SharedPreferences.getInstance();
+                                  await prefs.setString('app_theme_mode', 'dark');
+                                } catch (_) {}
                                 setModalState(() {});
                                 setState(() {});
                               },
@@ -683,11 +1589,80 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         title: const Text('Local Notifications', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
                         subtitle: const Text('Show alerts when chat messages or files arrive', style: TextStyle(fontSize: 12, color: Colors.grey)),
                         value: widget.service.notificationsEnabled,
-                        onChanged: (val) {
-                          setModalState(() {
-                            widget.service.notificationsEnabled = val;
-                          });
+                        onChanged: (val) async {
+                          await widget.service.setNotificationsEnabled(val);
+                          setModalState(() {});
                           setState(() {});
+                          _toast(val
+                              ? 'Local Notifications Enabled 🔔'
+                              : 'Local Notifications Disabled 🔕');
+                        },
+                      ),
+                      const SizedBox(height: 8),
+
+                      // 2b. Background Service Toggle (Default: ON)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF169B62),
+                        title: const Text('Run in Background', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text(
+                          'Keep app active in background to receive P2P files & messages when app is closed',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        value: widget.service.backgroundServiceEnabled,
+                        onChanged: (val) async {
+                          await widget.service.setBackgroundServiceEnabled(val);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast(val
+                              ? 'Background Service ON: Active to receive files & messages'
+                              : 'Background Service OFF: Stopped background listener');
+                        },
+                      ),
+                      const SizedBox(height: 8),
+
+                      // 2c. Offline Mesh Relay Toggle (Multi-Hop Messaging)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF169B62),
+                        title: Row(
+                          children: [
+                            const Text('Offline Mesh Relay',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14.5)),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981)
+                                    .withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                'MULTI-HOP',
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF10B981),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        subtitle: const Text(
+                          'Securely forward off-grid messages between distant peers through intermediate devices in large spaces & off-grid zones',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        value: widget.service.meshRelayEnabled,
+                        onChanged: (val) async {
+                          await widget.service.setMeshRelayEnabled(val);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast(val
+                              ? 'Offline Mesh Relay Enabled 🌐'
+                              : 'Offline Mesh Relay Disabled');
                         },
                       ),
                       const SizedBox(height: 12),
@@ -773,7 +1748,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       const Divider(),
                       const SizedBox(height: 4),
 
-                      // 4. About App Button
+                      // 4. Nearby AI Settings Button
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.auto_awesome_rounded, color: Color(0xFF10B981), size: 22),
+                        ),
+                        title: const Text('Nearby AI Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text('Google Gemini, ChatGPT & Custom Prompts', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        trailing: const Icon(Icons.chevron_right_rounded, size: 22),
+                        onTap: () {
+                          Navigator.pop(context);
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const AiSettingsScreen()),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 6),
+
+                      // 5. About App Button
                       ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: Container(
@@ -784,7 +1783,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           ),
                           child: const Icon(Icons.info_outline_rounded, color: Color(0xFF10B981), size: 22),
                         ),
-                        title: const Text('About Farmitra Nearby', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        title: const Text('About NearMitra', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
                         subtitle: const Text('App overview, offline P2P info & branding', style: TextStyle(fontSize: 12, color: Colors.grey)),
                         trailing: const Icon(Icons.chevron_right_rounded, size: 22),
                         onTap: () {
@@ -1149,55 +2148,113 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.attach_file_rounded, color: Colors.white),
-            tooltip: 'Send file',
-            onPressed: _pickAndSend,
-          ),
+          if (peer.id != 'local_ai_assistant') ...[
+            IconButton(
+              icon: Icon(
+                Icons.call_rounded,
+                color: _isWindowsDevice(peer) ? Colors.white54 : Colors.white,
+              ),
+              tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Audio call',
+              onPressed: () => _startCall(peer, false),
+            ),
+            IconButton(
+              icon: Icon(
+                Icons.videocam_rounded,
+                color: _isWindowsDevice(peer) ? Colors.white54 : Colors.white,
+              ),
+              tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Video call',
+              onPressed: () => _startCall(peer, true),
+            ),
+          ],
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
             tooltip: 'More options',
-            onSelected: (value) {
+            onSelected: (value) async {
               if (value == 'files') {
                 _openReceivedFilesModal();
               } else if (value == 'log') {
                 setState(() => _showLogs = !_showLogs);
+              } else if (value == 'toggle_ai_access') {
+                final aiService = AiSettingsService();
+                final currentlyAllowed = aiService.isPeerAllowed(peer.id, peer.ip);
+                await aiService.setPeerAllowed(peer.id, !currentlyAllowed);
+                if (mounted) {
+                  setState(() {});
+                  _toast(!currentlyAllowed
+                      ? 'Allowed ${peer.name} to use My AI'
+                      : 'Revoked My AI access for ${peer.name}');
+                }
               } else if (value == 'clear') {
                 _confirmClearChat(peer);
               }
             },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'files',
-                child: Row(
-                  children: [
-                    Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
-                    SizedBox(width: 10),
-                    Text('View Received Files'),
-                  ],
+            itemBuilder: (context) {
+              final isAiAllowed = AiSettingsService().isPeerAllowed(peer.id, peer.ip);
+              return [
+                if (peer.id != 'local_ai_assistant')
+                  PopupMenuItem(
+                    value: 'toggle_ai_access',
+                    child: Row(
+                      children: [
+                        Icon(
+                          isAiAllowed
+                              ? Icons.auto_awesome_rounded
+                              : Icons.auto_awesome_outlined,
+                          size: 18,
+                          color: isAiAllowed
+                              ? const Color(0xFF10B981)
+                              : Colors.grey,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            isAiAllowed
+                                ? 'Revoke My AI Access'
+                                : 'Allow Peer to Use My AI',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isAiAllowed
+                                  ? const Color(0xFF10B981)
+                                  : null,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
+                  value: 'files',
+                  child: Row(
+                    children: [
+                      Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                      SizedBox(width: 10),
+                      Text('View Received Files'),
+                    ],
+                  ),
                 ),
-              ),
-              PopupMenuItem(
-                value: 'log',
-                child: Row(
-                  children: [
-                    Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
-                    const SizedBox(width: 10),
-                    Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
-                  ],
+                PopupMenuItem(
+                  value: 'log',
+                  child: Row(
+                    children: [
+                      Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                      const SizedBox(width: 10),
+                      Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'clear',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
-                    SizedBox(width: 10),
-                    Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
-                  ],
+                const PopupMenuItem(
+                  value: 'clear',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                      SizedBox(width: 10),
+                      Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ];
+            },
           ),
         ],
       ),
@@ -1694,67 +2751,175 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 children: [
                   CircleAvatar(
                     radius: 20,
-                    backgroundColor: const Color(0xFF169B62),
-                    child: Text(
-                      peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
+                    backgroundColor: const Color(0xFF10B981),
+                    child: peer.id == 'local_ai_assistant'
+                        ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22)
+                        : Text(
+                            peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(peer.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text('Online • ${peer.ip}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                        Text(
+                          peer.id == 'local_ai_assistant' ? 'My AI' : peer.name,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        peer.id == 'local_ai_assistant'
+                            ? const Text('Configured Local AI • Saved Settings', style: TextStyle(fontSize: 12, color: Color(0xFF10B981), fontWeight: FontWeight.w600))
+                            : (peer.isTyping
+                                ? const Text(
+                                    'typing…',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF25D366),
+                                      fontWeight: FontWeight.bold,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  )
+                                : Text('Online • ${peer.ip}', style: const TextStyle(fontSize: 12, color: Colors.grey))),
                       ],
                     ),
                   ),
-                  IconButton(onPressed: _pickAndSend, tooltip: 'Send file', icon: const Icon(Icons.attach_file_rounded)),
+                  if (peer.id != 'local_ai_assistant') ...[
+                    IconButton(
+                      icon: Icon(
+                        Icons.call_rounded,
+                        color: _isWindowsDevice(peer) ? Colors.white54 : Theme.of(context).iconTheme.color,
+                      ),
+                      tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Audio call',
+                      onPressed: () => _startCall(peer, false),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        Icons.videocam_rounded,
+                        color: _isWindowsDevice(peer) ? Colors.white54 : Theme.of(context).iconTheme.color,
+                      ),
+                      tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Video call',
+                      onPressed: () => _startCall(peer, true),
+                    ),
+                    IconButton(onPressed: _pickAndSend, tooltip: 'Send file', icon: const Icon(Icons.attach_file_rounded)),
+                  ],
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert_rounded),
                     tooltip: 'More options',
                     onSelected: (value) {
                       if (value == 'files') {
                         _openReceivedFilesModal();
+                      } else if (value == 'ai_toggle') {
+                        final aiService = AiSettingsService();
+                        final isCurrentlyAllowed = aiService.isPeerAllowed(peer.id, peer.ip);
+                        final nextAllowed = !isCurrentlyAllowed;
+                        peer.isAiHostAllowed = nextAllowed;
+                        aiService.setPeerAllowed(peer.id, nextAllowed);
+                        setState(() {});
+                        _toast(nextAllowed
+                            ? 'Nearby AI access allowed for ${peer.name}'
+                            : 'Nearby AI access revoked for ${peer.name}');
+                      } else if (value == 'cctv') {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => StreamHubScreen(
+                              service: widget.service,
+                              targetPeer: peer,
+                              initialStreamType: 'camera',
+                            ),
+                          ),
+                        );
+                      } else if (value == 'audio_stream') {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => StreamHubScreen(
+                              service: widget.service,
+                              targetPeer: peer,
+                              initialStreamType: 'audio',
+                            ),
+                          ),
+                        );
                       } else if (value == 'log') {
                         setState(() => _showLogs = !_showLogs);
                       } else if (value == 'clear') {
                         _confirmClearChat(peer);
                       }
                     },
-                    itemBuilder: (context) => [
-                      const PopupMenuItem(
-                        value: 'files',
-                        child: Row(
-                          children: [
-                            Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
-                            SizedBox(width: 10),
-                            Text('View Received Files'),
-                          ],
+                    itemBuilder: (context) {
+                      final isAiAllowed = AiSettingsService().isPeerAllowed(peer.id, peer.ip);
+                      final isNotAiPeer = peer.id != 'local_ai_assistant';
+
+                      return [
+                        const PopupMenuItem(
+                          value: 'files',
+                          child: Row(
+                            children: [
+                              Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                              SizedBox(width: 10),
+                              Text('View Received Files'),
+                            ],
+                          ),
                         ),
-                      ),
-                      PopupMenuItem(
-                        value: 'log',
-                        child: Row(
-                          children: [
-                            Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
-                            const SizedBox(width: 10),
-                            Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
-                          ],
+                        if (isNotAiPeer) ...[
+                          PopupMenuItem(
+                            value: 'ai_toggle',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isAiAllowed ? Icons.auto_awesome_rounded : Icons.auto_awesome_outlined,
+                                  size: 18,
+                                  color: isAiAllowed ? const Color(0xFF10B981) : Colors.grey,
+                                ),
+                                SizedBox(width: 10),
+                                Text(isAiAllowed ? 'Disable Nearby AI Access' : 'Allow Nearby AI Access'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'cctv',
+                            child: Row(
+                              children: [
+                                Icon(Icons.videocam_rounded, size: 18, color: Color(0xFF3B82F6)),
+                                SizedBox(width: 10),
+                                Text('CCTV Stream (Video)'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'audio_stream',
+                            child: Row(
+                              children: [
+                                Icon(Icons.mic_rounded, size: 18, color: Color(0xFF8B5CF6)),
+                                SizedBox(width: 10),
+                                Text('Live Audio Stream'),
+                              ],
+                            ),
+                          ),
+                        ],
+                        PopupMenuItem(
+                          value: 'log',
+                          child: Row(
+                            children: [
+                              Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                              const SizedBox(width: 10),
+                              Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                            ],
+                          ),
                         ),
-                      ),
-                      const PopupMenuItem(
-                        value: 'clear',
-                        child: Row(
-                          children: [
-                            Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
-                            SizedBox(width: 10),
-                            Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
-                          ],
+                        const PopupMenuItem(
+                          value: 'clear',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                              SizedBox(width: 10),
+                              Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ];
+                    },
                   ),
                 ],
               ),
@@ -1776,8 +2941,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ),
                       child: Text(
                         _chatMode == ChatMode.ai
-                            ? '🤖 Nearby AI Mode: Prompts are handled by ${peer.name}'
-                            : '🔒 End-to-end local network chat with ${peer.name}',
+                            ? 'Nearby AI Mode: Prompts are handled by ${peer.name}'
+                            : 'End-to-end local network chat with ${peer.name}',
                         style: TextStyle(
                           fontSize: 12.5,
                           color: isDark ? Colors.white70 : const Color(0xFF54656F),
@@ -1789,7 +2954,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 : Builder(
                     builder: (context) {
                       final hasMore = chat.length < _fullCurrentChat.length;
-                      final totalCount = chat.length + (hasMore ? 1 : 0) + (_aiThinking ? 1 : 0);
+                      final showTyping = peer.isTyping;
+                      final totalCount = chat.length + (hasMore ? 1 : 0) + (_aiThinking ? 1 : 0) + (showTyping ? 1 : 0);
 
                       return ListView.builder(
                         controller: _scroll,
@@ -1833,6 +2999,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           if (_aiThinking && itemIndex == chat.length) {
                             return _buildAiThinkingBubble(isDark, peer);
                           }
+                          if (showTyping && itemIndex == (chat.length + (_aiThinking ? 1 : 0))) {
+                            return _buildTypingBubble(isDark, peer);
+                          }
                           return ChatBubble(item: chat[itemIndex]);
                         },
                       );
@@ -1875,9 +3044,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         const SizedBox(width: 12),
                         if (_chatMode == ChatMode.people) ...[
                           IconButton(
-                            icon: Icon(Icons.attach_file_rounded, color: isDark ? Colors.grey[400] : const Color(0xFF54656F)),
-                            onPressed: _pickAndSend,
-                            tooltip: 'Attach file',
+                            icon: Icon(Icons.attach_file_rounded,
+                                color: isDark
+                                    ? Colors.grey[400]
+                                    : const Color(0xFF54656F)),
+                            onPressed: _showAttachmentOptions,
+                            tooltip: 'Attach file or folder',
                           ),
                         ] else ...[
                           const SizedBox(width: 6),
@@ -1936,6 +3108,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildChatModeSwitch(bool isDark, Peer peer) {
+    if (peer.id == 'local_ai_assistant') return const SizedBox.shrink();
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       padding: const EdgeInsets.all(3),
@@ -1954,8 +3127,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         mainAxisSize: MainAxisSize.min,
         children: [
           _modeSegmentButton(
-            title: 'People',
-            icon: Icons.person_rounded,
+            title: 'Normal',
+            icon: Icons.chat_bubble_outline_rounded,
             mode: ChatMode.people,
             isDark: isDark,
           ),
@@ -2045,6 +3218,44 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               style: const TextStyle(
                 fontSize: 13,
                 color: Color(0xFF10B981),
+                fontWeight: FontWeight.bold,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTypingBubble(bool isDark, Peer peer) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF25D366).withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Color(0xFF25D366),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${peer.name} is typing…',
+              style: const TextStyle(
+                fontSize: 12.5,
+                color: Color(0xFF25D366),
                 fontWeight: FontWeight.bold,
                 fontStyle: FontStyle.italic,
               ),
@@ -2146,7 +3357,7 @@ class _RadarPulseScannerState extends State<_RadarPulseScanner> with SingleTicke
             ),
             const SizedBox(height: 8),
             Text(
-              'Ensure Farmitra Nearby is open on another device connected to the same Wi‑Fi.',
+              'Ensure NearMitra is open on another device connected to the same Wi‑Fi.',
               textAlign: TextAlign.center,
               style: TextStyle(color: isDark ? Colors.white60 : Colors.grey[600], fontSize: 12.5),
             ),
@@ -2201,4 +3412,78 @@ class _RadarPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RadarPainter oldDelegate) => true;
+}
+
+class _AnimatedAiFab extends StatefulWidget {
+  const _AnimatedAiFab({required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  State<_AnimatedAiFab> createState() => _AnimatedAiFabState();
+}
+
+class _AnimatedAiFabState extends State<_AnimatedAiFab> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2000),
+    )..repeat(reverse: true);
+
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 1.06).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+
+    _pulseAnimation = Tween<double>(begin: 8.0, end: 20.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _scaleAnimation.value,
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.45),
+                  blurRadius: _pulseAnimation.value,
+                  spreadRadius: 2,
+                ),
+              ],
+            ),
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: FloatingActionButton(
+                mini: true,
+                backgroundColor: const Color(0xFF10B981),
+                elevation: 3,
+                tooltip: 'My AI Assistant',
+                onPressed: widget.onPressed,
+                child: const Icon(Icons.auto_awesome_rounded,
+                    color: Colors.white, size: 20),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }

@@ -17,8 +17,11 @@ class DeviceIdentity {
   }
 
   Future<String> getName() async {
+    final prefs = await SharedPreferences.getInstance();
     final info = await DeviceInfoPlugin().androidInfo;
     final model = info.model.trim();
-    return model.isEmpty ? 'Android device' : model;
+    final name = model.isEmpty ? 'Android device' : model;
+    await prefs.setString('farmitra_nearby_device_name', name);
+    return name;
   }
 }

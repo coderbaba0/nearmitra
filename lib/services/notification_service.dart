@@ -42,7 +42,7 @@ class NotificationService {
     // Create Notification Channel for Android 8.0+
     const channel = AndroidNotificationChannel(
       'farmitra_nearby_messages',
-      'Farmitra Nearby Messages & Files',
+      'NearMitra Messages & Files',
       description: 'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       playSound: true,
@@ -67,15 +67,15 @@ class NotificationService {
 
     final androidDetails = AndroidNotificationDetails(
       'farmitra_nearby_messages',
-      'Farmitra Nearby Messages & Files',
+      'NearMitra Messages & Files',
       channelDescription: 'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'New message from $senderName',
       styleInformation: BigTextStyleInformation(
         message,
-        contentTitle: '💬 $senderName',
-        summaryText: 'Farmitra Nearby',
+        contentTitle: senderName,
+        summaryText: 'NearMitra',
       ),
       icon: '@mipmap/ic_launcher',
       actions: <AndroidNotificationAction>[
@@ -95,7 +95,7 @@ class NotificationService {
 
     await _notifications.show(
       peerId.hashCode,
-      '💬 $senderName',
+      senderName,
       message,
       details,
       payload: peerId,
@@ -112,15 +112,15 @@ class NotificationService {
 
     final androidDetails = AndroidNotificationDetails(
       'farmitra_nearby_messages',
-      'Farmitra Nearby Messages & Files',
+      'NearMitra Messages & Files',
       channelDescription: 'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'File received from $senderName',
       styleInformation: BigTextStyleInformation(
         'Received: $fileName ($fileSizeText)',
-        contentTitle: '📁 File from $senderName',
-        summaryText: 'Farmitra Nearby',
+        contentTitle: 'File from $senderName',
+        summaryText: 'NearMitra',
       ),
       icon: '@mipmap/ic_launcher',
     );
@@ -129,7 +129,7 @@ class NotificationService {
 
     await _notifications.show(
       (peerId + fileName).hashCode,
-      '📁 File from $senderName',
+      'File from $senderName',
       'Received $fileName ($fileSizeText)',
       details,
       payload: peerId,

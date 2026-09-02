@@ -9,6 +9,31 @@ class PeerTile extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
+  IconData _getDeviceIcon(Peer peer) {
+    if (peer.id == 'local_ai_assistant') {
+      return Icons.auto_awesome_rounded;
+    }
+
+    final lowerName = peer.name.toLowerCase();
+    final lowerId = peer.id.toLowerCase();
+
+    // 1. Windows PC / Laptop -> Computer Icon
+    if (lowerName.contains('windows') ||
+        lowerName.contains('win-') ||
+        lowerName.contains('win_') ||
+        lowerName.contains('win1') ||
+        lowerName.contains('win') ||
+        lowerName.contains('desktop') ||
+        lowerName.contains('laptop') ||
+        lowerName.contains('pc') ||
+        lowerId.contains('win')) {
+      return Icons.computer_rounded;
+    }
+
+    // 2. All other connected devices in NearMitra ecosystem (e.g. KB2001, Galaxy, Redmi, etc.) -> Phone Icon
+    return Icons.phone_android_rounded;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -29,7 +54,7 @@ class PeerTile extends StatelessWidget {
             CircleAvatar(
               radius: 21,
               backgroundColor: scheme.primary.withValues(alpha: .13),
-              child: Icon(Icons.devices_rounded, color: scheme.primary),
+              child: Icon(_getDeviceIcon(peer), color: scheme.primary),
             ),
             Positioned(
               right: -1,
@@ -78,6 +103,32 @@ class PeerTile extends StatelessWidget {
                 ),
               ),
             ],
+            if (peer.isMeshPeer) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3B82F6).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                      color: const Color(0xFF3B82F6).withValues(alpha: 0.4)),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.hub_rounded, size: 10, color: Color(0xFF3B82F6)),
+                    SizedBox(width: 3),
+                    Text(
+                      'Mesh Relay',
+                      style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF3B82F6)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
         subtitle: peer.isTyping
@@ -90,7 +141,12 @@ class PeerTile extends StatelessWidget {
                   fontStyle: FontStyle.italic,
                 ),
               )
-            : Text(peer.ip, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+            : Text(
+                peer.isMeshPeer
+                    ? 'Mesh Relay • via ${peer.relayViaName ?? 'Intermediate'}'
+                    : peer.ip,
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+              ),
         trailing: peer.unreadCount > 0
             ? Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
