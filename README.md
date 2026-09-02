@@ -6,79 +6,9 @@
 
 ## Distributed System Architecture
 
-```
-                                 NearMitra
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                        Local Distributed Network                             │
-│                   (No Internet / No Cloud Required)                          │
-└──────────────────────────────────────────────────────────────────────────────┘
-
-        ┌──────────────────── Nearby Devices / Nodes ─────────────────────┐
-        │                                                                 │
-        │   Android Phone A  ───── Windows PC ───── Android Phone B       │
-        │         │                    │                    │              │
-        │         │                    │                    │              │
-        │         │                    ├── Ollama / Local AI Host          │
-        │         │                    ├── GPU / Heavy Models              │
-        │         │                    ├── Activity Tracker                │
-        │         │                    └── File / AI / Mesh Hub            │
-        │         │                                                       │
-        │         ├── Chat                                                 │
-        │         ├── Files                                                │
-        │         ├── Calls                                                │
-        │         ├── Nearby AI Client                                     │
-        │         ├── Live Camera Stream                                   │
-        │         └── Quick Actions                                        │
-        │                                                                 │
-        │                                Edge / Smart Node                 │
-        │                                      │                           │
-        │                                      ├── Camera                  │
-        │                                      ├── Microphone              │
-        │                                      ├── Small Local SLM         │
-        │                                      └── Sensor / Stream Node    │
-        │                                                                 │
-        └─────────────────────────────────────────────────────────────────┘
-
-
-                     ↓ Connectivity Modes / Protocol Stack ↓
-
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │  Discovery Layer                                                    │
-   │  • UDP Multicast Discovery                                          │
-   │  • Broadcast Presence                                               │
-   │  • LAN Scan                                                         │
-   │  • Wi-Fi Direct Peer Discovery                                      │
-   └─────────────────────────────────────────────────────────────────────┘
-
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │  Transport Layer                                                    │
-   │  • TCP Socket Messaging                                             │
-   │  • File Streams                                                     │
-   │  • WebRTC Media Streams                                             │
-   │  • Mesh Relay Forwarding                                            │
-   └─────────────────────────────────────────────────────────────────────┘
-
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │  Feature Layer                                                      │
-   │  • Chat Engine                                                      │
-   │  • File Transfer Engine                                             │
-   │  • Voice / Video Calling                                            │
-   │  • Live CCTV / Audio Streaming                                      │
-   │  • Nearby AI Query Routing                                          │
-   │  • Offline Queue & Auto-Sync                                        │
-   │  • Multi-Hop Mesh Messaging                                         │
-   └─────────────────────────────────────────────────────────────────────┘
-
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │  Local Persistence & Security                                       │
-   │  • Device Identity                                                  │
-   │  • Allowed Peers                                                    │
-   │  • AI Permissions                                                   │
-   │  • Stream Permissions                                               │
-   │  • Outbox Queue                                                     │
-   │  • Settings / Logs                                                  │
-   └─────────────────────────────────────────────────────────────────────┘
-```
+<div align="center">
+  <img src="screenshot/androidapp/archtech.png" alt="NearMitra Distributed System Architecture" width="100%"/>
+</div>
 
 ---
 
