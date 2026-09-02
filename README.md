@@ -1,6 +1,6 @@
-# NearMitra: High-Speed, Offline P2P & LAN Communication Framework
+# NearMitra: Offline P2P Network, Decentralized Nearby AI & Intelligent Live Streaming Framework
 
-NearMitra is a private, local network and direct peer-to-peer (P2P) communication platform providing decentralized AI model sharing, multi-hop mesh messaging, high-speed file transfer, live CCTV/audio streaming, and WebRTC calling. It operates **100% offline without internet connections, cellular data, or external cloud infrastructure**.
+**NearMitra** is a high-speed, private, local network and direct peer-to-peer (P2P) platform featuring **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer**. It operates **100% offline without requiring internet connections, cellular data, or external cloud infrastructure**.
 
 ---
 
