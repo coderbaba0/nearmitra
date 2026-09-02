@@ -16,6 +16,7 @@ class ChatItem {
     this.isAi = false,
     this.isMeshRelay = false,
     this.relayHops,
+    this.reaction,
   }) : id = id ?? '${createdAt.millisecondsSinceEpoch}_$peerId';
 
   final String id;
@@ -32,6 +33,7 @@ class ChatItem {
   final bool isAi;
   final bool isMeshRelay;
   final List<String>? relayHops;
+  String? reaction;
 
   String get formattedTime {
     final hour = createdAt.hour == 0
@@ -68,6 +70,7 @@ class ChatItem {
         'isAi': isAi,
         'isMeshRelay': isMeshRelay,
         if (relayHops != null) 'relayHops': relayHops,
+        'reaction': reaction,
       };
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
@@ -90,5 +93,6 @@ class ChatItem {
         relayHops: (json['relayHops'] as List<dynamic>?)
             ?.map((e) => e.toString())
             .toList(),
+        reaction: json['reaction'] as String?,
       );
 }

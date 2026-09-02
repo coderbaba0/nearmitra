@@ -379,6 +379,7 @@ class NearbyService extends ChangeNotifier {
   Function(String peerId, Map<String, dynamic> control)? onStreamControl;
   Function(String peerId, Map<String, dynamic> data)? onStreamRejected;
   Function(String peerId, Map<String, dynamic> data)? onStreamStopped;
+  void Function(String peerId, String msgId, String? reaction)? onReactionReceived;
 
   Future<void> sendCallInvite(Peer peer, bool isVideoCall) async {
     final targetIp = _resolveTargetIp(peer);
@@ -1117,6 +1118,16 @@ class NearbyService extends ChangeNotifier {
         return;
       }
 
+      if (type == 'reaction') {
+        final msgId = h['msg_id']?.toString() ?? '';
+        final reaction = h['reaction']?.toString();
+        if (msgId.isNotEmpty) {
+          onReactionReceived?.call(resolvedPeerId, msgId, reaction);
+          notifyListeners();
+        }
+        return;
+      }
+
       if (type == 'chat') {
         final text = h['message']?.toString() ?? '';
         if (text.isNotEmpty) {
@@ -1254,6 +1265,24 @@ class NearbyService extends ChangeNotifier {
             'sender': deviceName,
             'sender_id': deviceId,
             'is_typing': isTyping,
+          })}\n');
+      await socket.flush();
+      socket.destroy();
+    } catch (_) {}
+  }
+
+  Future<void> sendReaction(Peer peer, String msgId, String? reaction) async {
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty) return;
+    try {
+      final socket = await Socket.connect(targetIp, transferPort,
+          timeout: const Duration(milliseconds: 2000));
+      socket.write('${jsonEncode({
+            'type': 'reaction',
+            'msg_id': msgId,
+            'reaction': reaction,
+            'sender': deviceName,
+            'sender_id': deviceId,
           })}\n');
       await socket.flush();
       socket.destroy();

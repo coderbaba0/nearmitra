@@ -10,10 +10,132 @@ class ChatBubble extends StatelessWidget {
     super.key,
     required this.item,
     this.onCancel,
+    this.onReact,
   });
 
   final ChatItem item;
   final VoidCallback? onCancel;
+  final ValueChanged<String>? onReact;
+
+  void _showReactionPicker(BuildContext context) {
+    if (onReact == null) return;
+    HapticFeedback.mediumImpact();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final renderBox = context.findRenderObject() as RenderBox?;
+    final size = renderBox?.size ?? Size.zero;
+    final position = renderBox?.localToGlobal(Offset.zero) ?? Offset.zero;
+    final screenSize = MediaQuery.sizeOf(context);
+    final topPadding = MediaQuery.paddingOf(context).top;
+
+    const popupWidth = 260.0;
+    const popupHeight = 52.0;
+
+    // Position directly above the message bubble (or below if too close to top bar)
+    double targetTop = position.dy - popupHeight - 8;
+    if (targetTop < topPadding + 56) {
+      targetTop = position.dy + size.height + 8;
+    }
+
+    // Horizontal positioning aligned with bubble
+    double targetLeft;
+    if (item.mine) {
+      targetLeft = (position.dx + size.width - popupWidth)
+          .clamp(16.0, screenSize.width - popupWidth - 16.0);
+    } else {
+      targetLeft =
+          position.dx.clamp(16.0, screenSize.width - popupWidth - 16.0);
+    }
+
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Dismiss reaction',
+      barrierColor: Colors.black38,
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (ctx, anim1, anim2) {
+        return Stack(
+          children: [
+            Positioned(
+              left: targetLeft,
+              top: targetTop,
+              child: Material(
+                color: Colors.transparent,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0.0, end: 1.0),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutBack,
+                  builder: (context, scale, child) {
+                    return Transform.scale(
+                      scale: scale,
+                      alignment: item.mine
+                          ? Alignment.bottomRight
+                          : Alignment.bottomLeft,
+                      child: child,
+                    );
+                  },
+                  child: Container(
+                    width: popupWidth,
+                    height: popupHeight,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1F2C34) : Colors.white,
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(
+                        color: isDark ? Colors.white12 : Colors.black12,
+                        width: 1,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black38,
+                          blurRadius: 18,
+                          offset: Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _emojiButton(ctx, '👍'),
+                        _emojiButton(ctx, '❤️'),
+                        _emojiButton(ctx, '👎'),
+                        _emojiButton(ctx, '🤔'),
+                        _emojiButton(ctx, '😂'),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _emojiButton(BuildContext ctx, String emoji) {
+    final isCurrent = item.reaction == emoji;
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () {
+        Navigator.pop(ctx);
+        onReact?.call(isCurrent ? '' : emoji);
+      },
+      child: Container(
+        padding: const EdgeInsets.all(5),
+        decoration: BoxDecoration(
+          color: isCurrent
+              ? const Color(0xFF10B981).withValues(alpha: 0.25)
+              : Colors.transparent,
+          shape: BoxShape.circle,
+        ),
+        child: Text(
+          emoji,
+          style: const TextStyle(fontSize: 24),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,30 +186,42 @@ class ChatBubble extends StatelessWidget {
       },
       child: Align(
         alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * 0.84,
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: radius,
-            border: item.isAi && !mine
-                ? Border.all(
-                    color: isAiWarning
-                        ? const Color(0xFFFFA726).withValues(alpha: 0.5)
-                        : const Color(0xFF10B981).withValues(alpha: 0.4),
-                  )
-                : null,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
-                blurRadius: 3,
-                offset: const Offset(0, 1.5),
-              ),
-            ],
-          ),
+        child: GestureDetector(
+          onLongPress: onReact != null ? () => _showReactionPicker(context) : null,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.sizeOf(context).width * 0.84,
+                ),
+                margin: EdgeInsets.only(
+                  top: 4,
+                  bottom: (item.reaction != null && item.reaction!.isNotEmpty)
+                      ? 12
+                      : 4,
+                  left: 8,
+                  right: 8,
+                ),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: radius,
+                  border: item.isAi && !mine
+                      ? Border.all(
+                          color: isAiWarning
+                              ? const Color(0xFFFFA726).withValues(alpha: 0.5)
+                              : const Color(0xFF10B981).withValues(alpha: 0.4),
+                        )
+                      : null,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
+                      blurRadius: 3,
+                      offset: const Offset(0, 1.5),
+                    ),
+                  ],
+                ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -316,9 +450,43 @@ class ChatBubble extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
+        if (item.reaction != null && item.reaction!.isNotEmpty)
+          Positioned(
+            bottom: 0,
+            right: mine ? null : 16,
+            left: mine ? 16 : null,
+            child: GestureDetector(
+              onTap: () => _showReactionPicker(context),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isDark ? Colors.white24 : Colors.black12,
+                    width: 1,
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 4,
+                      offset: Offset(0, 1.5),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  item.reaction!,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ),
+          ),
+      ],
+    ),
+  ),
+),
+);
+}
 
   Future<void> _openFileOrCopyPath(BuildContext context, String filePath) async {
     await FileOpenerService.openOrInstallFile(context, filePath);

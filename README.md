@@ -1,6 +1,84 @@
-# NearMitra: Offline P2P Network, Decentralized Nearby AI & Intelligent Live Streaming Framework
+# NearMitra: Local-First Distributed Edge Computing & Communication Framework
 
-**NearMitra** is a high-speed, private, local network and direct peer-to-peer (P2P) platform featuring **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer**. It operates **100% offline without requiring internet connections, cellular data, or external cloud infrastructure**.
+**NearMitra is a local-first distributed edge computing and communication platform.** It combines high-speed private local network and direct peer-to-peer (P2P) transport with **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet connections, cellular data, or external cloud infrastructure**.
+
+---
+
+## Distributed System Architecture
+
+```
+                                 NearMitra
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        Local Distributed Network                             │
+│                   (No Internet / No Cloud Required)                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+        ┌──────────────────── Nearby Devices / Nodes ─────────────────────┐
+        │                                                                 │
+        │   Android Phone A  ───── Windows PC ───── Android Phone B       │
+        │         │                    │                    │              │
+        │         │                    │                    │              │
+        │         │                    ├── Ollama / Local AI Host          │
+        │         │                    ├── GPU / Heavy Models              │
+        │         │                    ├── Activity Tracker                │
+        │         │                    └── File / AI / Mesh Hub            │
+        │         │                                                       │
+        │         ├── Chat                                                 │
+        │         ├── Files                                                │
+        │         ├── Calls                                                │
+        │         ├── Nearby AI Client                                     │
+        │         ├── Live Camera Stream                                   │
+        │         └── Quick Actions                                        │
+        │                                                                 │
+        │                                Edge / Smart Node                 │
+        │                                      │                           │
+        │                                      ├── Camera                  │
+        │                                      ├── Microphone              │
+        │                                      ├── Small Local SLM         │
+        │                                      └── Sensor / Stream Node    │
+        │                                                                 │
+        └─────────────────────────────────────────────────────────────────┘
+
+
+                     ↓ Connectivity Modes / Protocol Stack ↓
+
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  Discovery Layer                                                    │
+   │  • UDP Multicast Discovery                                          │
+   │  • Broadcast Presence                                               │
+   │  • LAN Scan                                                         │
+   │  • Wi-Fi Direct Peer Discovery                                      │
+   └─────────────────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  Transport Layer                                                    │
+   │  • TCP Socket Messaging                                             │
+   │  • File Streams                                                     │
+   │  • WebRTC Media Streams                                             │
+   │  • Mesh Relay Forwarding                                            │
+   └─────────────────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  Feature Layer                                                      │
+   │  • Chat Engine                                                      │
+   │  • File Transfer Engine                                             │
+   │  • Voice / Video Calling                                            │
+   │  • Live CCTV / Audio Streaming                                      │
+   │  • Nearby AI Query Routing                                          │
+   │  • Offline Queue & Auto-Sync                                        │
+   │  • Multi-Hop Mesh Messaging                                         │
+   └─────────────────────────────────────────────────────────────────────┘
+
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │  Local Persistence & Security                                       │
+   │  • Device Identity                                                  │
+   │  • Allowed Peers                                                    │
+   │  • AI Permissions                                                   │
+   │  • Stream Permissions                                               │
+   │  • Outbox Queue                                                     │
+   │  • Settings / Logs                                                  │
+   └─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -15,27 +93,55 @@ NearMitra bridges mobile devices and desktop workstations across local Wi-Fi net
 
 ## App Visual Showcase
 
-### Section 1: Android Mobile Interface
+### Series 1: P2P Discovery, 60 FPS Radar & WebRTC Calling
 
-| 60 FPS P2P Radar View | Nearby LAN Devices List | Chat & File Transfer |
+| 60 FPS Continuous P2P Radar | Real-Time LAN Discovery & Typing Status | Encrypted P2P Voice & Video Calling |
 | :---: | :---: | :---: |
-| ![Android P2P Radar](screenshot/androidapp/android_p2p_radar.jpeg) | ![Android LAN Peers](screenshot/androidapp/android_lan_peers.jpeg) | ![Android Chat File](screenshot/androidapp/android_chat_file.jpeg) |
-
-| Nearby AI Client Chat | Streaming Hub | App Settings |
-| :---: | :---: | :---: |
-| ![Android Nearby AI](screenshot/androidapp/android_nearby_ai.jpeg) | ![Android Streaming](screenshot/androidapp/android_streaming.jpeg) | ![Android Settings](screenshot/androidapp/android_settings.jpeg) |
+| ![P2P Radar](screenshot/androidapp/Screenshot_20260902_184448.jpg) | ![LAN Discovery](screenshot/androidapp/Screenshot_20260902_191425.jpg) | ![P2P Calling](screenshot/androidapp/Screenshot_20260902_184926.jpg) |
 
 ---
 
-### Section 2: Windows Desktop Interface
+### Series 2: P2P Chat, File Transfers, Reactions & Outbox Queue
 
-| Windows Interface & Device List | Windows Chat & High-Speed File Transfer (Dark Theme) |
-| :---: | :---: |
-| ![Windows App Overview](screenshot/windowsapp/win_app_overview.png) | ![Windows Chat Transfer](screenshot/windowsapp/win_p2p_chat_transfer.png) |
+| P2P Chat & High-Speed APK Transfer | In-Chat Emoji Reactions | Multi-File & Folder Selection Sheet | Offline Persistent Outbox Queue |
+| :---: | :---: | :---: | :---: |
+| ![P2P Chat](screenshot/androidapp/Screenshot_20260902_184508.jpg) | ![Emoji Reactions](screenshot/androidapp/Screenshot_20260902_191342.jpg) | ![Multi-File Sheet](screenshot/androidapp/Screenshot_20260902_190320.jpg) | ![Outbox Queue](screenshot/androidapp/Screenshot_20260902_191205.jpg) |
 
-| Windows Local Ollama Nearby AI Host | Windows AI Host Security & Model Settings |
+---
+
+### Series 3: Decentralized Nearby AI & Fleet Device Management
+
+| Nearby AI Mode & Query Handling | AI Fleet Devices Dashboard | Nearby AI Engine Configuration |
+| :---: | :---: | :---: |
+| ![Nearby AI Chat](screenshot/androidapp/Screenshot_20260902_191302.jpg) | ![AI Fleet Devices](screenshot/androidapp/Screenshot_20260902_184751.jpg) | ![AI Settings](screenshot/androidapp/Screenshot_20260902_184729.jpg) |
+
+---
+
+### Series 4: Real-Time CCTV Streaming, Audio Relay & Security
+
+| Remote CCTV Camera Streaming | Live Audio & Walkie-Talkie Stream | P2P Streaming Access Security |
+| :---: | :---: | :---: |
+| ![CCTV Streaming](screenshot/androidapp/Screenshot_20260902_184643.jpg) | ![Audio Streaming](screenshot/androidapp/Screenshot_20260902_184655.jpg) | ![P2P Security](screenshot/androidapp/Screenshot_20260902_184704.jpg) |
+
+---
+
+### Series 5: Activity History, Call Logs & System Settings
+
+| Activity & Call History Hub | System Settings & Mesh Relay Toggle |
 | :---: | :---: |
-| ![Windows Nearby AI Host](screenshot/windowsapp/win_nearby_ai_host.png) | ![Windows AI Settings](screenshot/windowsapp/win_ai_settings.png) |
+| ![Activity History](screenshot/androidapp/Screenshot_20260902_184821.jpg) | ![App Settings](screenshot/androidapp/Screenshot_20260902_184719.jpg) |
+
+---
+
+### Series 6: Windows Desktop Workstation Interface
+
+| Windows Node Discovery & Network Status | Windows P2P Chat & High-Speed Transfer |
+| :---: | :---: |
+| ![Windows Overview](screenshot/windowsapp/win_app_overview.png) | ![Windows Chat Transfer](screenshot/windowsapp/win_p2p_chat_transfer.png) |
+
+| Windows Local Ollama AI Host Engine | Windows AI Host Security & Model Configuration |
+| :---: | :---: |
+| ![Windows Ollama Host](screenshot/windowsapp/win_nearby_ai_host.png) | ![Windows AI Settings](screenshot/windowsapp/win_ai_settings.png) |
 
 ---
 
@@ -184,28 +290,51 @@ NearMitra uses a low-overhead JSON-over-Socket wire protocol compatible across A
 │    Edge AI & Vision   │     Acoustic Protection       │ Universal Ecosystem   │
 │  • On-Device SLMs     │  • Theft & Intrusion Audio    │  • iOS, macOS, Linux  │
 │  • Real-Time CV Alert │  • Anomaly Sound Detection    │  • Advanced Mesh P2P  │
-│  • Edge Object Filter │  • Acoustic Alarm Trigger     │  • Shared Clipboard   │
+│  • Compute Discovery  │  • Acoustic Alarm Trigger     │  • Shared Clipboard   │
 └───────────────────────┴───────────────────────────────┴───────────────────────┘
 ```
 
-### 1. On-Device Local SLM Execution (NPU / GPU Acceleration)
+### 1. Intelligent Compute Discovery & AI Capability Advertisement
+Every NearMitra node on the local network automatically advertises its real-time hardware profile, loaded AI models, and available compute headroom:
+
+```yaml
+Node Capability Advertisement:
+  Device: Desktop-PC
+  RAM: 32 GB
+  GPU: RTX 4060
+  AI Models:
+    - qwen2.5:7b
+    - gemma2:9b
+    - llama-3.2-vision
+  Capabilities:
+    - text
+    - vision
+    - embeddings
+    - reasoning
+  Compute Load: 28%
+```
+
+- **Autonomous Workload Routing**: Lightweight client nodes automatically discover and route complex queries (e.g., image reasoning vs fast text) to the most suitable idle node with available GPU/NPU headroom.
+- **Dynamic Load Balancing**: Distributes concurrent prompt requests across multiple LAN hosts to maximize throughput and minimize latency.
+
+### 2. On-Device Local SLM Execution (NPU / GPU Acceleration)
 - Execute quantized Small Language Models (e.g., Google Gemma 2B, Llama 3.2 1B/3B, Microsoft Phi-3) directly on-device using MediaPipe, GGML, and TFLite runtimes.
 - Enables zero-network, zero-cloud text generation and assistance on standalone hardware.
 
-### 2. Condition-Based AI Vision Filtering in CCTV Streaming
+### 3. Condition-Based AI Vision Filtering in CCTV Streaming
 - Real-time computer vision inference applied directly to CCTV camera streams:
   - **Intrusion Detection**: Automatic silent alerts dispatched over P2P upon human presence in restricted zones.
   - **Property & Agricultural Protection**: Object classification for livestock, stray animals, or vehicle entry with bounding-box telemetry.
   - **Hazard Detection**: Edge alerts for fire, smoke, and industrial hazards.
   - **Bandwidth Optimization**: Streams high-bitrate video feeds only when specified visual trigger conditions are met.
 
-### 3. AI-Powered Acoustic Anomaly & Theft Protection
+### 4. AI-Powered Acoustic Anomaly & Theft Protection
 - Real-time local sound classification applied to live audio streams:
   - **Animal Distress & Barking Recognition**: Identifies canine distress or unusual nocturnal livestock sounds to deter farm/property theft.
   - **Break-In Detection**: Acoustic recognition for glass shattering, door tampering, and distress calls.
   - **Automated P2P Siren Broadcast**: Triggers automated sirens or flashlights on remote CCTV nodes upon anomaly detection.
 
-### 4. Cross-Platform Ecosystem Expansion
+### 5. Cross-Platform Ecosystem Expansion
 - Extending native P2P direct connectivity across **iOS, macOS, and Linux**.
 - Encrypted cross-device shared clipboard synchronization.
 

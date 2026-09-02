@@ -95,7 +95,7 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
           isDark ? const Color(0xFF0B1120) : const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
-          'AI Fleet & Device Hub',
+          'AI Fleet Devices',
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         elevation: 0,
@@ -307,7 +307,6 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
                     child: _buildMetricCard(
                       title: 'Connected Devices',
                       value: '${peers.length}',
-                      subtitle: 'Active local nodes',
                       icon: Icons.devices_rounded,
                       color: const Color(0xFF3B82F6),
                       isDark: isDark,
@@ -318,7 +317,6 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
                     child: _buildMetricCard(
                       title: 'AI Permitted Nodes',
                       value: '$allowedCount / ${peers.length}',
-                      subtitle: 'Authorized peers',
                       icon: Icons.verified_user_rounded,
                       color: const Color(0xFF10B981),
                       isDark: isDark,
@@ -333,7 +331,6 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
                     child: _buildMetricCard(
                       title: 'AI Requests Served',
                       value: '${aiService.totalAiRequests}',
-                      subtitle: 'Total prompts processed',
                       icon: Icons.bolt_rounded,
                       color: const Color(0xFFF59E0B),
                       isDark: isDark,
@@ -344,7 +341,6 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
                     child: _buildMetricCard(
                       title: 'Mesh Relay',
                       value: widget.service.meshRelayEnabled ? 'Active' : 'Off',
-                      subtitle: 'Multi-hop packet route',
                       icon: Icons.hub_rounded,
                       color: const Color(0xFF8B5CF6),
                       isDark: isDark,
@@ -833,13 +829,12 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
   Widget _buildMetricCard({
     required String title,
     required String value,
-    required String subtitle,
     required IconData icon,
     required Color color,
     required bool isDark,
   }) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E293B) : const Color(0xFFFFFFFF),
         borderRadius: BorderRadius.circular(18),
@@ -888,13 +883,6 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
               fontSize: 12.5,
               fontWeight: FontWeight.bold,
             ),
-          ),
-          const SizedBox(height: 1),
-          Text(
-            subtitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 10.5, color: Colors.grey),
           ),
         ],
       ),

@@ -66,6 +66,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _aiThinking = false;
   int _chatDisplayCount = 20;
   int _bottomNavIndex = 0;
+  Timer? _peerStatusRefreshTimer;
 
   @override
   void initState() {
@@ -73,6 +74,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     widget.service.addListener(_onServiceChanged);
     _scroll.addListener(_onScroll);
+    _peerStatusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) setState(() {});
+    });
     _init();
   }
 
@@ -146,6 +150,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     widget.service.onPeerAutoConnected = (peerId) {
       if (!mounted) return;
       setState(() {});
+    };
+
+    widget.service.onReactionReceived = (peerId, msgId, reaction) async {
+      for (final item in _history) {
+        if (item.id == msgId) {
+          item.reaction = (reaction != null && reaction.isNotEmpty) ? reaction : null;
+          break;
+        }
+      }
+      await _historyService.save(_history);
+      if (mounted) setState(() {});
     };
 
     _wifiDirectService.onP2pConnected = (peerIp, localIp) async {
@@ -758,6 +773,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _peerStatusRefreshTimer?.cancel();
     _notificationSub?.cancel();
     _replySub?.cancel();
     _scroll.removeListener(_onScroll);
@@ -766,6 +782,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _message.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  bool _isPeerOnline(Peer peer) {
+    if (peer.id == 'local_ai_assistant') return true;
+    for (final p in widget.service.peers) {
+      if ((p.id == peer.id || p.ip == peer.ip) && p.isOnline) {
+        return true;
+      }
+    }
+    return peer.isOnline;
   }
 
   void _onServiceChanged() {
@@ -1063,51 +1089,83 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
-  Future<void> _pickAndSend() async {
+  Future<void> _toggleReactionOnMessage(ChatItem item, String emoji, Peer peer) async {
+    setState(() {
+      item.reaction = emoji.isEmpty ? null : emoji;
+    });
+    await _historyService.save(_history);
+
+    if (peer.id != 'local_ai_assistant' && peer.ip.isNotEmpty) {
+      widget.service.sendReaction(peer, item.id, item.reaction);
+    }
+  }
+
+  Future<void> _pickAndSend({FileType fileType = FileType.any}) async {
     final peer = _selectedPeer;
     if (peer == null) {
       _toast('Select a nearby device first');
       return;
     }
-    final result = await FilePicker.platform.pickFiles(allowMultiple: false, withData: false);
-    final path = result?.files.single.path;
-    if (path == null) return;
-    final file = File(path);
-    final name = result!.files.single.name;
-    final size = await file.length();
-    final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-    final ok = await widget.service.sendFile(peer, file, displayName: name);
-    final status = ok ? 'Sent' : 'Queued';
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: fileType,
+      withData: false,
+    );
+    if (result == null || result.files.isEmpty) return;
 
-    if (!ok) {
-      await widget.service.queueOutboxItem(QueuedOutboxItem(
+    final filesToSend = result.files.where((f) => f.path != null).toList();
+    if (filesToSend.isEmpty) return;
+
+    if (filesToSend.length > 1) {
+      _toast('Sending ${filesToSend.length} files to ${peer.name}…');
+    }
+
+    for (int i = 0; i < filesToSend.length; i++) {
+      final f = filesToSend[i];
+      final path = f.path!;
+      final file = File(path);
+      if (!await file.exists()) continue;
+
+      final name = f.name;
+      final size = await file.length();
+      final itemId = '${DateTime.now().millisecondsSinceEpoch}_${i}_${peer.id}';
+      final ok = await widget.service.sendFile(peer, file, displayName: name);
+      final status = ok ? 'Sent' : 'Queued';
+
+      if (!ok) {
+        await widget.service.queueOutboxItem(QueuedOutboxItem(
+          id: itemId,
+          peerId: peer.id,
+          peerName: peer.name,
+          kind: ChatKind.file,
+          fileName: name,
+          filePath: path,
+          fileSize: size,
+          createdAt: DateTime.now(),
+        ));
+      }
+
+      _history.add(ChatItem(
         id: itemId,
         peerId: peer.id,
-        peerName: peer.name,
+        sender: widget.service.deviceName,
+        mine: true,
+        createdAt: DateTime.now(),
         kind: ChatKind.file,
         fileName: name,
         filePath: path,
         fileSize: size,
-        createdAt: DateTime.now(),
+        status: status,
       ));
-      _toast('Peer is offline • File queued (auto-sends when online)');
+
+      await _historyService.save(_history);
+      if (mounted) setState(() {});
+      _triggerScrollToBottom();
     }
 
-    _history.add(ChatItem(
-      id: itemId,
-      peerId: peer.id,
-      sender: widget.service.deviceName,
-      mine: true,
-      createdAt: DateTime.now(),
-      kind: ChatKind.file,
-      fileName: name,
-      filePath: path,
-      fileSize: size,
-      status: status,
-    ));
-    await _historyService.save(_history);
-    setState(() {});
-    _triggerScrollToBottom();
+    if (!widget.service.peers.any((p) => p.id == peer.id && p.ip.isNotEmpty)) {
+      _toast('Peer is offline • ${filesToSend.length > 1 ? "${filesToSend.length} files" : "File"} queued in Outbox');
+    }
   }
 
   Future<void> _pickAndSendFolder() async {
@@ -1155,48 +1213,90 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       context: context,
       backgroundColor: Colors.transparent,
       builder: (ctx) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF1F2C34) : Colors.white,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          boxShadow: const [
+            BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(0, -2)),
+          ],
         ),
         child: SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey[400],
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              const SizedBox(height: 18),
+              // Top drag bar and close button
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _attachmentOption(
-                    icon: Icons.insert_drive_file_rounded,
-                    color: const Color(0xFF10B981),
-                    label: 'Send File',
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _pickAndSend();
-                    },
+                  const SizedBox(width: 30),
+                  const Spacer(),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[400],
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
-                  _attachmentOption(
-                    icon: Icons.folder_rounded,
-                    color: const Color(0xFFF59E0B),
-                    label: 'Send Folder',
-                    onTap: () {
-                      Navigator.pop(ctx);
-                      _pickAndSendFolder();
-                    },
+                  const Spacer(),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    onTap: () => Navigator.pop(ctx),
+                    child: Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.06),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: isDark ? Colors.white70 : Colors.black54,
+                      ),
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Expanded(
+                    child: _attachmentOption(
+                      icon: Icons.insert_drive_file_rounded,
+                      color: const Color(0xFF10B981),
+                      label: 'Files (Multi)',
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _pickAndSend(fileType: FileType.any);
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: _attachmentOption(
+                      icon: Icons.photo_library_rounded,
+                      color: const Color(0xFF6366F1),
+                      label: 'Photos/Media',
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _pickAndSend(fileType: FileType.media);
+                      },
+                    ),
+                  ),
+                  Expanded(
+                    child: _attachmentOption(
+                      icon: Icons.folder_rounded,
+                      color: const Color(0xFFF59E0B),
+                      label: 'Send Folder',
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _pickAndSendFolder();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
             ],
           ),
         ),
@@ -1214,25 +1314,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 54,
-              height: 54,
+              width: 52,
+              height: 52,
               decoration: BoxDecoration(
                 color: color.withValues(alpha: 0.15),
                 shape: BoxShape.circle,
                 border:
                     Border.all(color: color.withValues(alpha: 0.35), width: 1.5),
               ),
-              child: Icon(icon, color: color, size: 28),
+              child: Icon(icon, color: color, size: 26),
             ),
             const SizedBox(height: 8),
             Text(
               label,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
             ),
           ],
         ),
@@ -2200,65 +2303,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               widget.service.activeChatPeerId = null;
             }),
           ),
-          Stack(
-            children: [
-              CircleAvatar(
-                radius: 20,
-                backgroundColor: Colors.white24,
-                child: Text(
-                  peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
-                ),
-              ),
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  width: 11,
-                  height: 11,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF25D366),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 1.5),
+          Builder(
+            builder: (context) {
+              final isOnline = _isPeerOnline(peer);
+              return Stack(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: isOnline ? Colors.white24 : Colors.white12,
+                    child: Text(
+                      peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                    ),
                   ),
-                ),
-              ),
-            ],
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: 11,
+                      height: 11,
+                      decoration: BoxDecoration(
+                        color: isOnline ? const Color(0xFF22C55E) : const Color(0xFF94A3B8),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  peer.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                peer.isTyping
-                    ? const Text(
-                        'typing…',
-                        style: TextStyle(
-                          color: Color(0xFF25D366),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12.5,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      )
-                    : Text(
-                        'Online • ${peer.ip}',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                        ),
+            child: Builder(
+              builder: (context) {
+                final isOnline = _isPeerOnline(peer);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      peer.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
                       ),
-              ],
+                    ),
+                    peer.isTyping
+                        ? const Text(
+                            'typing…',
+                            style: TextStyle(
+                              color: Color(0xFF25D366),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.5,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          )
+                        : Text(
+                            isOnline ? 'Online • ${peer.ip}' : 'Offline • ${peer.ip}',
+                            style: TextStyle(
+                              color: isOnline ? Colors.white70 : Colors.white54,
+                              fontSize: 12,
+                              fontWeight: isOnline ? FontWeight.w600 : FontWeight.normal,
+                            ),
+                          ),
+                  ],
+                );
+              },
             ),
           ),
           if (peer.id != 'local_ai_assistant') ...[
@@ -2862,41 +2976,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               color: isDark ? const Color(0xFF1F2C34) : Colors.white,
               child: Row(
                 children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: const Color(0xFF10B981),
-                    child: peer.id == 'local_ai_assistant'
-                        ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22)
-                        : Text(
-                            peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                Expanded(
+                  child: Builder(
+                    builder: (context) {
+                      final isOnline = _isPeerOnline(peer);
+                      return Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 20,
+                            backgroundColor: isOnline ? const Color(0xFF10B981) : Colors.grey.shade600,
+                            child: peer.id == 'local_ai_assistant'
+                                ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22)
+                                : Text(
+                                    peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                  ),
                           ),
+                          const SizedBox(width: 12),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                peer.id == 'local_ai_assistant' ? 'My AI' : peer.name,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
+                              peer.id == 'local_ai_assistant'
+                                  ? const Text('Configured Local AI • Saved Settings', style: TextStyle(fontSize: 12, color: Color(0xFF10B981), fontWeight: FontWeight.w600))
+                                  : (peer.isTyping
+                                      ? const Text(
+                                          'typing…',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Color(0xFF25D366),
+                                            fontWeight: FontWeight.bold,
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                        )
+                                      : Row(
+                                          children: [
+                                            Container(
+                                              width: 6,
+                                              height: 6,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                color: isOnline ? const Color(0xFF10B981) : Colors.grey,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 5),
+                                            Text(
+                                              isOnline ? 'Online • ${peer.ip}' : 'Offline • ${peer.ip}',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: isOnline ? (isDark ? Colors.white70 : Colors.black87) : Colors.grey,
+                                                fontWeight: isOnline ? FontWeight.w600 : FontWeight.normal,
+                                              ),
+                                            ),
+                                          ],
+                                        )),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          peer.id == 'local_ai_assistant' ? 'My AI' : peer.name,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                        ),
-                        peer.id == 'local_ai_assistant'
-                            ? const Text('Configured Local AI • Saved Settings', style: TextStyle(fontSize: 12, color: Color(0xFF10B981), fontWeight: FontWeight.w600))
-                            : (peer.isTyping
-                                ? const Text(
-                                    'typing…',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Color(0xFF25D366),
-                                      fontWeight: FontWeight.bold,
-                                      fontStyle: FontStyle.italic,
-                                    ),
-                                  )
-                                : Text('Online • ${peer.ip}', style: const TextStyle(fontSize: 12, color: Colors.grey))),
-                      ],
-                    ),
-                  ),
+                ),
                   if (peer.id != 'local_ai_assistant') ...[
                     IconButton(
                       icon: Icon(
@@ -3120,6 +3263,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             onCancel: chat[itemIndex].status == 'Queued'
                                 ? () => _cancelQueuedMessage(chat[itemIndex])
                                 : null,
+                            onReact: (emoji) => _toggleReactionOnMessage(
+                                chat[itemIndex], emoji, peer),
                           );
                         },
                       );
