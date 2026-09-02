@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/splash_screen.dart';
@@ -47,6 +47,24 @@ Future<void> main() async {
       ),
     ),
   );
+
+  // Request critical permissions non-blocking after first frame renders
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    // Fix 3a: POST_NOTIFICATIONS — Required on Android 13+ for any call/notification UI
+    final notifStatus = await Permission.notification.status;
+    if (!notifStatus.isGranted) {
+      await Permission.notification.request();
+    }
+
+    // Fix 3b: USE_FULL_SCREEN_INTENT — Required on Android 14+ for lock screen CallKit UI
+    // Without this, incoming call notification won't wake the screen when locked
+    try {
+      const channel = MethodChannel('farmitra_nearby/network');
+      await channel.invokeMethod('requestFullScreenIntentPermission');
+    } catch (_) {
+      // Non-critical — CallKit will still show as heads-up notification
+    }
+  });
 }
 
 class FarmitraNearbyApp extends StatelessWidget {

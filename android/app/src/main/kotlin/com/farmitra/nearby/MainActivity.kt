@@ -165,6 +165,30 @@ class MainActivity : FlutterActivity() {
                     initialSharedFiles.clear()
                     result.success(true)
                 }
+                "requestFullScreenIntentPermission" -> {
+                    // Android 14+ requires explicit user permission for USE_FULL_SCREEN_INTENT
+                    // This opens the system settings page to let user grant it
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        try {
+                            val notifManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE)
+                                as? android.app.NotificationManager
+                            if (notifManager?.canUseFullScreenIntent() == false) {
+                                val intent = Intent(
+                                    android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENTS,
+                                    android.net.Uri.parse("package:$packageName")
+                                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                                startActivity(intent)
+                                result.success(false) // Not yet granted — sent to settings
+                            } else {
+                                result.success(true) // Already granted
+                            }
+                        } catch (e: Exception) {
+                            result.success(true) // Best effort
+                        }
+                    } else {
+                        result.success(true) // Android < 14: always allowed
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

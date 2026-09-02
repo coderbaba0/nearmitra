@@ -40,6 +40,10 @@ class CallService {
     _initialized = true;
 
     try {
+      // Fix 4: Clear any stale CallKit sessions from previous app runs
+      await FlutterCallkitIncoming.endAllCalls();
+      debugPrint('[CallService] Cleared stale CallKit sessions on startup');
+
       FlutterCallkitIncoming.onEvent.listen((event) {
         if (event == null) return;
         final ev = event.event;
@@ -266,11 +270,14 @@ class CallService {
         'isVideo': isVideoCall,
       },
       android: AndroidParams(
-        isCustomNotification: true,
-        isShowLogo: true,
+        // Fix 2: Use default CallKit notification (isCustomNotification: false)
+        // Custom notification style is unreliable on many Android ROMs
+        isCustomNotification: false,
+        isShowLogo: false,
         ringtonePath: 'system_ringtone_default',
         backgroundColor: '#0F172A',
         actionColor: '#10B981',
+        textColor: '#FFFFFF',
       ),
     );
 

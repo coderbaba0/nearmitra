@@ -40,7 +40,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   RTCPeerConnection? _peerConnection;
   final List<RTCIceCandidate> _pendingStreamCandidates = [];
 
-  StreamerRole _role = StreamerRole.hostCamera;
+  // Default: OFF (idle). Camera only starts when user explicitly taps Start Host Camera.
+  StreamerRole _role = StreamerRole.remoteViewer;
   AudioStreamRole _audioRole = AudioStreamRole.listenRemote;
 
   bool _isHostActive = false;
@@ -170,15 +171,17 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   Future<void> _initPermissionsAndMedia() async {
-    await [Permission.camera, Permission.microphone].request();
-    await _localRenderer.initialize();
-    await _remoteRenderer.initialize();
-    Helper.setSpeakerphoneOn(true);
-
-    if (_role == StreamerRole.hostCamera) {
-      await _startHostCamera();
+    // Only initialize renderers — do NOT auto-start camera.
+    // Camera starts only when user explicitly taps "Start Host Camera" button.
+    try {
+      await _localRenderer.initialize();
+      await _remoteRenderer.initialize();
+    } catch (e) {
+      debugPrint('[StreamHub] Renderer init error: $e');
     }
+    try { Helper.setSpeakerphoneOn(true); } catch (_) {}
   }
+
 
   void _setupSignalListeners() {
     // 1. Host receives Remote Control Signals from Viewer
@@ -553,7 +556,59 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       return;
     }
 
+    // ── Pre-flight: OS hardware permission check ──────────────────────────
     final isAudio = streamType == 'audio';
+    final neededPerms = isAudio
+        ? [Permission.microphone]
+        : [Permission.camera, Permission.microphone];
+
+    for (final p in neededPerms) {
+      final s = await p.status;
+      if (!s.isGranted) {
+        final granted = await p.request();
+        if (!granted.isGranted) {
+          if (!mounted) return;
+          // Show security/settings dialog instead of crashing
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  Icon(
+                    p == Permission.camera ? Icons.videocam_off_rounded : Icons.mic_off_rounded,
+                    color: Colors.redAccent,
+                  ),
+                  const SizedBox(width: 8),
+                  const Text('Permission Required', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              content: Text(
+                p == Permission.camera
+                    ? 'Camera permission is required to start CCTV streaming.\n\nPlease allow Camera access in App Settings.'
+                    : 'Microphone permission is required to start Audio streaming.\n\nPlease allow Microphone access in App Settings.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    openAppSettings();
+                  },
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+                  child: const Text('Open Settings'),
+                ),
+              ],
+            ),
+          );
+          return; // Abort streaming — don't crash
+        }
+      }
+    }
+    // ── End permission check ──────────────────────────────────────────────
 
     setState(() {
       _role = StreamerRole.remoteViewer;
@@ -567,6 +622,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         _streamStatus = 'Connecting to ${peer.name}…';
       }
     });
+
 
     try {
       _peerConnection?.close();
@@ -826,10 +882,38 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
               children: [
                 Expanded(
                   child: GestureDetector(
-                    onTap: () {
+                    onTap: () async {
                       if (_role != StreamerRole.hostCamera) {
+                        // Request permissions before starting camera
+                        final camOk = await Permission.camera.request();
+                        final micOk = await Permission.microphone.request();
+                        if (!camOk.isGranted) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: const Text('Camera permission required to host CCTV stream.'),
+                                backgroundColor: const Color(0xFF7C3AED),
+                                behavior: SnackBarBehavior.floating,
+                                action: SnackBarAction(
+                                  label: 'Settings',
+                                  textColor: Colors.white,
+                                  onPressed: openAppSettings,
+                                ),
+                              ),
+                            );
+                          }
+                          return;
+                        }
+                        if (!micOk.isGranted && mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Microphone permission denied — audio will be muted.'),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
                         setState(() => _role = StreamerRole.hostCamera);
-                        _startHostCamera();
+                        await _startHostCamera();
                       }
                     },
                     child: Container(

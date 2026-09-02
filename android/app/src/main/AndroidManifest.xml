@@ -45,7 +45,7 @@
             android:name=".FarmitraForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|mediaProjection" />
+            android:foregroundServiceType="connectedDevice|phoneCall|microphone" />
 
         <service
             android:name="com.hiennv.flutter_callkit_incoming.CallkitNotificationService"
