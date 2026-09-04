@@ -43,7 +43,7 @@ class AboutScreen extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(22),
                     child: Image.asset(
-                      'assets/images/app_logo.png',
+                      'assets/images/nearmitra.png',
                       fit: BoxFit.cover,
                       errorBuilder: (_, __, ___) => Container(
                         color: const Color(0xFF10B981),
