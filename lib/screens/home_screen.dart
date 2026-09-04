@@ -794,15 +794,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return peer.isOnline;
   }
 
+  bool _isUserNearBottom() {
+    if (!_scroll.hasClients) return true;
+    final max = _scroll.position.maxScrollExtent;
+    final current = _scroll.position.pixels;
+    return (max - current) <= 150;
+  }
+
   void _onServiceChanged() {
     final incoming = widget.service.takeIncomingItems();
-    if (incoming.isNotEmpty) {
+    final bool hasNewChat = incoming.isNotEmpty;
+    if (hasNewChat) {
       _history.addAll(incoming);
       _historyService.save(_history);
     }
     if (mounted) {
+      final wasNearBottom = _isUserNearBottom();
       setState(() {});
-      _triggerScrollToBottom();
+      if (hasNewChat && wasNearBottom) {
+        _triggerScrollToBottom();
+      }
     }
   }
 
@@ -993,7 +1004,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
 
         setState(() {});
-        _scrollToBottomImmediate();
+        if (_isUserNearBottom()) {
+          _scrollToBottomImmediate();
+        }
       }
 
       typewriterTimer = Timer.periodic(const Duration(milliseconds: 14), (_) {
@@ -3367,11 +3380,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         ),
                       ],
                     ),
-                    child: Icon(
-                      _chatMode == ChatMode.ai ? Icons.auto_awesome_rounded : Icons.send_rounded,
-                      color: Colors.white,
-                      size: 22,
-                    ),
+                    child: _aiThinking
+                        ? const Center(
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.2,
+                                color: Colors.white,
+                              ),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.send_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
                   ),
                 ),
               ],

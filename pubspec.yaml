@@ -24,6 +24,7 @@ dependencies:
   flutter_webrtc: ^1.6.0
   archive: ^3.6.1
   flutter_riverpod: ^2.5.1
+  share_plus: ^10.1.4
 
 dev_dependencies:
 

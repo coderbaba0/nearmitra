@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/chat_item.dart';
 import '../services/file_opener_service.dart';
@@ -321,16 +322,25 @@ class ChatBubble extends StatelessWidget {
                     const SizedBox(width: 8),
                     InkWell(
                       borderRadius: BorderRadius.circular(6),
-                      onTap: () {
+                      onTap: () async {
                         if (item.text != null && item.text!.isNotEmpty) {
-                          Clipboard.setData(ClipboardData(text: item.text!));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('AI response copied for sharing'),
-                              duration: Duration(seconds: 2),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
+                          try {
+                            await Share.share(
+                              item.text!,
+                              subject: 'NearMitra AI Response',
+                            );
+                          } catch (_) {
+                            Clipboard.setData(ClipboardData(text: item.text!));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('AI response copied to clipboard'),
+                                  duration: Duration(seconds: 2),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
+                          }
                         }
                       },
                       child: Padding(
