@@ -5,7 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'screens/splash_screen.dart';
+// import 'screens/splash_screen.dart';
+import 'screens/home_screen.dart';
 import 'services/ai_settings_service.dart';
 import 'services/call_service.dart';
 import 'services/device_identity.dart';
@@ -107,7 +108,8 @@ class FarmitraNearbyApp extends StatelessWidget {
             useMaterial3: true,
             fontFamily: 'sans-serif',
           ),
-          home: SplashScreen(service: service),
+          // home: SplashScreen(service: service),
+          home: HomeScreen(service: service),
         );
       },
     );

@@ -35,9 +35,9 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "ic_launcher"
   ios: false
-  image_path: "assets/images/newlogo.png"
+  image_path: "assets/images/nearmitra.png"
   adaptive_icon_background: "#10B981"
-  adaptive_icon_foreground: "assets/images/newlogo.png"
+  adaptive_icon_foreground: "assets/images/nearmitra.png"
 
 
 flutter:

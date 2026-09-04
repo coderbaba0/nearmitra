@@ -98,7 +98,7 @@
         <!-- System Quick Settings Tile in Top Notification Bar -->
         <service
             android:name=".FarmitraQuickTileService"
-            android:icon="@drawable/ic_qs_nearmitra"
+            android:icon="@mipmap/ic_launcher"
             android:label="NearMitra Share"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">
