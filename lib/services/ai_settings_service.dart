@@ -17,7 +17,7 @@ class AiConfig {
   const AiConfig({
     this.provider = 'gemini',
     this.geminiApiKey = '',
-    this.geminiModel = 'gemini-2.0-flash',
+    this.geminiModel = 'gemini-3.8-flash',
     this.openaiApiKey = '',
     this.openaiModel = 'gpt-4o-mini',
     this.temperature = 0.7,
@@ -258,10 +258,11 @@ class AiSettingsService extends ChangeNotifier {
       debugPrint('Error fetching Gemini models: $e');
     }
     return [
-      'gemini-2.0-flash',
-      'gemini-1.5-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-1.5-pro',
+      'gemini-3.8-flash',
+      'gemini-3.8-pro',
+      'gemini-3.5-flash',
+      'gemini-3.5-pro',
+      'gemini-3.5-flash-thinking',
     ];
   }
 
@@ -324,7 +325,7 @@ class AiSettingsService extends ChangeNotifier {
       model = model.replaceFirst('models/', '');
     }
     if (model.contains('1.0') || model == 'gemini-pro' || model.isEmpty) {
-      model = 'gemini-2.0-flash';
+      model = 'gemini-3.8-flash';
     }
 
     try {
@@ -369,15 +370,15 @@ class AiSettingsService extends ChangeNotifier {
           final err = jsonDecode(responseBody);
           final msg =
               err['error']?['message']?.toString() ?? response.reasonPhrase;
-          // Auto-fallback if the specified model is deprecated/unsupported
+          // Auto-fallback if the specified model is deprecated/unsupported on this API key
           if ((msg.contains('not found') ||
                   msg.contains('no longer available') ||
                   msg.contains('models/') ||
                   response.statusCode == 404) &&
               overrideModel == null) {
-            final fallbackModel = model == 'gemini-2.0-flash'
-                ? 'gemini-1.5-flash'
-                : 'gemini-2.0-flash';
+            final fallbackModel = (model == 'gemini-3.8-flash' || model == 'gemini-3.0-flash')
+                ? 'gemini-2.5-flash'
+                : (model == 'gemini-2.5-flash' ? 'gemini-2.0-flash' : 'gemini-1.5-flash');
             return _queryGemini(prompt, fallbackModel);
           }
           return 'Gemini Error ($model): $msg';

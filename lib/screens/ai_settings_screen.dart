@@ -27,10 +27,11 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
   bool _testSuccess = false;
 
   List<String> _geminiModels = [
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
+    'gemini-3.8-flash',
+    'gemini-3.8-pro',
+    'gemini-3.5-flash',
+    'gemini-3.5-pro',
+    'gemini-3.5-flash-thinking',
   ];
 
   List<String> _openaiModels = [
@@ -47,7 +48,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
     final c = _service.config;
     var gModel = c.geminiModel.trim();
     if (gModel.contains('1.0') || gModel == 'gemini-pro' || gModel.isEmpty) {
-      gModel = 'gemini-2.0-flash';
+      gModel = 'gemini-3.8-flash';
     }
 
     _provider = c.provider;
@@ -127,7 +128,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
     if (gModel.startsWith('models/')) {
       gModel = gModel.replaceFirst('models/', '');
     }
-    if (gModel.isEmpty) gModel = 'gemini-2.0-flash';
+    if (gModel.isEmpty) gModel = 'gemini-3.8-flash';
 
     final updated = _service.config.copyWith(
       provider: _provider,
@@ -164,7 +165,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
     if (gModel.startsWith('models/')) {
       gModel = gModel.replaceFirst('models/', '');
     }
-    if (gModel.isEmpty) gModel = 'gemini-2.0-flash';
+    if (gModel.isEmpty) gModel = 'gemini-3.8-flash';
 
     final tempConfig = _service.config.copyWith(
       provider: _provider,
@@ -273,7 +274,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
                 child: _providerCard(
                   id: 'gemini',
                   title: 'Google Gemini',
-                  subtitle: 'Flash 2.0 & Pro',
+                  subtitle: 'Flash 3.8, 3.0 & Pro',
                   icon: Icons.auto_awesome_rounded,
                   color: const Color(0xFF3B82F6),
                 ),
@@ -312,7 +313,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
               controller: _geminiModelController,
               decoration: InputDecoration(
                 labelText: 'Gemini Model Name',
-                hintText: 'e.g. gemini-2.0-flash, gemini-1.5-flash',
+                hintText: 'e.g. gemini-3.8-flash, or type custom model',
                 prefixIcon: const Icon(Icons.psychology_alt_rounded,
                     color: Color(0xFF3B82F6)),
                 suffixIcon: IconButton(
