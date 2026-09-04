@@ -239,15 +239,30 @@ class ChatBubble extends StatelessWidget {
                       ),
                       const SizedBox(width: 4),
                     ],
-                    Text(
-                      item.isAi ? (isAiWarning ? 'System Notice' : item.sender) : item.sender,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.bold,
-                        color: item.isAi
-                            ? (isAiWarning ? const Color(0xFFFB8C00) : const Color(0xFF10B981))
-                            : (isDark ? const Color(0xFF53BDEB) : const Color(0xFF075E54)),
-                      ),
+                    Builder(
+                      builder: (_) {
+                        String senderName = item.sender;
+                        if (item.isAi) {
+                          if (isAiWarning) {
+                            senderName = 'System Notice';
+                          } else {
+                            senderName = senderName.replaceAll(
+                              RegExp(r'\b(AI|Ai)\s+(AI|Ai)\b', caseSensitive: false),
+                              'AI',
+                            );
+                          }
+                        }
+                        return Text(
+                          senderName,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.bold,
+                            color: item.isAi
+                                ? (isAiWarning ? const Color(0xFFFB8C00) : const Color(0xFF10B981))
+                                : (isDark ? const Color(0xFF53BDEB) : const Color(0xFF075E54)),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),

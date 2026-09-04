@@ -828,10 +828,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _triggerScrollToBottom();
   }
 
-  void _triggerScrollToBottom() {
+  void _triggerScrollToBottom({bool immediate = true}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-      Future.delayed(const Duration(milliseconds: 100), () => _scrollToBottom());
+      if (immediate) {
+        _scrollToBottomImmediate();
+      } else {
+        _scrollToBottom();
+      }
+      Future.delayed(const Duration(milliseconds: 50), () {
+        if (mounted) {
+          if (immediate) {
+            _scrollToBottomImmediate();
+          } else {
+            _scrollToBottom();
+          }
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (mounted) {
+          if (immediate) {
+            _scrollToBottomImmediate();
+          } else {
+            _scrollToBottom();
+          }
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) {
+          if (immediate) {
+            _scrollToBottomImmediate();
+          } else {
+            _scrollToBottom();
+          }
+        }
+      });
     });
   }
 
@@ -961,7 +991,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
       final aiResponseItem = ChatItem(
         peerId: peer.id,
-        sender: '${peer.name} AI',
+        sender: peer.name.toLowerCase().endsWith('ai') ? peer.name : '${peer.name} AI',
         mine: false,
         createdAt: DateTime.now(),
         kind: ChatKind.text,
@@ -2023,6 +2053,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             MaterialPageRoute(builder: (_) => const AboutScreen()),
                           );
                         },
+                      ),
+                      const SizedBox(height: 14),
+
+                      // Footer Branding & Support
+                      Divider(
+                        color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.mail_outline_rounded,
+                            size: 13,
+                            color: Color(0xFF10B981),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'For support or suggestions: theflutterfever@gmail.com',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.white70 : Colors.black87,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Built with ',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.grey,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.favorite_rounded,
+                            size: 14,
+                            color: Color(0xFFEF4444),
+                          ),
+                          const Text(
+                            ' Flutter and Kotlin',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF10B981),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Center(
+                        child: Text(
+                          '© 2026 NearMitra Ecosystem • All Rights Reserved',
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: isDark ? Colors.white38 : Colors.black38,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 10),
                     ],

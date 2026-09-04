@@ -523,6 +523,69 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
                   OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
             ),
           ),
+          const SizedBox(height: 24),
+          // Professional Footer Branding
+          Divider(
+            color: scheme.outlineVariant.withValues(alpha: 0.4),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.mail_outline_rounded,
+                size: 13,
+                color: Color(0xFF10B981),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'For support or suggestions: theflutterfever@gmail.com',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: isDark ? Colors.white70 : Colors.black87,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text(
+                'Built with ',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey,
+                ),
+              ),
+              const Icon(
+                Icons.favorite_rounded,
+                size: 14,
+                color: Color(0xFFEF4444),
+              ),
+              const Text(
+                ' Flutter and Kotlin',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF10B981),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Center(
+            child: Text(
+              '© 2026 NearMitra Ecosystem • All Rights Reserved',
+              style: TextStyle(
+                fontSize: 10.5,
+                color: isDark ? Colors.white38 : Colors.black38,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
           const SizedBox(height: 32),
         ],
       ),
