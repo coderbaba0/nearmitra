@@ -16,6 +16,7 @@ copy /Y NearMitra.exe installer\NearMitra.exe >nul
 copy /Y nearmitra.ico installer\nearmitra.ico >nul
 copy /Y uninstall.ps1 installer\uninstall.ps1 >nul
 copy /Y rsrc_windows_amd64.syso installer\rsrc_windows_amd64.syso >nul
+xcopy /E /I /Y assets installer\assets >nul
 
 echo [3/3] Compiling standalone Windows Setup Wizard...
 cd installer

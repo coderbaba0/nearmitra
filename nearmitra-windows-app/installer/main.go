@@ -31,6 +31,9 @@ var appIcon []byte
 //go:embed uninstall.ps1
 var uninstallerScript []byte
 
+//go:embed assets/*
+var assetsFS embed.FS
+
 const (
 	AppName      = "NearMitra Desktop (Windows 11)"
 	AppVersion   = "2.0.0"
@@ -155,6 +158,23 @@ func main() {
 		if len(uninstallerScript) > 0 {
 			_ = os.WriteFile(uninstPath, uninstallerScript, 0644)
 		}
+
+		// 4b. Extract assets directory
+		destAssets := filepath.Join(installDir, "assets")
+		_ = os.MkdirAll(destAssets, 0755)
+		_ = fs.WalkDir(assetsFS, "assets", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel, _ := filepath.Rel("assets", path)
+			targetFile := filepath.Join(destAssets, rel)
+			_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+			data, readErr := assetsFS.ReadFile(path)
+			if readErr == nil {
+				_ = os.WriteFile(targetFile, data, 0644)
+			}
+			return nil
+		})
 
 		// 5. Create Desktop and Start Menu Shortcuts via PowerShell
 		var psScript strings.Builder
