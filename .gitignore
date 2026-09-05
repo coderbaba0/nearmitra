@@ -1,3 +1,4 @@
+# Flutter
 .dart_tool/
 .packages
 .pub/
@@ -8,7 +9,29 @@ android/.gradle/
 android/.kotlin/
 android/local.properties
 *.iml
-*.log
 .idea/
 .vscode/
+
+# Go Executables & Temporary Artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.part
+
+# Logs & Temp Storage
+*.log
+*.tmp
+.tempmediaStorage/
+.user_uploaded/
+
+# Build outputs
+Release_APKs/
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 

@@ -441,7 +441,7 @@ class NearbyService extends ChangeNotifier {
       });
       socket.write('$payload\n');
       await socket.flush();
-      socket.destroy();
+      await socket.close();
       log('[CallSignal] Sent $signalType to ${peer.name} ($targetIp)');
     } catch (e) {
       log('Error sending call signal $signalType to ${peer.name} ($targetIp): $e');
@@ -469,7 +469,7 @@ class NearbyService extends ChangeNotifier {
       });
       socket.write('$payload\n');
       await socket.flush();
-      socket.destroy();
+      await socket.close();
       log('[WebRtcSignal] Sent $signalType to ${peer.name} ($targetIp)');
     } catch (e) {
       log('Error sending WebRTC signal $signalType to ${peer.name} ($targetIp): $e');
@@ -976,28 +976,37 @@ class NearbyService extends ChangeNotifier {
       }
 
       if (type == 'stream_offer') {
-        onStreamOffer?.call(resolvedPeerId, Map<String, dynamic>.from(h));
+        final payload = Map<String, dynamic>.from(h);
+        payload['remote_ip'] = remoteIp;
+        onStreamOffer?.call(resolvedPeerId, payload);
         return;
       }
 
       if (type == 'stream_answer') {
-        onStreamAnswer?.call(resolvedPeerId, Map<String, dynamic>.from(h));
+        final payload = Map<String, dynamic>.from(h);
+        payload['remote_ip'] = remoteIp;
+        onStreamAnswer?.call(resolvedPeerId, payload);
         return;
       }
 
       if (type == 'stream_ice') {
-        onStreamIceCandidate?.call(
-            resolvedPeerId, Map<String, dynamic>.from(h));
+        final payload = Map<String, dynamic>.from(h);
+        payload['remote_ip'] = remoteIp;
+        onStreamIceCandidate?.call(resolvedPeerId, payload);
         return;
       }
 
       if (type == 'stream_control') {
-        onStreamControl?.call(resolvedPeerId, Map<String, dynamic>.from(h));
+        final payload = Map<String, dynamic>.from(h);
+        payload['remote_ip'] = remoteIp;
+        onStreamControl?.call(resolvedPeerId, payload);
         return;
       }
 
       if (type == 'stream_rejected') {
-        onStreamRejected?.call(resolvedPeerId, Map<String, dynamic>.from(h));
+        final payload = Map<String, dynamic>.from(h);
+        payload['remote_ip'] = remoteIp;
+        onStreamRejected?.call(resolvedPeerId, payload);
         return;
       }
 

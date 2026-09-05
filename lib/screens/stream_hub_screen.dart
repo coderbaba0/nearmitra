@@ -235,9 +235,20 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
     // 3. Host receives Stream Offer from Remote Viewer
     widget.service.onStreamOffer = (peerId, offer) async {
-      final peer = _selectedPeer ??
-          widget.service.peers.where((p) => p.id == peerId || p.ip == peerId).firstOrNull ??
-          Peer(id: peerId, name: 'Remote Device ($peerId)', ip: peerId);
+      final remoteIp = offer['remote_ip']?.toString() ?? offer['sender_ip']?.toString() ?? '';
+      final senderName = offer['sender']?.toString() ?? offer['name']?.toString() ?? 'Remote Device';
+
+      Peer peer = _selectedPeer ??
+          widget.service.peers.where((p) => p.id == peerId || (remoteIp.isNotEmpty && p.ip == remoteIp)).firstOrNull ??
+          Peer(id: peerId, name: senderName, ip: remoteIp.isNotEmpty ? remoteIp : peerId);
+
+      if (remoteIp.isNotEmpty) {
+        peer = Peer(
+          id: peer.id.isNotEmpty ? peer.id : peerId,
+          name: senderName.isNotEmpty && senderName != 'Remote Device' ? senderName : peer.name,
+          ip: remoteIp,
+        );
+      }
       await _handleIncomingStreamOfferAsHost(peer, offer);
     };
 

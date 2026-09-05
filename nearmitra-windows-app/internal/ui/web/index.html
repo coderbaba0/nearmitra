@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NearMitra - Local AI & High-Speed P2P Mesh</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+
+  <!-- ══════════════ INCOMING CALL RINGING OVERLAY ══════════════ -->
+  <div id="incomingCallOverlay" style="display:none;" class="incoming-call-overlay">
+    <div class="incoming-call-card">
+      <div class="ic-pulse-ring"></div>
+      <div class="ic-avatar" id="icAvatar">SU</div>
+      <div class="ic-info">
+        <span class="ic-label">Incoming Call</span>
+        <h3 class="ic-name" id="icPeerName">Unknown</h3>
+        <span class="ic-type" id="icCallType">Audio • P2P WebRTC</span>
+      </div>
+      <div class="ic-actions">
+        <button class="ic-btn ic-decline" onclick="declineIncomingCall()" title="Decline">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/></svg>
+          <span>Decline</span>
+        </button>
+        <button class="ic-btn ic-answer" onclick="answerIncomingCall()" title="Answer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6.72 6.72l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <span>Answer</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Windows 11 Fluent Titlebar -->
+  <header class="app-titlebar">
+    <div class="titlebar-left">
+      <div class="app-brand-badge">
+        <img src="/logo.png" class="brand-logo-img" alt="NearMitra">
+        <span class="brand-title-text">NearMitra</span>
+      </div>
+      <nav class="titlebar-menu">
+        <span class="menu-item active">Home</span>
+        <span class="menu-item" onclick="switchTab('cctv')">CCTV</span>
+        <span class="menu-item" onclick="switchTab('voice')">Voice</span>
+        <span class="menu-item" onclick="switchTab('ai')">AI Hub</span>
+        <span class="menu-item" onclick="switchTab('iot')">IoT</span>
+      </nav>
+    </div>
+
+    <!-- Central Search Pill -->
+    <div class="titlebar-search-container">
+      <div class="search-pill">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="globalSearchInput" placeholder="Search devices, LAN hosts, chats, sensors... (Ctrl + K)" oninput="filterMasterList(this.value)">
+        <span class="search-shortcut">Ctrl+K</span>
+      </div>
+    </div>
+
+    <!-- Right Controls -->
+    <div class="titlebar-right">
+      <div class="status-pill-header">
+        <span class="status-dot-pulse"></span>
+        <span id="meshStatusHeader">Wi-Fi 6 • 866 Mbps</span>
+      </div>
+      <button class="titlebar-btn" onclick="openManualPairModal()" title="Connect by IP">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></svg>
+      </button>
+      <button class="titlebar-btn" onclick="toggleAppTheme()" id="themeBtnTop" title="Toggle Theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      </button>
+      <button class="titlebar-btn notify-btn" onclick="switchTab('logs')" title="Transfers & Logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        <span class="notification-count" id="headerLogBadge">0</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Command Ribbon -->
+  <section class="command-ribbon">
+    <div class="ribbon-action-group">
+      <button class="ribbon-btn ribbon-btn-primary" onclick="openAttachModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+        <span>Send File</span>
+      </button>
+      <button class="ribbon-btn" onclick="triggerSendFolder()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="stroke: #3B82F6;"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+        <span>Send Folder</span>
+      </button>
+      <button class="ribbon-btn" onclick="switchTab('cctv')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="stroke: #EF4444;"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+        <span>CCTV</span>
+      </button>
+      <button class="ribbon-btn" onclick="switchTab('voice')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="stroke: #8B5CF6;"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+        <span>Walkie</span>
+      </button>
+      <button class="ribbon-btn" onclick="switchTab('ai')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="stroke: #EC4899;"><path d="M12 2a8 8 0 0 0-8 8c0 3.1 1.8 5.8 4.5 7.1L8 22h8l-.5-4.9c2.7-1.3 4.5-4 4.5-7.1a8 8 0 0 0-8-8z"/><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M9.5 14a3.5 3.5 0 0 0 5 0"/></svg>
+        <span>AI Fleet</span>
+      </button>
+      <button class="ribbon-btn" onclick="switchTab('iot')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="stroke: #F59E0B;"><path d="M12 2v20"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="M2 12h20"/><path d="m19.07 4.93-4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+        <span>Smart IoT</span>
+      </button>
+    </div>
+    <div class="ribbon-right-tools">
+      <button class="ribbon-icon-btn" onclick="scanLANSubnet()" title="Scan Subnet">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </button>
+      <button class="ribbon-icon-btn" onclick="refreshDiscoveryState()" title="Refresh Discovery">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+      </button>
+      <button class="ribbon-icon-btn" onclick="openSaveDirectory()" title="Open Folder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- Main Work Environment -->
+  <div class="app-workspace">
+
+    <!-- 1. Activity Bar -->
+    <aside class="activity-bar">
+      <div class="activity-top">
+        <button class="activity-btn active" data-tab="radar" title="LAN / Radar">
+          <div class="activity-icon-wrap" style="color: #10B981;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+          </div>
+          <span class="activity-badge" id="badgePeerCount">0</span>
+        </button>
+
+        <button class="activity-btn" data-tab="chat" title="Chat">
+          <div class="activity-icon-wrap" style="color: #3B82F6;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+        </button>
+
+        <button class="activity-btn" data-tab="cctv" title="CCTV">
+          <div class="activity-icon-wrap" style="color: #EF4444;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+          </div>
+          <span class="activity-live-dot"></span>
+        </button>
+
+        <button class="activity-btn" data-tab="voice" title="Voice">
+          <div class="activity-icon-wrap" style="color: #8B5CF6;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          </div>
+        </button>
+
+        <button class="activity-btn" data-tab="ai" title="AI Hub">
+          <div class="activity-icon-wrap" style="color: #EC4899;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2a8 8 0 0 0-8 8c0 3.1 1.8 5.8 4.5 7.1L8 22h8l-.5-4.9c2.7-1.3 4.5-4 4.5-7.1a8 8 0 0 0-8-8z"/><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M9.5 14a3.5 3.5 0 0 0 5 0"/></svg>
+          </div>
+        </button>
+
+        <button class="activity-btn" data-tab="iot" title="IoT">
+          <div class="activity-icon-wrap" style="color: #F59E0B;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2v20"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="M2 12h20"/><path d="m19.07 4.93-4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+          </div>
+        </button>
+
+        <button class="activity-btn" data-tab="recents" title="Recents & Storage">
+          <div class="activity-icon-wrap" style="color: #F59E0B;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </div>
+        </button>
+
+        <button class="activity-btn" data-tab="logs" title="Logs">
+          <div class="activity-icon-wrap" style="color: #06B6D4;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          </div>
+        </button>
+      </div>
+
+      <div class="activity-bottom">
+        <button class="activity-btn" data-tab="settings" title="Settings">
+          <div class="activity-icon-wrap" style="color: #94A3B8;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+        </button>
+
+        <div class="user-avatar-node" title="Local Windows Node">
+          <span>PC</span>
+          <span class="user-status-dot"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 2. Master List Column -->
+    <section class="master-list-pane">
+      
+      <!-- LAN first, then P2P mode tabs -->
+      <div class="connection-mode-container">
+        <div class="connection-mode-tabs">
+          <button class="mode-tab-btn active" id="btnModeLAN" onclick="setConnectionMode('lan')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            <span>LAN Network</span>
+            <span class="mode-badge" id="modeLANBadge">0</span>
+          </button>
+          <button class="mode-tab-btn" id="btnModeP2P" onclick="setConnectionMode('p2p')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="20" r="1.5" fill="currentColor"/></svg>
+            <span>P2P Mesh</span>
+            <span class="mode-badge" id="modeP2PBadge">0</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Segment Filter Pills -->
+      <div class="master-segment-header">
+        <div class="segment-tabs">
+          <button class="segment-pill active" id="segPillActive" onclick="filterSegment('focused')">Online</button>
+          <button class="segment-pill" id="segPillAll" onclick="filterSegment('other')">All</button>
+          <button class="segment-pill" id="segPillIoT" onclick="filterSegment('iot')">IoT</button>
+        </div>
+        <div class="segment-actions">
+          <button class="mini-tool-btn" title="Scan LAN" onclick="scanLANSubnet()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
+          <button class="mini-tool-btn" title="Sort" onclick="toggleSortOrder()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg></button>
+          <button class="mini-tool-btn" title="Pair IP" onclick="openManualPairModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></svg></button>
+        </div>
+      </div>
+
+      <!-- Master List Items -->
+      <div class="master-items-scroll" id="masterItemsList">
+        <!-- Dynamically rendered -->
+      </div>
+    </section>
+
+    <!-- 3. Detail Workspace -->
+    <main class="detail-workspace-pane">
+
+      <!-- Hero Header Bar -->
+      <div class="hero-alert-banner">
+        <div class="alert-icon-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div class="alert-text-block">
+          <span class="alert-headline" id="heroAlertTitle">NearMitra Local Network</span>
+          <span class="alert-subline" id="heroAlertSubtitle">50+ MB/s Socket • AES-256 Encrypted • Zero-Data Mesh</span>
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="openManualPairModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Connect IP</span>
+        </button>
+      </div>
+
+      <!-- TAB PANE 0: RADAR & PEERS (Detail) -->
+      <section id="tab-radar" class="tab-pane active">
+        <div class="detail-header-card" id="detailHeaderCard">
+          <div class="peer-hero-info">
+            <div class="hero-avatar-large bg-emerald" id="heroPeerAvatar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
+            </div>
+            <div>
+              <div class="hero-title-row">
+                <h2 class="hero-title" id="heroPeerName">Select a Device</h2>
+                <span class="badge badge-emerald" id="heroPeerStatus">Online</span>
+                <span class="badge badge-blue" id="heroPeerType">TCP Socket</span>
+              </div>
+              <p class="hero-subtext" id="heroPeerMeta">IP: <strong id="heroPeerIP">192.168.1.1</strong></p>
+            </div>
+          </div>
+
+          <div class="hero-actions-row">
+            <button class="btn btn-primary" onclick="openAttachModal()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+              <span>Send Files</span>
+            </button>
+            <button class="btn btn-secondary" onclick="switchTab('chat')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <span>Chat</span>
+            </button>
+            <button class="btn btn-secondary" onclick="switchTab('cctv')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+              <span>CCTV</span>
+            </button>
+            <button class="btn btn-secondary" onclick="switchTab('voice')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+              <span>Voice</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Drag & Drop Zone -->
+        <div class="drag-drop-zone" onclick="triggerSendFile()" ondragover="event.preventDefault()" ondrop="handleDropFile(event)">
+          <div class="drop-icon-circle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+          </div>
+          <h3 class="drop-title">Drop Files for Fast 50+ MB/s Transfer</h3>
+          <p class="drop-subtitle">Click to browse or drag and drop files / folders.</p>
+        </div>
+
+        <!-- Radar Stats -->
+        <div class="radar-card-container">
+          <div class="radar-hud">
+            <div class="radar-rings">
+              <div class="ring ring-1"></div>
+              <div class="ring ring-2"></div>
+              <div class="ring ring-3"></div>
+              <div class="radar-scanner"></div>
+              <div class="radar-center-node">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="radar-stats-column">
+            <div class="stat-box">
+              <span class="stat-label">Host IP</span>
+              <span class="stat-value text-emerald" id="localNodeIP">192.168.1.2</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Subnet Broadcast</span>
+              <span class="stat-value">255.255.255.255:43888</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Transport Protocol</span>
+              <span class="stat-value text-blue">TCP Multi-Chunk v2</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Encryption Suite</span>
+              <span class="stat-value text-purple">AES-GCM 256-Bit</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 1: CHAT -->
+      <section id="tab-chat" class="tab-pane">
+        <div class="chat-workspace-card">
+          <div class="chat-peer-bar">
+            <div class="chat-peer-profile-row">
+              <button class="btn-back-tool" onclick="navigateBack()" title="Back to Devices">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <div class="card-avatar-circle bg-emerald" id="chatHeaderAvatar">
+                <span id="chatHeaderInitials">SM</span>
+              </div>
+              <div>
+                <h3 class="chat-title" id="chatHeaderTitle">Direct Message Channel</h3>
+                <span class="chat-status-text" id="chatHeaderStatus">Encrypted Direct Socket</span>
+              </div>
+            </div>
+            <div class="chat-tool-actions">
+              <button class="chat-btn-tool" onclick="clearActivePeerChat()" title="Clear Chat History"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+              <button class="chat-btn-tool" onclick="switchTab('voice')" title="Voice Call"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
+              <button class="chat-btn-tool" onclick="switchTab('cctv')" title="CCTV Stream"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg></button>
+              <button class="chat-btn-tool" onclick="openAttachModal()" title="Attach / Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+            </div>
+          </div>
+
+          <!-- ── CHAT SUB-TAB TOGGLE (Peer Chat / Nearby AI) ── -->
+          <div class="chat-subtab-bar">
+            <button class="chat-subtab active" id="subtabPeerChat" onclick="setChatSubTab('peer')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              Peer Chat
+            </button>
+            <button class="chat-subtab" id="subtabNearbyAI" onclick="setChatSubTab('ai')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M12 2a8 8 0 0 0-8 8c0 3.1 1.8 5.8 4.5 7.1L8 22h8l-.5-4.9c2.7-1.3 4.5-4 4.5-7.1a8 8 0 0 0-8-8z"/><path d="M9 10h.01"/><path d="M15 10h.01"/><path d="M9.5 14a3.5 3.5 0 0 0 5 0"/></svg>
+              Nearby AI
+              <span class="subtab-ai-badge" id="aiSubtabProviderBadge">—</span>
+            </button>
+          </div>
+
+          <!-- ── PEER CHAT VIEW ── -->
+          <div id="chatViewPeer" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+            <div class="chat-messages-container" id="chatStream" ondragover="handleChatDragOver(event)" ondragleave="handleChatDragLeave(event)" ondrop="handleChatDrop(event)">
+              <div class="chat-drop-overlay" id="chatDropOverlay">
+                <div class="drop-overlay-box">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                  <h3>Drop files to send directly</h3>
+                  <p id="dropTargetLabel">50+ MB/s Socket Transfer</p>
+                </div>
+              </div>
+              <div class="chat-date-divider"><span>Today</span></div>
+            </div>
+
+            <div class="chat-typing-bar" id="chatTypingBar" style="display:none;">
+              <div class="typing-bubble">
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-text" id="typingPeerLabel">Peer is typing...</span>
+              </div>
+            </div>
+
+            <div class="quick-pills-row">
+              <button class="quick-pill" onclick="sendPresetText('Crop leaf health scan report')">Crop Health Scan</button>
+              <button class="quick-pill" onclick="sendPresetText('Turn ON Irrigation Pump for 15 minutes')">Irrigation Timer</button>
+              <button class="quick-pill" onclick="sendPresetText('Print Mandi Gate Pass Receipt')">Print Gate Pass</button>
+              <button class="quick-pill" onclick="sendPresetText('Start high-speed mesh benchmark')">Speed Benchmark</button>
+            </div>
+
+            <div class="chat-input-capsule">
+              <button class="input-tool-btn" onclick="openAttachModal()" title="Attach File / Media / Folder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <input type="text" id="chatInput" class="input-text-area" placeholder="Type message..." onkeydown="if(event.key==='Enter') sendChatMessage()" oninput="handleUserTyping()">
+              <button class="input-tool-btn" onclick="switchTab('voice')" title="Voice Note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+              </button>
+              <button class="input-send-btn" onclick="sendChatMessage()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- ── NEARBY AI CHAT VIEW ── -->
+          <div id="chatViewAI" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+            <!-- AI Provider Quick Selector -->
+            <div class="ai-chat-provider-bar">
+              <button class="ai-prov-pill active" id="aiProvPillGemini"  onclick="setAIChatProvider('gemini')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                Gemini
+              </button>
+              <button class="ai-prov-pill" id="aiProvPillOpenAI" onclick="setAIChatProvider('openai')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+                ChatGPT
+              </button>
+              <button class="ai-prov-pill" id="aiProvPillGroq" onclick="setAIChatProvider('groq')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                Groq
+              </button>
+              <button class="ai-prov-pill" id="aiProvPillOllama" onclick="setAIChatProvider('ollama')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
+                Ollama
+              </button>
+              <button class="ai-prov-pill ai-settings-pill" onclick="switchTab('ai')" title="AI Settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                Config
+              </button>
+              <span class="ai-chat-model-badge" id="aiChatModelBadge">—</span>
+              <span class="ai-share-indicator" id="aiShareIndicator" style="display:none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:11px;height:11px;color:#10B981;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
+                Shared with peers
+              </span>
+            </div>
+
+            <!-- AI Chat Stream -->
+            <div class="chat-messages-container" id="aiChatStream">
+              <div class="ai-welcome-bubble">
+                <div class="ai-welcome-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:28px;height:28px;color:#EC4899;"><path d="M12 2a8 8 0 0 0-8 8c0 3.1 1.8 5.8 4.5 7.1L8 22h8l-.5-4.9c2.7-1.3 4.5-4 4.5-7.1a8 8 0 0 0-8-8z"/></svg>
+                </div>
+                <p>Nearby AI ready. Ask anything — crop disease, irrigation schedule, Mandi prices, or any local query.</p>
+                <div class="ai-quick-prompts">
+                  <button onclick="sendAIChatMessage('Diagnose common wheat leaf diseases and suggest organic remedies')">🌾 Crop Disease</button>
+                  <button onclick="sendAIChatMessage('Calculate optimal irrigation schedule for 2 hectares at 32% soil moisture')">💧 Irrigation</button>
+                  <button onclick="sendAIChatMessage('What are today\'s Mandi prices for wheat and mustard in Rajasthan?')">📊 Mandi Prices</button>
+                  <button onclick="sendAIChatMessage('Summarize my NearMitra mesh network status and connected devices')">🔌 Mesh Status</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="ai-chat-typing-bar" id="aiChatTypingBar" style="display:none;">
+              <div class="ai-typing-indicator">
+                <span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span>
+                <span style="font-size:11.5px; color:var(--text-muted); margin-left:6px;" id="aiTypingLabel">AI thinking...</span>
+              </div>
+            </div>
+
+            <div class="chat-input-capsule ai-input-capsule">
+              <input type="text" id="aiChatInput" class="input-text-area" placeholder="Ask Nearby AI..." onkeydown="if(event.key==='Enter') sendAIChatMessage()">
+              <button class="input-send-btn ai-send-btn" onclick="sendAIChatMessage()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 2: CCTV SURVEILLANCE & REMOTE STREAMING -->
+      <section id="tab-cctv" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">CCTV Surveillance & Remote Vision</h2>
+              <p class="pane-subtitle">Host Camera • Remote Peer Monitor • OpenCV Diagnostics • MP4 REC</p>
+            </div>
+          </div>
+          <div class="pane-actions-group">
+            <button class="btn btn-danger" id="btnRecordToggle" onclick="toggleCctvRecording()">
+              <span class="rec-dot"></span>
+              <span id="recBtnLabel">Start REC</span>
+            </button>
+            <button class="btn btn-secondary" onclick="captureCctvSnapshot()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+              <span>Snapshot</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Mode Switcher (Host Camera vs Remote Viewer) -->
+        <div class="stream-role-switcher-bar">
+          <button class="stream-role-tab active" id="btnRoleHost" onclick="setStreamerRole('host')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+            <span>Host Camera (CCTV Source)</span>
+          </button>
+          <button class="stream-role-tab" id="btnRoleRemote" onclick="setStreamerRole('remote')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+            <span>Remote Monitor (Watch Peer)</span>
+          </button>
+        </div>
+
+        <!-- Main Video Viewport Canvas -->
+        <div class="cctv-viewport-card" id="cctvMainViewport">
+          <!-- Top HUD Overlay -->
+          <div class="cctv-hud-overlay top-left">
+            <div class="hud-status-badge">
+              <span class="hud-live-dot" id="cctvLiveDot"></span>
+              <span id="cctvStatusBadge">Host Camera Ready</span>
+              <span class="badge badge-emerald" style="font-size:9.5px; padding:2px 6px;">1080P HD</span>
+            </div>
+            <span class="badge badge-slate" id="hudPipelineLabel">Normal Feed</span>
+          </div>
+
+          <div class="cctv-hud-overlay top-right">
+            <div class="badge badge-danger" id="cctvRecBadge" style="display:none">
+              REC <span id="recTimer">00:00:00</span>
+            </div>
+            <button class="hud-tool-btn" id="btnCctvReset" onclick="resetCctvStream()" title="Reset & Refresh Stream">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+            </button>
+            <button class="hud-tool-btn" id="btnCctvFullscreen" onclick="toggleCctvFullscreen()" title="Fullscreen View">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            </button>
+          </div>
+
+          <!-- Video Players -->
+          <video id="localCctvVideo" autoplay playsinline muted class="cctv-video-render" style="display:none;"></video>
+          <video id="remoteCctvVideo" autoplay playsinline class="cctv-video-render" style="display:none;"></video>
+
+          <!-- Inactive Placeholder -->
+          <div class="cctv-canvas-placeholder" id="cctvPlaceholder">
+            <div class="stream-center-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+              <h3 id="placeholderTitle">Host Camera Inactive</h3>
+              <p id="placeholderSubtitle" style="font-size:12px; color:var(--text-muted); margin-top:4px;">Click "Start Host Camera" below to begin local CCTV stream</p>
+            </div>
+          </div>
+
+          <!-- Diagnostic Banner at bottom of viewport -->
+          <div class="cctv-diagnostic-banner" id="cctvDiagBanner">
+            AI Vision Pipeline: Offline-Ready • 0% Cloud Dependency • 4ms Direct Frame Loop
+          </div>
+
+          <!-- Host Quick Floating Lens/Flash Toolbar (Visible when local host is streaming) -->
+          <div class="host-floating-toolbar" id="hostFloatToolbar" style="display:none;">
+            <button class="float-tool-btn" id="btnHostTorch" onclick="toggleHostTorch()" title="Torch / Flashlight">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </button>
+            <button class="float-tool-btn" onclick="switchHostCameraDevice()" title="Flip / Switch Webcam">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
+            <button class="float-tool-btn" id="btnHostMicMute" onclick="toggleHostMicMute()" title="Mute Host Mic">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Computer Vision Filter Pills -->
+        <div class="filter-pills-bar" id="cvFiltersBar" style="margin-top:10px;">
+          <button class="filter-pill active" data-filter="Normal Feed">Normal 1080p</button>
+          <button class="filter-pill" data-filter="Motion & Intruder Alert">Motion & Intruder</button>
+          <button class="filter-pill" data-filter="AI Crop Disease / Leaf Scan">Crop Health (NDVI)</button>
+          <button class="filter-pill" data-filter="Night Vision IR Boost">Night Vision IR</button>
+          <button class="filter-pill" data-filter="Edge Contour Analysis">Edge Contour</button>
+          <button class="filter-pill" data-filter="Thermal False-Color HUD">Thermal False-Color</button>
+        </div>
+
+        <!-- Dynamic Action Controls: HOST CAMERA CONTROLS -->
+        <div id="controlsHostView" class="stream-controls-section" style="margin-top:12px;">
+          <div style="display:flex; gap:10px;">
+            <button class="btn btn-primary" id="btnStartHostCamera" onclick="toggleHostCameraStream()" style="flex:1; padding:13px; font-size:14px; font-weight:700;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+              <span id="btnHostCameraLabel">Start Host Camera</span>
+            </button>
+            <button class="btn btn-secondary" onclick="openRecordingsFolder()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+              <span>Recordings</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Dynamic Action Controls: REMOTE MONITOR CONTROLS -->
+        <div id="controlsRemoteView" class="stream-controls-section" style="display:none; margin-top:12px; flex-direction:column; gap:12px;">
+          <!-- Peer Selection Dropdown Row -->
+          <div class="remote-peer-select-card">
+            <div style="display:flex; align-items:center; gap:8px; flex:1;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px; color:var(--primary-emerald);"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg>
+              <div style="flex:1;">
+                <div style="font-size:11px; color:var(--text-muted);">Target Host Device:</div>
+                <select id="cctvPeerSelect" class="form-select" onchange="onCctvTargetPeerChanged(this.value)" style="margin-top:2px; padding:6px 10px;">
+                  <!-- Populated from peers -->
+                </select>
+              </div>
+            </div>
+            <button class="btn btn-primary" id="btnConnectRemoteCctv" onclick="toggleRemoteCctvConnection()" style="padding:10px 18px; font-weight:700;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              <span id="btnConnectRemoteLabel">Connect Camera Feed</span>
+            </button>
+          </div>
+
+          <!-- Remote Hardware Control Triggers (Active when connected to peer) -->
+          <div class="remote-hw-triggers-card" id="remoteHwTriggersBox" style="display:none;">
+            <span style="font-size:11.5px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Remote Hardware Controls</span>
+            <div class="remote-hw-btns-grid">
+              <button class="btn btn-secondary" id="btnRemoteTorch" onclick="triggerRemoteHardware('toggle_torch')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#F59E0B;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span id="remoteTorchText">Torch ON</span>
+              </button>
+              <button class="btn btn-secondary" onclick="triggerRemoteHardware('switch_camera')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#10B981;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                <span>Flip Lens</span>
+              </button>
+              <button class="btn btn-secondary" id="btnRemoteMic" onclick="triggerRemoteHardware('toggle_mic')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#EF4444;"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                <span id="remoteMicText">Mute Peer</span>
+              </button>
+              <button class="btn btn-secondary" onclick="captureCctvSnapshot()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="3"/><path d="M5 7h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/></svg>
+                <span>Snapshot</span>
+              </button>
+              <button class="btn btn-secondary" onclick="toggleCctvFullscreen()" title="Fullscreen Video">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#3B82F6;"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                <span>Fullscreen</span>
+              </button>
+              <button class="btn btn-secondary" onclick="resetCctvStream()" title="Refresh / Reconnect Feed">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#A855F7;"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step-by-Step Professional Usage Guide Card -->
+        <div class="stream-guide-card" style="margin-top:14px;">
+          <div style="font-weight:700; font-size:12.5px; color:var(--text-title); margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--primary-emerald);"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16"/><line x1="12" x2="12.01" y1="8"/></svg>
+            How Host & Remote Streaming Works:
+          </div>
+          <ul class="stream-guide-list">
+            <li><strong>Host Camera Mode:</strong> Turn this PC or connected webcam into a dedicated CCTV security node that broadcasts live video to mobile phones and mesh peers.</li>
+            <li><strong>Remote Monitor Mode:</strong> Connect directly to a nearby Android phone or laptop camera to monitor crops, warehouses, or entrance gates in real time with hardware flashlight and lens flip control.</li>
+            <li><strong>100% Zero-Data P2P:</strong> All frames stream strictly over your local Wi-Fi / LAN without touching any cloud servers.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- TAB PANE 3: WEBRTC CALLING & LIVE AUDIO STREAMING -->
+      <section id="tab-voice" class="tab-pane">
+        <div class="pane-action-bar" style="margin-bottom: 0;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title" id="callingHeaderTitle">HD Voice & Live Audio Relay</h2>
+              <p class="pane-subtitle" id="callingHeaderSubtitle">Listen Remote Room • Broadcast My Voice • Encrypted P2P Audio</p>
+            </div>
+          </div>
+          <div class="call-mode-pill-toggle">
+            <button class="filter-pill active" id="pillModeAudio" onclick="setAudioStreamMode('listen')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px;"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+              <span>Listen Remote Mic</span>
+            </button>
+            <button class="filter-pill" id="pillModeBroadcast" onclick="setAudioStreamMode('broadcast')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px;"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+              <span>Broadcast My Voice</span>
+            </button>
+            <button class="filter-pill" id="pillModeVideo" onclick="setCallMode('video')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;margin-right:4px;"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+              <span>Video Call</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="webrtc-call-workspace">
+          <!-- AUDIO CALL STAGE -->
+          <div class="call-stage-audio" id="stageAudioCall">
+            <div class="call-profile-card">
+              <!-- Target Peer Selector Dropdown in Audio Stage -->
+              <div style="width:100%; max-width:320px; margin-bottom:14px;">
+                <select id="audioPeerSelect" class="form-select" onchange="onAudioTargetPeerChanged(this.value)">
+                  <!-- Populated dynamically -->
+                </select>
+              </div>
+
+              <!-- Glowing Audio Visualizer Circle -->
+              <div class="audio-glow-circle" id="audioGlowCircle">
+                <div class="audio-circle-icon" id="audioCircleIcon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:48px;height:48px;color:var(--primary-emerald);"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+                </div>
+              </div>
+
+              <h2 class="call-peer-title" id="callPeerTitle">Subham007</h2>
+              
+              <div class="call-status-badge-row">
+                <span class="badge badge-emerald" id="callDurationBadge">00:00:00</span>
+                <span class="badge badge-blue" id="callCodecBadge">Opus 48kHz HD</span>
+                <span class="badge badge-purple" id="callLatencyBadge">2ms • 0% Loss</span>
+              </div>
+
+              <p class="call-peer-status" id="callPeerStatus">Ready to Stream Live Audio</p>
+
+              <!-- Equalizer waveform bars -->
+              <div class="audio-wave-visualizer" id="audioEqualizer"></div>
+            </div>
+          </div>
+
+          <!-- VIDEO CALL STAGE -->
+          <div class="call-stage-video" id="stageVideoCall" style="display:none;">
+            <div class="remote-video-container">
+              <video id="remoteVideo" autoplay playsinline class="remote-video-feed"></video>
+              <div class="remote-video-placeholder" id="remoteVideoPlaceholder">
+                <div class="remote-avatar-big" id="remoteAvatarInitials">SU</div>
+                <h3 id="remotePeerVideoName">Subham007</h3>
+                <span class="badge badge-emerald">HD 1080p Video Stream Ready</span>
+              </div>
+              <div class="video-overlay-top">
+                <span class="badge badge-emerald" id="videoDurationBadge">00:00:00</span>
+                <span class="badge badge-slate">P2P 1080p • 60 FPS</span>
+              </div>
+            </div>
+
+            <!-- Picture-in-Picture Local Self Camera Preview -->
+            <div class="local-video-pip" id="localVideoPip">
+              <video id="localVideo" autoplay playsinline muted class="local-video-feed"></video>
+              <div class="pip-label">You (Host)</div>
+            </div>
+          </div>
+
+          <!-- Call Control Capsule -->
+          <div class="whatsapp-call-controls">
+            <button class="btn-call-ctrl" id="btnCallMute" onclick="toggleVoiceMute()" title="Mute Microphone">
+              <div class="ctrl-icon-circle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+              </div>
+              <span class="ctrl-label" id="muteLabel">Mic On</span>
+            </button>
+
+            <button class="btn-call-ctrl" id="btnCallCam" onclick="toggleVideoCamera()" title="Camera On/Off">
+              <div class="ctrl-icon-circle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+              </div>
+              <span class="ctrl-label" id="camLabel">Camera</span>
+            </button>
+
+            <button class="btn-call-ctrl" id="btnCallScreen" onclick="toggleScreenShare()" title="Share Screen">
+              <div class="ctrl-icon-circle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+              </div>
+              <span class="ctrl-label" id="screenLabel">Share</span>
+            </button>
+
+            <button class="btn-call-ctrl" id="btnCallSpeaker" onclick="toggleSpeaker()" title="Speakerphone">
+              <div class="ctrl-icon-circle">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              </div>
+              <span class="ctrl-label" id="speakerLabel">Speaker</span>
+            </button>
+
+            <button class="btn-call-ctrl btn-call-end-pill" onclick="endVoiceCall()" title="End Call">
+              <div class="ctrl-icon-circle bg-red">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/></svg>
+              </div>
+              <span class="ctrl-label">End</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 4: AI FLEET HUB -->
+      <section id="tab-ai" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">AI Fleet & Mesh Analytics</h2>
+              <p class="pane-subtitle">Dual-Tier LLMs • P2P Distributed Compute • Peer Access Control</p>
+            </div>
+          </div>
+          <div class="pane-actions-group">
+            <button class="btn btn-primary" onclick="switchAIFleetView('analytics')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+              <span>Mesh Analytics</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-pills-bar">
+          <button class="filter-pill active" id="pillAIReasoning" onclick="switchAIFleetView('reasoning')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;margin-right:4px;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            AI Reasoning & Prompts
+          </button>
+          <button class="filter-pill" id="pillAIConfig" onclick="switchAIFleetView('config')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;margin-right:4px;"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            API Keys & Model Config
+          </button>
+          <button class="filter-pill" id="pillAIAnalytics" onclick="switchAIFleetView('analytics')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;margin-right:4px;"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+            P2P Mesh Telemetry & Access
+          </button>
+        </div>
+
+        <!-- AI SUBVIEW 1: REASONING & PROMPTS -->
+        <div id="aiReasoningView">
+          <div class="model-switcher-bar">
+            <button class="model-pill active" id="btnModelGemini" onclick="setAIModel('gemini', 'gemini-2.0-flash')">
+              <span class="prov-icon-sm">✨</span> Gemini 2.0 Flash
+            </button>
+            <button class="model-pill" id="btnModelOpenAI" onclick="setAIModel('openai', 'gpt-4o')">
+              <span class="prov-icon-sm">⚡</span> ChatGPT-4o
+            </button>
+            <button class="model-pill" id="btnModelGroq" onclick="setAIModel('groq', 'llama-3.3-70b-versatile')">
+              <span class="prov-icon-sm">🚀</span> Groq (LLaMA 3.3)
+            </button>
+            <button class="model-pill" id="btnModelOllama" onclick="setAIModel('ollama', 'qwen2.5:latest')">
+              <span class="prov-icon-sm">💻</span> Ollama (Local)
+            </button>
+          </div>
+
+          <div class="ai-presets-grid" style="margin-top: 12px;">
+            <div class="preset-card">
+              <div class="preset-header">
+                <span class="preset-title">🌾 Crop Disease Diagnosis</span>
+                <button class="btn btn-sm btn-purple" onclick="runAIPreset(0)">Analyze</button>
+              </div>
+              <p class="preset-desc">Leaf fungal rust scan & organic remedy advisory.</p>
+            </div>
+
+            <div class="preset-card">
+              <div class="preset-header">
+                <span class="preset-title">💧 Smart Irrigation Schedule</span>
+                <button class="btn btn-sm btn-purple" onclick="runAIPreset(1)">Analyze</button>
+              </div>
+              <p class="preset-desc">Optimal water volume based on soil telemetry.</p>
+            </div>
+
+            <div class="preset-card">
+              <div class="preset-header">
+                <span class="preset-title">📊 Mandi Price Prediction</span>
+                <button class="btn btn-sm btn-purple" onclick="runAIPreset(2)">Analyze</button>
+              </div>
+              <p class="preset-desc">Commodity price trends for Wheat and Mustard.</p>
+            </div>
+
+            <div class="preset-card">
+              <div class="preset-header">
+                <span class="preset-title">🔌 Mesh Compute Dispatch</span>
+                <button class="btn btn-sm btn-purple" onclick="runAIPreset(3)">Analyze</button>
+              </div>
+              <p class="preset-desc">Distribute AI query workload across nearby nodes.</p>
+            </div>
+          </div>
+
+          <div class="ai-console-card" style="margin-top: 12px;">
+            <div class="ai-console-header">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="ai-console-title" id="aiConsoleTitle">AI Reasoning Output</span>
+                <span class="badge badge-purple" id="aiModelBadge">Gemini Active</span>
+              </div>
+              <div style="display:flex; gap:6px;">
+                <button class="btn btn-sm btn-secondary" onclick="copyAIConsoleOutput()" title="Copy Response">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                  <span>Copy</span>
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="shareAIToActivePeer()" title="Share with Connected Peer">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" x2="12" y1="2" y2="15"/></svg>
+                  <span>Share with Peer</span>
+                </button>
+              </div>
+            </div>
+            <div class="ai-console-body" id="aiConsoleBody">
+              Click "Analyze" on any preset above or type a custom query below.
+            </div>
+            <div class="ai-prompt-input-bar">
+              <input type="text" id="aiCustomInput" placeholder="Ask NearMitra AI anything..." onkeydown="if(event.key==='Enter') queryCustomAI()">
+              <button class="btn btn-purple" onclick="queryCustomAI()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg>
+                <span>Query</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI SUBVIEW 2: API KEYS & MODEL CONFIGURATION -->
+        <div id="aiConfigView" style="display:none; flex-direction:column; gap:16px;">
+          <!-- Active Provider Selector Radio Tabs -->
+          <div class="ai-config-provider-tabs">
+            <div class="ai-provider-card" id="cardProvGemini" onclick="selectConfigProvider('gemini')">
+              <div class="ai-provider-card-header">
+                <div class="ai-prov-icon-wrap bg-purple-glow">✨</div>
+                <div>
+                  <div class="ai-prov-name">Google Gemini</div>
+                  <div class="ai-prov-sub">Gemini 2.0 Flash / 1.5 Pro</div>
+                </div>
+                <input type="radio" name="aiProviderRadio" id="radioProvGemini" value="gemini" checked>
+              </div>
+              <div class="ai-prov-badge-row">
+                <span class="badge badge-emerald" id="badgeGeminiStatus">Configured</span>
+              </div>
+            </div>
+
+            <div class="ai-provider-card" id="cardProvOpenAI" onclick="selectConfigProvider('openai')">
+              <div class="ai-provider-card-header">
+                <div class="ai-prov-icon-wrap bg-emerald-glow">⚡</div>
+                <div>
+                  <div class="ai-prov-name">OpenAI ChatGPT</div>
+                  <div class="ai-prov-sub">GPT-4o / GPT-4o-mini</div>
+                </div>
+                <input type="radio" name="aiProviderRadio" id="radioProvOpenAI" value="openai">
+              </div>
+              <div class="ai-prov-badge-row">
+                <span class="badge badge-slate" id="badgeOpenAIStatus">No Key</span>
+              </div>
+            </div>
+
+            <div class="ai-provider-card" id="cardProvGroq" onclick="selectConfigProvider('groq')">
+              <div class="ai-provider-card-header">
+                <div class="ai-prov-icon-wrap bg-amber-glow">🚀</div>
+                <div>
+                  <div class="ai-prov-name">Groq Cloud</div>
+                  <div class="ai-prov-sub">Ultra-fast LLaMA 3.3 / Mixtral</div>
+                </div>
+                <input type="radio" name="aiProviderRadio" id="radioProvGroq" value="groq">
+              </div>
+              <div class="ai-prov-badge-row">
+                <span class="badge badge-slate" id="badgeGroqStatus">No Key</span>
+              </div>
+            </div>
+
+            <div class="ai-provider-card" id="cardProvOllama" onclick="selectConfigProvider('ollama')">
+              <div class="ai-provider-card-header">
+                <div class="ai-prov-icon-wrap bg-blue-glow">💻</div>
+                <div>
+                  <div class="ai-prov-name">Ollama (Local)</div>
+                  <div class="ai-prov-sub">100% Offline & Private</div>
+                </div>
+                <input type="radio" name="aiProviderRadio" id="radioProvOllama" value="ollama">
+              </div>
+              <div class="ai-prov-badge-row">
+                <span class="badge badge-slate" id="badgeOllamaStatus">Offline</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Configuration Fields Card -->
+          <div class="settings-card ai-settings-form-box">
+            <h3 class="form-section-title">
+              <span id="activeProvFormTitle">Google Gemini Settings</span>
+            </h3>
+
+            <!-- Gemini Fields -->
+            <div id="formSectionGemini" class="prov-form-section">
+              <div class="form-row">
+                <label class="form-label">Gemini Model</label>
+                <select id="cfgGeminiModel" class="form-select">
+                  <option value="gemini-2.0-flash" selected>gemini-2.0-flash (Recommended • Ultra Fast & Smart)</option>
+                  <option value="gemini-1.5-pro">gemini-1.5-pro (Complex Reasoning & Multimodal)</option>
+                  <option value="gemini-1.5-flash">gemini-1.5-flash (Fast & Lightweight)</option>
+                  <option value="gemini-1.0-pro">gemini-1.0-pro (Legacy)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label class="form-label">Gemini API Key</label>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" class="link-helper">Get Free Gemini Key ↗</a>
+                </div>
+                <div class="input-password-wrap">
+                  <input type="password" id="cfgGeminiKey" class="form-input" placeholder="AIzaSy... (paste your key here)">
+                  <button type="button" class="btn-eye" onclick="togglePasswordVisibility('cfgGeminiKey', this)">👁</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- OpenAI Fields -->
+            <div id="formSectionOpenAI" class="prov-form-section" style="display:none;">
+              <div class="form-row">
+                <label class="form-label">ChatGPT Model</label>
+                <select id="cfgOpenAIModel" class="form-select">
+                  <option value="gpt-4o" selected>gpt-4o (High Intelligence Flagship)</option>
+                  <option value="gpt-4o-mini">gpt-4o-mini (Fast & Affordable)</option>
+                  <option value="gpt-4-turbo">gpt-4-turbo</option>
+                  <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label class="form-label">OpenAI API Key</label>
+                  <a href="https://platform.openai.com/api-keys" target="_blank" class="link-helper">Get OpenAI Key ↗</a>
+                </div>
+                <div class="input-password-wrap">
+                  <input type="password" id="cfgOpenAIKey" class="form-input" placeholder="sk-proj-... (paste your key here)">
+                  <button type="button" class="btn-eye" onclick="togglePasswordVisibility('cfgOpenAIKey', this)">👁</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Groq Fields -->
+            <div id="formSectionGroq" class="prov-form-section" style="display:none;">
+              <div class="form-row">
+                <label class="form-label">Groq Model</label>
+                <select id="cfgGroqModel" class="form-select">
+                  <option value="llama-3.3-70b-versatile" selected>llama-3.3-70b-versatile (State-of-the-art LLaMA 3.3)</option>
+                  <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Sub-100ms Inference)</option>
+                  <option value="mixtral-8x7b-32768">mixtral-8x7b-32768 (MoE Architecture)</option>
+                  <option value="gemma2-9b-it">gemma2-9b-it (Google Gemma 2 on Groq)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label class="form-label">Groq API Key</label>
+                  <a href="https://console.groq.com/keys" target="_blank" class="link-helper">Get Free Groq Key ↗</a>
+                </div>
+                <div class="input-password-wrap">
+                  <input type="password" id="cfgGroqKey" class="form-input" placeholder="gsk_... (paste your key here)">
+                  <button type="button" class="btn-eye" onclick="togglePasswordVisibility('cfgGroqKey', this)">👁</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Ollama Fields -->
+            <div id="formSectionOllama" class="prov-form-section" style="display:none;">
+              <div class="form-row">
+                <label class="form-label">Ollama Host URL</label>
+                <input type="text" id="cfgOllamaURL" class="form-input" value="http://localhost:11434" placeholder="http://localhost:11434">
+              </div>
+              <div class="form-row">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label class="form-label">Local Model Name</label>
+                  <span class="link-helper" id="ollamaInstalledNotice">e.g. qwen2.5:latest, deepseek-r1:latest</span>
+                </div>
+                <input type="text" id="cfgOllamaModel" class="form-input" value="qwen2.5:latest" placeholder="qwen2.5:latest or deepseek-r1:latest">
+              </div>
+            </div>
+
+            <!-- Common Parameters -->
+            <div style="margin-top:16px; border-top:1px solid var(--border-color); padding-top:14px;">
+              <div class="form-row">
+                <label class="form-label">System Personality & Role</label>
+                <textarea id="cfgSystemPrompt" class="form-textarea" rows="2" placeholder="You are NearMitra AI, an intelligent offline-first assistant for Indian agriculture, village logistics, IoT hardware, and local network diagnostics."></textarea>
+              </div>
+              <div class="form-row">
+                <div style="display:flex; justify-content:space-between;">
+                  <label class="form-label">Temperature / Creativity</label>
+                  <span style="font-size:12px; color:var(--text-muted);" id="tempLabel">0.7</span>
+                </div>
+                <input type="range" id="cfgTemperature" min="0" max="1" step="0.1" value="0.7" oninput="document.getElementById('tempLabel').innerText = this.value" style="width:100%; accent-color:var(--primary-emerald);">
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="form-actions-row" style="margin-top:16px; display:flex; gap:10px;">
+              <button class="btn btn-primary" onclick="saveAIConfig()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                <span>Save AI Configuration</span>
+              </button>
+              <button class="btn btn-secondary" onclick="testAIConnection()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                <span>Test Live Connection</span>
+              </button>
+              <span id="aiSaveMsg" style="font-size:12px; align-self:center; font-weight:500;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI SUBVIEW 3: MESH ANALYTICS & PEER ACCESS CONTROL -->
+        <div id="aiAnalyticsView" style="display: none; flex-direction: column; gap: 14px;">
+          <!-- Telemetry HUD Cards -->
+          <div class="ai-telemetry-grid">
+            <div class="stat-box">
+              <span class="stat-label">GPU Acceleration</span>
+              <span class="stat-value text-purple" id="aiGpuLabel">Detecting...</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">CPU Processor</span>
+              <span class="stat-value text-amber" id="aiCpuLabel">Detecting...</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">System Memory</span>
+              <span class="stat-value text-emerald" id="aiRamLabel">Detecting...</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Local AI (Ollama)</span>
+              <span class="stat-value text-blue" id="aiSpeedLabel">Checking...</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Prompts Served</span>
+              <span class="stat-value" id="aiPromptsLabel">0 Requests</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Ollama Models</span>
+              <span class="stat-value text-purple" id="aiOllamaModels">—</span>
+            </div>
+          </div>
+
+          <!-- Peer Access Sharing Toggle Card -->
+          <div class="settings-card">
+            <div class="setting-item">
+              <div class="setting-text">
+                <label class="setting-label">Share Host AI Compute with Nearby Nodes</label>
+                <span class="setting-desc">Allows authorized mobile phones and PCs on P2P mesh to execute AI queries on this host</span>
+              </div>
+              <label class="switch-toggle">
+                <input type="checkbox" id="chkShareAI" onchange="toggleShareAI(this.checked)">
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Connected Peers & Access Permissions Table -->
+          <div class="ai-console-card">
+            <div class="ai-console-header">
+              <span class="ai-console-title">Connected Mesh Nodes & AI Access Permissions</span>
+              <button class="btn btn-sm btn-secondary" onclick="loadAIAnalytics()">Refresh Status</button>
+            </div>
+            <div class="ai-peers-table-container">
+              <table class="fluent-table">
+                <thead>
+                  <tr>
+                    <th>Device Name</th>
+                    <th>IPv4 Address</th>
+                    <th>Last Active</th>
+                    <th>AI Compute Access</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="aiPeersTableBody">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 5: IOT -->
+      <section id="tab-iot" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">IoT & Hardware Peripherals</h2>
+              <p class="pane-subtitle">Wi-Fi, Bluetooth, LAN, NFC, USB • Relays & Printers</p>
+            </div>
+          </div>
+          <button class="btn btn-secondary" onclick="reprobeHardware()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <span>Re-Probe</span>
+          </button>
+        </div>
+
+        <div class="hw-matrix-bar">
+          <span class="badge badge-emerald">Wi-Fi: Active</span>
+          <span class="badge badge-emerald">Bluetooth BLE: OK</span>
+          <span class="badge badge-emerald">LAN: Connected</span>
+          <span class="badge badge-slate">NFC: Standby</span>
+          <span class="badge badge-amber">WAN Internet: OFF</span>
+        </div>
+
+        <div class="iot-grid">
+          <div class="iot-card">
+            <div class="iot-card-header">
+              <span class="iot-name">Smart Irrigation Pump #1</span>
+              <span class="badge badge-emerald">Wi-Fi • 192.168.1.120</span>
+            </div>
+            <div class="iot-telemetry" id="pumpTelemetry">
+              Power: <strong id="pumpStatusText">[ OFF ]</strong> • Voltage: 228V
+            </div>
+            <button class="btn btn-primary btn-block" id="btnPumpToggle" onclick="togglePumpRelay()">Turn Pump ON</button>
+          </div>
+
+          <div class="iot-card">
+            <div class="iot-card-header">
+              <span class="iot-name">Soil Moisture Sensor</span>
+              <span class="badge badge-emerald">BLE</span>
+            </div>
+            <div class="iot-telemetry" id="soilTelemetry">
+              Moisture: <strong id="soilMoistVal">34.8%</strong> • Temp: 28.5°C
+            </div>
+            <button class="btn btn-secondary btn-block" onclick="pollSensorData()">Poll Telemetry</button>
+          </div>
+
+          <div class="iot-card">
+            <div class="iot-card-header">
+              <span class="iot-name">Mandi Gate Pass Printer</span>
+              <span class="badge badge-emerald">LAN</span>
+            </div>
+            <div class="iot-telemetry">
+              ESC/POS Thermal • Ready
+            </div>
+            <button class="btn btn-secondary btn-block" onclick="testPrintReceipt()">Print Test Receipt</button>
+          </div>
+
+          <div class="iot-card">
+            <div class="iot-card-header">
+              <span class="iot-name">Document Scanner</span>
+              <span class="badge badge-emerald">USB</span>
+            </div>
+            <div class="iot-telemetry">
+              Resolution: 300 DPI • Ready
+            </div>
+            <button class="btn btn-secondary btn-block" onclick="triggerDocScan()">Scan Document</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE: RECENTS & STORAGE -->
+      <section id="tab-recents" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">Recents & Device Storage</h2>
+              <p class="pane-subtitle">Received Files • Voice & CCTV Call History</p>
+            </div>
+          </div>
+          <div class="pane-actions-group">
+            <button class="btn btn-primary" onclick="openSaveDirectory()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>Open Folder</span>
+            </button>
+            <button class="btn btn-secondary" onclick="loadRecentFiles()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-pills-bar">
+          <button class="filter-pill active" id="pillRecentsFiles" onclick="setRecentsView('files')">Received Files</button>
+          <button class="filter-pill" id="pillRecentsCalls" onclick="setRecentsView('calls')">Call History</button>
+        </div>
+
+        <!-- Recents: Files Subview -->
+        <div class="recents-view-section" id="recentsFilesView">
+          <div class="recents-items-grid" id="recentFilesList">
+            <!-- Dynamically loaded from /api/recents/files -->
+          </div>
+        </div>
+
+        <!-- Recents: Calls Subview -->
+        <div class="recents-view-section" id="recentsCallsView" style="display:none;">
+          <div class="recents-items-grid" id="recentCallsList">
+            <!-- Dynamically populated from call sessions -->
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 6: LOGS -->
+      <section id="tab-logs" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">Transfers & Activity Logs</h2>
+              <p class="pane-subtitle">Live Socket Stream Verification</p>
+            </div>
+          </div>
+          <button class="btn btn-secondary" onclick="clearLogs()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <span>Clear</span>
+          </button>
+        </div>
+
+        <div class="transfers-container" id="transfersList"></div>
+
+        <div class="logs-console-card">
+          <div class="console-logs-stream" id="logsConsole"></div>
+        </div>
+      </section>
+
+      <!-- TAB PANE 7: SETTINGS & ABOUT -->
+      <section id="tab-settings" class="tab-pane">
+        <div class="pane-action-bar">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn-back-tool" onclick="navigateBack()" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div>
+              <h2 class="pane-title">Settings & About NearMitra</h2>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Received Files Directory</label>
+              <span class="setting-desc" id="saveDirDisplay">%USERPROFILE%\Downloads\NearMitra</span>
+            </div>
+            <button class="btn btn-primary" onclick="openSaveDirectory()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>Open Folder</span>
+            </button>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Start on Windows Boot</label>
+              <span class="setting-desc">Automatically launch NearMitra in background system tray when Windows starts</span>
+            </div>
+            <label class="switch-toggle">
+              <input type="checkbox" id="chkAutoStart" onchange="toggleAutoStart(this.checked)">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Desktop Notifications</label>
+              <span class="setting-desc">Show Windows alerts and sounds for incoming chat messages, files, and calls</span>
+            </div>
+            <label class="switch-toggle">
+              <input type="checkbox" id="chkNotifications" checked onchange="toggleNotifications(this.checked)">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Theme</label>
+              <span class="setting-desc">Windows 11 Mica Dark / Light Mode</span>
+            </div>
+            <button class="btn btn-secondary" onclick="toggleAppTheme()" id="btnThemeToggle">Switch Theme</button>
+          </div>
+        </div>
+
+        <!-- STREAMING & P2P MEDIA SECURITY HUB -->
+        <div class="settings-card" style="margin-top:16px;">
+          <!-- Security Banner -->
+          <div class="security-banner-card">
+            <div class="sec-banner-icon-circle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:24px;height:24px;color:#10B981;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <div>
+              <h3 style="font-size:14px; font-weight:700; color:var(--text-title); margin-bottom:2px;">P2P Local Streaming Security Hub</h3>
+              <p style="font-size:11.5px; color:var(--text-muted); line-height:1.4;">All permissions and stream authorization rules are stored locally on your Windows PC. Unverified peers cannot access camera or mic without explicit permission.</p>
+            </div>
+          </div>
+
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.8px; margin:16px 0 8px 0;">Incoming Stream Access Permissions</div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Allow Incoming Camera Access</label>
+              <span class="setting-desc">Allows authorized mobile phones and PCs to request live CCTV stream from this computer's webcam</span>
+            </div>
+            <label class="switch-toggle">
+              <input type="checkbox" id="chkAllowCamera" checked onchange="updateStreamingSecurity()">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Allow Incoming Audio Access</label>
+              <span class="setting-desc">Allows connected peers to stream microphone audio for voice calls and intercom</span>
+            </div>
+            <label class="switch-toggle">
+              <input type="checkbox" id="chkAllowAudio" checked onchange="updateStreamingSecurity()">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
+              <label class="setting-label">Allow Screen Casting Stream</label>
+              <span class="setting-desc">Allows remote viewing and desktop screen mirroring to connected mobile app</span>
+            </div>
+            <label class="switch-toggle">
+              <input type="checkbox" id="chkAllowScreen" checked onchange="updateStreamingSecurity()">
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.8px; margin:20px 0 8px 0; display:flex; justify-content:space-between; align-items:center;">
+            <span>Always-Trusted Media Devices</span>
+            <button class="btn btn-sm btn-secondary" onclick="addActivePeerToTrusted()" style="padding:2px 8px; font-size:11px;">+ Trust Active Device</button>
+          </div>
+
+          <div id="trustedDevicesContainer" class="trusted-devices-list">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <div class="about-ecosystem-card">
+          <div class="about-header-row">
+            <div class="brand-logo-circle large">
+              <img src="/logo.png" class="about-brand-logo-img" alt="NearMitra">
+            </div>
+            <div>
+              <h2 class="about-brand-title">NearMitra Desktop v2.0 (Windows 11)</h2>
+              <p class="about-tagline">High-Speed Local P2P & Subnet Mesh</p>
+            </div>
+          </div>
+
+          <div class="about-badges-grid">
+            <div class="about-badge-item">50+ MB/s Zero-Data Transfer</div>
+            <div class="about-badge-item">Live CCTV AI Surveillance</div>
+            <div class="about-badge-item">Dual-Tier LLM Reasoning</div>
+            <div class="about-badge-item">Multi-Protocol IoT Hub</div>
+            <div class="about-badge-item">WebRTC HD Voice Calling</div>
+            <div class="about-badge-item">Mandi Thermal Gate Pass</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Attach File/Folder Category Picker Modal Dialog -->
+  <div class="modal-overlay" id="attachModal">
+    <div class="modal-card attach-picker-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Share with Active Device</h3>
+        <button class="modal-close-btn" onclick="closeAttachModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="attachTargetPeerLabel">Select category to send at 50+ MB/s:</p>
+        <div class="attach-grid">
+          <div class="attach-category-card" onclick="selectAttachCategory('file')">
+            <div class="attach-cat-icon bg-emerald">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </div>
+            <div class="attach-cat-info">
+              <span class="attach-cat-title">Files & Documents</span>
+              <span class="attach-cat-sub">PDF, Word, Excel, ZIP, APK, Code</span>
+            </div>
+          </div>
+
+          <div class="attach-category-card" onclick="selectAttachCategory('folder')">
+            <div class="attach-cat-icon bg-blue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>
+            </div>
+            <div class="attach-cat-info">
+              <span class="attach-cat-title">Entire Folder</span>
+              <span class="attach-cat-sub">Directory Archive Stream</span>
+            </div>
+          </div>
+
+          <div class="attach-category-card" onclick="selectAttachCategory('image')">
+            <div class="attach-cat-icon bg-purple">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+            </div>
+            <div class="attach-cat-info">
+              <span class="attach-cat-title">Images & Photos</span>
+              <span class="attach-cat-sub">High-Resolution Leaf & Crop Scans</span>
+            </div>
+          </div>
+
+          <div class="attach-category-card" onclick="selectAttachCategory('video')">
+            <div class="attach-cat-icon bg-amber">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+            </div>
+            <div class="attach-cat-info">
+              <span class="attach-cat-title">Videos & CCTV</span>
+              <span class="attach-cat-sub">MP4, Drone & Surveillance Clips</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeAttachModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual Pair Modal Dialog -->
+  <div class="modal-overlay" id="manualPairModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Connect Device by IP</h3>
+        <button class="modal-close-btn" onclick="closeManualPairModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Enter the IPv4 address of any phone or computer on your network:</p>
+        <input type="text" id="manualPairIP" class="modal-input" placeholder="e.g. 192.168.1.4">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeManualPairModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitManualPair()">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+  <script src="app.js"></script>
+</body>
+</html>
