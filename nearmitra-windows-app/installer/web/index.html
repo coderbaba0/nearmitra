@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NearMitra Setup Wizard</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="dark-installer">
+  <div class="installer-window">
+    <!-- Titlebar Header -->
+    <header class="wizard-header">
+      <div class="wizard-brand">
+        <img src="/logo.png" class="wizard-logo" alt="NearMitra">
+        <div class="wizard-brand-text">
+          <span class="wizard-title">NearMitra Desktop Setup</span>
+          <span class="wizard-version">v2.0.0 (Windows 11 64-bit)</span>
+        </div>
+      </div>
+      <div class="wizard-steps-indicator">
+        <span class="step-dot active" id="dot1">1</span>
+        <span class="step-line"></span>
+        <span class="step-dot" id="dot2">2</span>
+        <span class="step-line"></span>
+        <span class="step-dot" id="dot3">3</span>
+        <span class="step-line"></span>
+        <span class="step-dot" id="dot4">4</span>
+        <span class="step-line"></span>
+        <span class="step-dot" id="dot5">5</span>
+      </div>
+    </header>
+
+    <!-- Main Wizard Content Frame -->
+    <main class="wizard-body">
+      <!-- STEP 1: WELCOME SCREEN -->
+      <section class="wizard-step active" id="step1">
+        <div class="welcome-hero">
+          <div class="hero-icon-container">
+            <img src="/logo.png" class="hero-app-icon" alt="NearMitra">
+          </div>
+          <h2 class="step-heading">Welcome to NearMitra Setup</h2>
+          <p class="step-description">
+            NearMitra gives you ultra-fast 50+ MB/s Zero-Data P2P file transfers, Live HD CCTV security surveillance, local hardware sensors integration, and dual-tier offline AI directly over your local Wi-Fi mesh.
+          </p>
+          <div class="hero-highlights-grid">
+            <div class="highlight-item">
+              <span class="hl-badge">⚡ 50+ MB/s</span>
+              <span class="hl-title">Direct P2P Mesh</span>
+              <span class="hl-sub">No Internet Required</span>
+            </div>
+            <div class="highlight-item">
+              <span class="hl-badge">📹 1080P HD</span>
+              <span class="hl-title">CCTV Surveillance</span>
+              <span class="hl-sub">Remote Torch & Flip</span>
+            </div>
+            <div class="highlight-item">
+              <span class="hl-badge">🔒 100% Private</span>
+              <span class="hl-title">Zero Cloud Leaks</span>
+              <span class="hl-sub">Local Disk Encrypted</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2: TERMS & CONDITIONS / LICENSE -->
+      <section class="wizard-step" id="step2">
+        <h2 class="step-heading">License Agreement & Terms of Use</h2>
+        <p class="step-description">Please review the license terms before proceeding with the installation.</p>
+        
+        <div class="license-box">
+          <h4>NEARMITRA END USER LICENSE AGREEMENT (EULA)</h4>
+          <p><strong>1. Privacy-First Architecture:</strong> NearMitra operates 100% locally on your LAN / P2P network. All file transfers, chat messages, and CCTV video feeds are exchanged point-to-point without cloud relay servers.</p>
+          <p><strong>2. Grant of License:</strong> You are granted a free, non-exclusive, perpetual license to install and use NearMitra on Windows devices for personal, farming, enterprise, and educational purposes.</p>
+          <p><strong>3. Camera & Microphone Permissions:</strong> NearMitra requires local network access and webcam permissions strictly for local CCTV broadcasting and HD audio calls.</p>
+          <p><strong>4. Local Storage & Recordings:</strong> All recorded CCTV footage and snapshots are saved directly to your local user directory (<code>Downloads\NearMitra</code>) under your exclusive control.</p>
+          <p><strong>5. Zero Telemetry & Data Selling:</strong> NearMitra does not collect, track, or transmit your personal files, conversations, or sensor data to third-party advertisers.</p>
+        </div>
+
+        <div class="checkbox-row terms-row">
+          <label class="custom-checkbox">
+            <input type="checkbox" id="chkAcceptTerms" onchange="onTermsChanged(this.checked)">
+            <span class="checkmark"></span>
+            <span class="checkbox-label"><strong>I accept the terms in the License Agreement</strong></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- STEP 3: DESTINATION & SHORTCUT OPTIONS -->
+      <section class="wizard-step" id="step3">
+        <h2 class="step-heading">Installation Options</h2>
+        <p class="step-description">Choose where to install NearMitra and configure desktop shortcuts.</p>
+
+        <div class="option-group">
+          <label class="option-label">Install Location:</label>
+          <div class="path-picker-row">
+            <input type="text" id="txtInstallPath" class="form-input" readonly value="C:\Users\...\AppData\Local\Programs\NearMitra">
+          </div>
+          <span class="option-hint">Space required: ~35 MB • Space available: 100+ GB</span>
+        </div>
+
+        <div class="option-group" style="margin-top:18px;">
+          <label class="option-label">Additional Shortcuts & Settings:</label>
+          <div class="checkbox-list">
+            <label class="custom-checkbox">
+              <input type="checkbox" id="chkDesktopShortcut" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label">Create a <strong>Desktop Shortcut</strong> (NearMitra.lnk)</span>
+            </label>
+            <label class="custom-checkbox">
+              <input type="checkbox" id="chkStartMenu" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label">Add NearMitra to <strong>Start Menu Programs</strong></span>
+            </label>
+            <label class="custom-checkbox">
+              <input type="checkbox" id="chkAutostart">
+              <span class="checkmark"></span>
+              <span class="checkbox-label">Start NearMitra automatically on Windows login (Background Mesh Node)</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 4: INSTALLATION PROGRESS -->
+      <section class="wizard-step" id="step4">
+        <div class="progress-hero">
+          <div class="install-spinner"></div>
+          <h2 class="step-heading" id="lblInstallStatus">Installing NearMitra Desktop...</h2>
+          <p class="step-description" id="lblInstallDetail">Extracting core binaries and assets...</p>
+
+          <div class="progress-track">
+            <div class="progress-bar" id="installProgressBar" style="width: 0%;"></div>
+          </div>
+          <span class="progress-pct" id="installProgressPct">0%</span>
+
+          <div class="install-log-box" id="installLogBox">
+            <div class="log-line">Initializing installation environment...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 5: FINISH SCREEN -->
+      <section class="wizard-step" id="step5">
+        <div class="finish-hero">
+          <div class="finish-icon-container">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="step-heading">Installation Completed Successfully!</h2>
+          <p class="step-description">NearMitra Desktop v2.0 is now installed and ready to use.</p>
+
+          <div class="finish-options-card">
+            <label class="custom-checkbox">
+              <input type="checkbox" id="chkLaunchNow" checked>
+              <span class="checkmark"></span>
+              <span class="checkbox-label"><strong>Launch NearMitra now</strong></span>
+            </label>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer Action Buttons Bar -->
+    <footer class="wizard-footer">
+      <button class="btn btn-secondary" id="btnBack" onclick="goPrevStep()" style="display:none;">Back</button>
+      <div class="footer-right">
+        <button class="btn btn-ghost" id="btnCancel" onclick="cancelSetup()">Cancel</button>
+        <button class="btn btn-primary" id="btnNext" onclick="goNextStep()">Next &rarr;</button>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
