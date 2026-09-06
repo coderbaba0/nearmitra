@@ -249,6 +249,9 @@ func (al *AppLauncher) setupCallbacks() {
 					al.tray.ShowNotification("NearMitra - New Message", fmt.Sprintf("%s: %s", msg.Sender, msg.Text))
 				}
 			},
+			OnTypingStatus: func(peerID string, isTyping bool) {
+				al.httpServer.SetPeerTyping(peerID, isTyping)
+			},
 			OnCallInvite: func(senderID string, senderName string, isVideo bool) {
 				callType := "Voice"
 				if isVideo {

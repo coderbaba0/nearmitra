@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -58,7 +57,7 @@ func main() {
 	_ = os.MkdirAll(logDir, 0755)
 	logFile, err := os.OpenFile(filepath.Join(logDir, "installer.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
-		log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+		log.SetOutput(logFile)
 		defer logFile.Close()
 	}
 

@@ -184,16 +184,16 @@ func (cs *CallState) ToggleNoiseSuppression() bool {
 	return cur
 }
 
-// EndCall terminates active call.
+// EndCall terminates active call and resets all ringing/calling states.
 func (cs *CallState) EndCall() {
 	cs.mu.Lock()
-	if !cs.Active {
-		cs.mu.Unlock()
-		return
-	}
 	targetIP := cs.PeerIP
 	cs.Active = false
+	cs.Ringing = false
+	cs.IsIncoming = false
 	cs.PTTActive = false
+	cs.PeerIP = ""
+	cs.PeerName = ""
 	cb := cs.OnStateChange
 	cs.mu.Unlock()
 

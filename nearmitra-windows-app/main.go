@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -38,7 +37,7 @@ func main() {
 	_ = os.MkdirAll(logDir, 0755)
 	logFile, err := os.OpenFile(filepath.Join(logDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err == nil {
-		log.SetOutput(io.MultiWriter(os.Stdout, &syncWriter{file: logFile}))
+		log.SetOutput(&syncWriter{file: logFile})
 		defer logFile.Close()
 	}
 
@@ -60,20 +59,25 @@ func main() {
 	}
 
 	// 1. Initialize Configuration
+	log.Println("[Main] Initializing Config...")
 	cfgMgr := config.Get()
 
 	// 2. Initialize Chat History
+	log.Println("[Main] Initializing Chat...")
 	chatMgr := chat.GetHistory()
 
 	// 3. Initialize AI Service
+	log.Println("[Main] Initializing AI...")
 	aiService := ai.Get()
 
 	// 4. Initialize Network Discovery Service
+	log.Println("[Main] Initializing Discovery...")
 	discovery := network.GetDiscovery()
 	discovery.Start()
 	defer discovery.Stop()
 
 	// 5. Initialize TCP Transfer Server
+	log.Println("[Main] Initializing TCP Transfer Server...")
 	server := transfer.GetServer()
 	if err := server.Start(); err != nil {
 		log.Printf("Warning: TCP Transfer server start error: %v", err)
@@ -81,10 +85,12 @@ func main() {
 	defer server.Stop()
 
 	// 6. Initialize CCTV Streamer & WebRTC Calling Signaling
+	log.Println("[Main] Initializing CCTV and Signaling...")
 	cctv := streaming.GetStream()
 	signaling := calling.GetCall()
 
 	// 7. Initialize IoT & Hardware Peripherals Hub
+	log.Println("[Main] Initializing IoT...")
 	iotMgr := iot.NewManager()
 	defer iotMgr.Close()
 
@@ -97,6 +103,7 @@ func main() {
 	defer iotAuto.Close()
 
 	// 8. Launch Windows 11 Fluent Application Launcher
+	log.Println("[Main] Creating App Launcher...")
 	appLauncher = ui.NewAppLauncher(
 		cfgMgr,
 		discovery,
@@ -109,7 +116,7 @@ func main() {
 		iotAuto,
 	)
 
-	log.Println("Starting Application Launcher...")
+	log.Println("[Main] Starting Application Launcher Run()...")
 	if err := appLauncher.Run(); err != nil {
 		log.Fatalf("Application runtime error: %v", err)
 		_ = os.WriteFile(filepath.Join(logDir, "panic.log"), []byte(fmt.Sprintf("%v", err)), 0644)

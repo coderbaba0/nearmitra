@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"nearmitra-windows-app/internal/calling"
 	"nearmitra-windows-app/internal/config"
 	"nearmitra-windows-app/internal/models"
 )
@@ -210,6 +211,9 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		isTyping := header.IsTyping || header.Message == "true"
 		if cb.OnTypingStatus != nil {
 			cb.OnTypingStatus(senderID, isTyping)
+			if peerIP != "" && peerIP != senderID {
+				cb.OnTypingStatus(peerIP, isTyping)
+			}
 		}
 
 	case "file", "folder":
@@ -226,8 +230,18 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 
 	case "call_invite":
 		isVideo := header.IsVideo || header.CallType == "video"
-		if cb.OnCallInvite != nil {
-			cb.OnCallInvite(senderID, senderName, isVideo)
+		switch header.CallAction {
+		case "end":
+			calling.GetCall().EndCall()
+		case "decline":
+			calling.GetCall().DeclineCall()
+		case "accept", "answer":
+			calling.GetCall().AnswerCall()
+		default:
+			calling.GetCall().SetIncoming(peerIP, senderName, isVideo)
+			if cb.OnCallInvite != nil {
+				cb.OnCallInvite(senderID, senderName, isVideo)
+			}
 		}
 
 	case "cctv_ctrl":

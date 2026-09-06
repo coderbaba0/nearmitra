@@ -13,9 +13,16 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "     Installing NearMitra Desktop...    " -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Stop any running instances first
-Stop-Process -Name "NearMitra", "nearmitra-windows-app" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
+# Stop any running instances & free ports first
+Stop-Process -Name "NearMitra", "FarmitraNearby*", "main", "test_debug" -Force -ErrorAction SilentlyContinue
+
+$portPids = Get-NetTCPConnection -LocalPort 43880, 43889 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+foreach ($pidToKill in $portPids) {
+    if ($pidToKill -and $pidToKill -ne 0) {
+        Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
+    }
+}
+Start-Sleep -Milliseconds 600
 
 # 1. Create installation directory
 if (!(Test-Path $InstallDir)) {

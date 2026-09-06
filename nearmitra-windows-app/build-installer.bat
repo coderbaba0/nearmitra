@@ -3,8 +3,8 @@ echo ========================================================
 echo        Building NearMitra Standalone Setup v2.0
 echo ========================================================
 
-echo [1/3] Compiling core application binary...
-go build -ldflags="-s -w" -o NearMitra.exe .
+echo [1/3] Compiling core application binary (GUI Subsystem - No CMD window)...
+go build -ldflags="-H windowsgui -s -w" -o NearMitra.exe .
 if %errorlevel% neq 0 (
     echo Error compiling NearMitra.exe!
     pause
