@@ -3302,6 +3302,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   ? _RadarPulseScanner(
                       isScanning: _scanning,
                       onScanPressed: _scan,
+                      onOpenWanPressed: () {
+                        setState(() {
+                          _connectionMode = ConnectionMode.wan;
+                        });
+                        _wanService.setInternetMode(true);
+                      },
                     )
                   : ListView.separated(
                       itemCount: peers.length,
@@ -4178,10 +4184,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 }
 
 class _RadarPulseScanner extends StatefulWidget {
-  const _RadarPulseScanner({required this.isScanning, required this.onScanPressed});
+  const _RadarPulseScanner({
+    required this.isScanning,
+    required this.onScanPressed,
+    this.onOpenWanPressed,
+  });
 
   final bool isScanning;
   final VoidCallback onScanPressed;
+  final VoidCallback? onOpenWanPressed;
 
   @override
   State<_RadarPulseScanner> createState() => _RadarPulseScannerState();
@@ -4226,7 +4237,8 @@ class _RadarPulseScannerState extends State<_RadarPulseScanner> with SingleTicke
     final isDark = theme.brightness == Brightness.dark;
 
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.all(20),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -4271,7 +4283,47 @@ class _RadarPulseScannerState extends State<_RadarPulseScanner> with SingleTicke
               textAlign: TextAlign.center,
               style: TextStyle(color: isDark ? Colors.white60 : Colors.grey[600], fontSize: 12.5),
             ),
-            const SizedBox(height: 20),
+            if (widget.onOpenWanPressed != null) ...[
+              const SizedBox(height: 14),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: widget.onOpenWanPressed,
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: isDark ? 0.15 : 0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.public_rounded, size: 16, color: Color(0xFF10B981)),
+                        SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            'Open WAN / Internet to connect with Global devices →',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xFF10B981),
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 18),
             FilledButton.icon(
               onPressed: widget.onScanPressed,
               style: FilledButton.styleFrom(
