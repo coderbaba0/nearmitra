@@ -1,6 +1,6 @@
-# NearMitra: Local-First Distributed Edge Computing, P2P Mesh & Global WAN Communication Framework
+# NearMitra: Local-First Distributed Edge Computing, Global WAN & Communication Framework
 
-**NearMitra is a versatile local-first distributed edge computing and communication platform with seamless Triple-Link connectivity (Nearby LAN, Direct P2P, and Global WAN).** It combines high-speed private local network and direct peer-to-peer (P2P) hardware transport with **Global WAN (Internet / Cloud Relay) connectivity**, **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet or cellular data, while providing seamless on-demand WAN bridge capabilities for global communication**.
+**NearMitra is a local-first distributed edge computing, WAN and communication platform.** It combines high-speed private local network and direct peer-to-peer (P2P) transport with **Global WAN (Internet / Cloud Relay) Connectivity**, **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet connections, cellular data, or external cloud infrastructure, with optional WAN connectivity for global device communication**.
 
 ---
 
