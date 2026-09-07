@@ -57,29 +57,59 @@ class HomeWalkthroughGuide extends StatefulWidget {
 }
 
 class _HomeWalkthroughGuideState extends State<HomeWalkthroughGuide>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   int _currentIndex = 0;
   Rect? _targetRect;
-  late AnimationController _animController;
-  late Animation<double> _fadeAnimation;
-  late Animation<double> _scaleAnimation;
+  Rect? _prevRect;
+
+  late AnimationController _morphController;
+  late Animation<double> _morphAnimation;
+
+  late AnimationController _cardController;
+  late Animation<double> _cardFadeAnimation;
+  late Animation<Offset> _cardSlideAnimation;
+
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
 
   @override
   void initState() {
     super.initState();
-    _animController = AnimationController(
+
+    // Morph animation for spotlight gliding smoothly between targets
+    _morphController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 280),
+      duration: const Duration(milliseconds: 360),
     );
-    _fadeAnimation = CurvedAnimation(
-      parent: _animController,
-      curve: Curves.easeOutCubic,
+    _morphAnimation = CurvedAnimation(
+      parent: _morphController,
+      curve: Curves.easeInOutCubic,
     );
-    _scaleAnimation = Tween<double>(begin: 0.95, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _animController,
-        curve: Curves.easeOutCubic,
-      ),
+
+    // Card entry/transition animation
+    _cardController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _cardFadeAnimation = CurvedAnimation(
+      parent: _cardController,
+      curve: Curves.easeOut,
+    );
+    _cardSlideAnimation = Tween<Offset>(
+      begin: const Offset(0, 0.08),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _cardController,
+      curve: Curves.easeOutBack,
+    ));
+
+    // Continuous subtle glowing pulse around active spotlight
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 1.5, end: 4.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -89,7 +119,9 @@ class _HomeWalkthroughGuideState extends State<HomeWalkthroughGuide>
 
   @override
   void dispose() {
-    _animController.dispose();
+    _morphController.dispose();
+    _cardController.dispose();
+    _pulseController.dispose();
     super.dispose();
   }
 
@@ -99,37 +131,47 @@ class _HomeWalkthroughGuideState extends State<HomeWalkthroughGuide>
     final step = widget.steps[index];
     step.onEnter?.call();
 
-    // Small delay to allow layout to settle if step triggered a state change
-    Future.delayed(Duration(milliseconds: isInitial ? 100 : 180), () {
-      if (!mounted) return;
-      _updateTargetRect(step.key);
-      _animController.forward(from: 0.0);
+    _scheduleTargetUpdate(step.key, isInitial: isInitial);
+  }
+
+  void _scheduleTargetUpdate(GlobalKey key, {bool isInitial = false, int attempt = 0}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(Duration(milliseconds: isInitial ? 150 : 80), () {
+        if (!mounted) return;
+        final newRect = _calculateTargetRect(key);
+
+        if (newRect == null && attempt < 3) {
+          _scheduleTargetUpdate(key, isInitial: false, attempt: attempt + 1);
+          return;
+        }
+
+        setState(() {
+          _prevRect = _targetRect ?? newRect;
+          _targetRect = newRect;
+        });
+
+        _morphController.forward(from: 0.0);
+        _cardController.forward(from: 0.0);
+      });
     });
   }
 
-  void _updateTargetRect(GlobalKey key) {
-    final context = key.currentContext;
-    if (context != null) {
-      final renderBox = context.findRenderObject() as RenderBox?;
-      if (renderBox != null && renderBox.hasSize) {
-        final position = renderBox.localToGlobal(Offset.zero);
-        final size = renderBox.size;
-        setState(() {
-          // Add 4px padding around target
-          _targetRect = Rect.fromLTWH(
-            position.dx - 4,
-            position.dy - 4,
-            size.width + 8,
-            size.height + 8,
-          );
-        });
-        return;
+  Rect? _calculateTargetRect(GlobalKey key) {
+    final targetContext = key.currentContext;
+    if (targetContext != null && targetContext.mounted) {
+      final targetBox = targetContext.findRenderObject() as RenderBox?;
+      if (targetBox != null && targetBox.hasSize && targetBox.attached) {
+        final position = targetBox.localToGlobal(Offset.zero);
+        final size = targetBox.size;
+        return Rect.fromLTWH(
+          position.dx - 4,
+          position.dy - 3,
+          size.width + 8,
+          size.height + 6,
+        );
       }
     }
-    // Fallback if target render box not found
-    setState(() {
-      _targetRect = null;
-    });
+    return null;
   }
 
   void _nextStep() {
@@ -164,314 +206,461 @@ class _HomeWalkthroughGuideState extends State<HomeWalkthroughGuide>
 
   @override
   Widget build(BuildContext context) {
-    final mediaQuery = MediaQuery.of(context);
-    final screenSize = mediaQuery.size;
+    final screenSize = MediaQuery.sizeOf(context);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final step = widget.steps[_currentIndex];
     final isLast = _currentIndex == widget.steps.length - 1;
     final isFirst = _currentIndex == 0;
 
+    // Compute Card Geometry
+    final double cardWidth = math.min(screenSize.width - 32, 400.0);
+    double topPosition = 140.0;
+    bool isBelowTarget = true;
+    double arrowLeft = cardWidth / 2;
+
+    if (_targetRect != null) {
+      final targetBottom = _targetRect!.bottom;
+      final targetTop = _targetRect!.top;
+      final targetCenterX = _targetRect!.center.dx;
+
+      if (targetBottom + 320 < screenSize.height - 30) {
+        topPosition = targetBottom + 12;
+        isBelowTarget = true;
+      } else if (targetTop - 320 > 50) {
+        topPosition = targetTop - 310;
+        isBelowTarget = false;
+      } else {
+        topPosition = math.max(80, (screenSize.height - 300) / 2);
+      }
+
+      final cardLeft = (screenSize.width - cardWidth) / 2;
+      arrowLeft = (targetCenterX - cardLeft).clamp(24.0, cardWidth - 24.0);
+    }
+
     return Stack(
       children: [
-        // 1. Fullscreen Dimmed Backdrop with Spotlight Cutout
-        CustomPaint(
-          size: screenSize,
-          painter: _SpotlightPainter(
-            targetRect: _targetRect,
-            overlayColor: Colors.black.withValues(alpha: isDark ? 0.78 : 0.68),
+        // 1. Fullscreen Dimmed Backdrop with Animated Morphing Spotlight Cutout
+        Positioned.fill(
+          child: AnimatedBuilder(
+            animation: Listenable.merge([_morphAnimation, _pulseAnimation]),
+            builder: (context, _) {
+              Rect? animatedRect;
+              if (_prevRect != null && _targetRect != null) {
+                animatedRect = Rect.lerp(_prevRect, _targetRect, _morphAnimation.value);
+              } else {
+                animatedRect = _targetRect;
+              }
+
+              return CustomPaint(
+                size: screenSize,
+                painter: _SpotlightPainter(
+                  targetRect: animatedRect,
+                  overlayColor: Colors.black.withValues(alpha: isDark ? 0.78 : 0.70),
+                  pulseSpread: _pulseAnimation.value,
+                ),
+              );
+            },
           ),
         ),
 
-        // 2. Animated Tooltip Card
-        AnimatedBuilder(
-          animation: _animController,
-          builder: (context, child) {
-            return FadeTransition(
-              opacity: _fadeAnimation,
-              child: Transform.scale(
-                scale: _scaleAnimation.value,
-                child: child,
+        // 2. Global Top-Right "Skip Tour" Floating Button (Direct child of Stack)
+        Positioned(
+          top: MediaQuery.paddingOf(context).top + 10,
+          right: 16,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: _skip,
+              borderRadius: BorderRadius.circular(20),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.25),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Text(
+                      'Skip Tour',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    SizedBox(width: 4),
+                    Icon(Icons.close_rounded, size: 14, color: Colors.white),
+                  ],
+                ),
               ),
-            );
-          },
-          child: _buildTooltipCard(
-            context,
-            step: step,
-            isFirst: isFirst,
-            isLast: isLast,
-            screenSize: screenSize,
-            isDark: isDark,
+            ),
+          ),
+        ),
+
+        // 3. Animated Spotlight Tooltip Card (Direct child of Stack)
+        Positioned(
+          top: topPosition,
+          left: (screenSize.width - cardWidth) / 2,
+          child: AnimatedBuilder(
+            animation: _cardController,
+            builder: (context, child) {
+              return FadeTransition(
+                opacity: _cardFadeAnimation,
+                child: SlideTransition(
+                  position: _cardSlideAnimation,
+                  child: child,
+                ),
+              );
+            },
+            child: _buildTooltipCardContent(
+              context,
+              step: step,
+              isFirst: isFirst,
+              isLast: isLast,
+              cardWidth: cardWidth,
+              arrowLeft: arrowLeft,
+              isBelowTarget: isBelowTarget,
+              isDark: isDark,
+            ),
           ),
         ),
       ],
     );
   }
 
-  Widget _buildTooltipCard(
+  Widget _buildTooltipCardContent(
     BuildContext context, {
     required WalkthroughStepItem step,
     required bool isFirst,
     required bool isLast,
-    required Size screenSize,
+    required double cardWidth,
+    required double arrowLeft,
+    required bool isBelowTarget,
     required bool isDark,
   }) {
-    // Calculate card position (place below target if space permits, else above)
-    double topPosition = 120.0;
-    if (_targetRect != null) {
-      final targetBottom = _targetRect!.bottom;
-      final targetTop = _targetRect!.top;
-
-      if (targetBottom + 300 < screenSize.height - 40) {
-        // Enough room below target
-        topPosition = targetBottom + 14;
-      } else if (targetTop - 300 > 60) {
-        // Place above target
-        topPosition = math.max(60, targetTop - 290);
-      } else {
-        // Default center-safe placement
-        topPosition = math.max(80, (screenSize.height - 280) / 2);
-      }
-    }
-
-    final double cardWidth = math.min(screenSize.width - 32, 420.0);
-
-    return Positioned(
-      top: topPosition,
-      left: (screenSize.width - cardWidth) / 2,
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          width: cardWidth,
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: const Color(0xFF10B981).withValues(alpha: 0.4),
-              width: 1.5,
+    return Material(
+      color: Colors.transparent,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Tooltip Card Body
+          Container(
+            width: cardWidth,
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: const Color(0xFF10B981).withValues(alpha: 0.45),
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.6 : 0.22),
+                  blurRadius: 28,
+                  spreadRadius: 2,
+                  offset: const Offset(0, 10),
+                ),
+                BoxShadow(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                  blurRadius: 18,
+                  spreadRadius: 1,
+                ),
+              ],
             ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.18),
-                blurRadius: 24,
-                spreadRadius: 2,
-                offset: const Offset(0, 8),
-              ),
-              BoxShadow(
-                color: const Color(0xFF10B981).withValues(alpha: 0.15),
-                blurRadius: 16,
-                spreadRadius: 1,
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header: Badge + Step Title + Skip button
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(step.icon, size: 14, color: const Color(0xFF10B981)),
-                        const SizedBox(width: 5),
-                        Text(
-                          'STEP ${_currentIndex + 1} OF ${widget.steps.length}',
-                          style: const TextStyle(
-                            color: Color(0xFF10B981),
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  // Skip button
-                  TextButton(
-                    onPressed: _skip,
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      foregroundColor: isDark ? Colors.white60 : Colors.black54,
-                    ),
-                    child: const Text(
-                      'Skip',
-                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-
-              // Step Title
-              Text(
-                step.title,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : const Color(0xFF0F172A),
-                ),
-              ),
-              const SizedBox(height: 6),
-
-              // Description
-              Text(
-                step.description,
-                style: TextStyle(
-                  fontSize: 13,
-                  height: 1.4,
-                  color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
-                ),
-              ),
-              const SizedBox(height: 10),
-
-              // How to Use Box
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? const Color(0xFF0F172A).withValues(alpha: 0.7)
-                      : const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isDark ? Colors.white12 : const Color(0xFFE2E8F0),
-                  ),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Step Badge + Step Counter + Header Skip
+                Row(
                   children: [
-                    const Padding(
-                      padding: EdgeInsets.only(top: 2),
-                      child: Icon(
-                        Icons.lightbulb_outline_rounded,
-                        size: 15,
-                        color: Color(0xFF10B981),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF005C4B), Color(0xFF10B981)],
+                        ),
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                            blurRadius: 8,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(step.icon, size: 14, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Text(
+                            'STEP ${_currentIndex + 1} OF ${widget.steps.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.6,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        step.howToUse,
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          height: 1.35,
-                          fontWeight: FontWeight.w500,
-                          color: isDark ? Colors.white70 : Colors.black87,
+                    const Spacer(),
+                    // Skip Action
+                    InkWell(
+                      onTap: _skip,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        child: Text(
+                          'Skip',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.white60 : Colors.black54,
+                          ),
                         ),
                       ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(height: 14),
+                const SizedBox(height: 12),
 
-              // Bottom Actions: Dots Indicator & Navigation Buttons
-              Row(
-                children: [
-                  // Step Indicator Dots
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: List.generate(widget.steps.length, (i) {
-                      final active = i == _currentIndex;
-                      return AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        margin: const EdgeInsets.only(right: 5),
-                        width: active ? 18 : 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: active
-                              ? const Color(0xFF10B981)
-                              : (isDark ? Colors.white24 : Colors.black26),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                      );
-                    }),
+                // Step Title
+                Text(
+                  step.title,
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                    letterSpacing: -0.3,
                   ),
-                  const Spacer(),
+                ),
+                const SizedBox(height: 6),
 
-                  // Back Button (if not first)
-                  if (!isFirst) ...[
-                    OutlinedButton(
-                      onPressed: _prevStep,
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                // Description
+                Text(
+                  step.description,
+                  style: TextStyle(
+                    fontSize: 13.2,
+                    height: 1.42,
+                    color: isDark ? const Color(0xFFCBD5E1) : const Color(0xFF334155),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // How to Use Box
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? const Color(0xFF0F172A).withValues(alpha: 0.75)
+                        : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isDark ? Colors.white12 : const Color(0xFFCBD5E1),
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Icon(
+                          Icons.lightbulb_rounded,
+                          size: 16,
+                          color: Color(0xFF10B981),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          step.howToUse,
+                          style: TextStyle(
+                            fontSize: 11.8,
+                            height: 1.38,
+                            fontWeight: FontWeight.w500,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Bottom Bar: Progress Dots & Action Buttons
+                Row(
+                  children: [
+                    // Animated Progress Dots
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: List.generate(widget.steps.length, (i) {
+                        final active = i == _currentIndex;
+                        return AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          curve: Curves.easeOutCubic,
+                          margin: const EdgeInsets.only(right: 6),
+                          width: active ? 22 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: active
+                                ? const Color(0xFF10B981)
+                                : (isDark ? Colors.white24 : Colors.black26),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        );
+                      }),
+                    ),
+                    const Spacer(),
+
+                    // Back Button
+                    if (!isFirst) ...[
+                      OutlinedButton(
+                        onPressed: _prevStep,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          side: BorderSide(
+                            color: isDark ? Colors.white24 : Colors.black26,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'Back',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+
+                    // Next / Done Button
+                    FilledButton(
+                      onPressed: _nextStep,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF10B981),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        side: BorderSide(color: isDark ? Colors.white24 : Colors.black26),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                      child: Text(
-                        'Back',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: isDark ? Colors.white70 : Colors.black87,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
+                        elevation: 2,
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-
-                  // Next / Done Button
-                  FilledButton(
-                    onPressed: _nextStep,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF10B981),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      elevation: 0,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          isLast ? 'Done' : 'Next',
-                          style: const TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.bold,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            isLast ? 'Done' : 'Next',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 4),
-                        Icon(
-                          isLast ? Icons.check_rounded : Icons.arrow_forward_rounded,
-                          size: 14,
-                        ),
-                      ],
+                          const SizedBox(width: 4),
+                          Icon(
+                            isLast ? Icons.check_circle_rounded : Icons.arrow_forward_rounded,
+                            size: 15,
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            ],
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
+
+          // Triangle Pointer Arrow pointing directly to highlighted button
+          if (_targetRect != null)
+            Positioned(
+              top: isBelowTarget ? -8 : null,
+              bottom: isBelowTarget ? null : -8,
+              left: arrowLeft - 8,
+              child: CustomPaint(
+                size: const Size(16, 8),
+                painter: _ArrowPainter(
+                  isBelow: isBelowTarget,
+                  color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                  borderColor: const Color(0xFF10B981),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
+}
+
+class _ArrowPainter extends CustomPainter {
+  const _ArrowPainter({
+    required this.isBelow,
+    required this.color,
+    required this.borderColor,
+  });
+
+  final bool isBelow;
+  final Color color;
+  final Color borderColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path();
+    if (isBelow) {
+      // Pointing UP
+      path.moveTo(0, size.height);
+      path.lineTo(size.width / 2, 0);
+      path.lineTo(size.width, size.height);
+    } else {
+      // Pointing DOWN
+      path.moveTo(0, 0);
+      path.lineTo(size.width / 2, size.height);
+      path.lineTo(size.width, 0);
+    }
+    path.close();
+
+    final fillPaint = Paint()..color = color;
+    canvas.drawPath(path, fillPaint);
+
+    final borderPaint = Paint()
+      ..color = borderColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawPath(path, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ArrowPainter oldDelegate) =>
+      oldDelegate.isBelow != isBelow ||
+      oldDelegate.color != color ||
+      oldDelegate.borderColor != borderColor;
 }
 
 class _SpotlightPainter extends CustomPainter {
   const _SpotlightPainter({
     required this.targetRect,
     required this.overlayColor,
+    required this.pulseSpread,
   });
 
   final Rect? targetRect;
   final Color overlayColor;
+  final double pulseSpread;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -483,36 +672,39 @@ class _SpotlightPainter extends CustomPainter {
       return;
     }
 
+    final rrect = RRect.fromRectAndRadius(
+      targetRect!,
+      const Radius.circular(14),
+    );
+
     final path = Path()
       ..addRect(fullRect)
-      ..addRRect(
-        RRect.fromRectAndRadius(
-          targetRect!,
-          const Radius.circular(14),
-        ),
-      )
+      ..addRRect(rrect)
       ..fillType = PathFillType.evenOdd;
 
     canvas.drawPath(path, paint);
 
-    // Draw glowing border around target cutout
-    final borderPaint = Paint()
-      ..color = const Color(0xFF10B981).withValues(alpha: 0.75)
+    // Glowing animated border around target cutout
+    final glowPaint = Paint()
+      ..color = const Color(0xFF10B981).withValues(alpha: 0.6)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
+      ..strokeWidth = pulseSpread;
 
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        targetRect!,
-        const Radius.circular(14),
-      ),
-      borderPaint,
-    );
+    canvas.drawRRect(rrect, glowPaint);
+
+    // Crisp inner emerald border
+    final borderPaint = Paint()
+      ..color = const Color(0xFF10B981)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8;
+
+    canvas.drawRRect(rrect, borderPaint);
   }
 
   @override
   bool shouldRepaint(covariant _SpotlightPainter oldDelegate) {
     return oldDelegate.targetRect != targetRect ||
-        oldDelegate.overlayColor != overlayColor;
+        oldDelegate.overlayColor != overlayColor ||
+        oldDelegate.pulseSpread != pulseSpread;
   }
 }
