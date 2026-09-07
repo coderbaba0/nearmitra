@@ -49,42 +49,15 @@ class FirebasePresenceService extends ChangeNotifier {
     return _db!;
   }
 
-  /// Initialize identity and test Firebase connection
+  /// Initialize local device identity (100% offline-safe, instant)
   Future<void> init() async {
     if (_isInitialized) return;
 
-    // 1. Ensure persistent device identity
+    // 1. Ensure persistent device identity from local storage
     await _identityService.init();
-
-    // 2. Test Firebase Connection
-    await _testConnection();
 
     _isInitialized = true;
     notifyListeners();
-  }
-
-  /// Temporary connectivity test
-  Future<void> _testConnection() async {
-    try {
-      if (Firebase.apps.isEmpty) {
-        debugPrint('[Firebase] Warning: Firebase not initialized');
-        return;
-      }
-      debugPrint('Firebase initialized successfully');
-
-      final db = database;
-      debugPrint('Realtime Database connected');
-
-      final testRef = db.ref('test');
-      await testRef.set({
-        'message': 'NearMitra connected',
-        'platform': _identityService.platform,
-        'timestamp': ServerValue.timestamp,
-      });
-      debugPrint('Test write successful');
-    } catch (e) {
-      debugPrint('[Firebase] Connection test error: $e');
-    }
   }
 
   /// Toggle Internet Mode ON or OFF

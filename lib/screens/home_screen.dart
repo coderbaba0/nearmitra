@@ -825,6 +825,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   void _openActivityLogsScreen({int initialTabIndex = 0}) {
+    setState(() => _bottomNavIndex = 0);
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ActivityLogsScreen(
@@ -840,11 +841,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ),
       ),
     ).then((_) {
-      if (mounted) setState(() {});
+      if (mounted) setState(() => _bottomNavIndex = 0);
     });
   }
 
   void _openStreamingHubScreen({String initialType = 'camera'}) {
+    setState(() => _bottomNavIndex = 0);
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => StreamHubScreen(
@@ -853,7 +855,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           initialStreamType: initialType,
         ),
       ),
-    );
+    ).then((_) {
+      if (mounted) setState(() => _bottomNavIndex = 0);
+    });
   }
 
 
@@ -1967,10 +1971,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Future<void> _openSettingsModal() async {
+    setState(() => _bottomNavIndex = 0);
     final currentDir = await widget.service.getReceiveDirectory();
     if (!mounted) return;
 
-    showModalBottomSheet(
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -2401,6 +2406,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         );
       },
     );
+    if (mounted) setState(() => _bottomNavIndex = 0);
   }
 
   Widget _themeOptionCard(

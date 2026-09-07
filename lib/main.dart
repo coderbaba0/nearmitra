@@ -25,17 +25,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
-  // Initialize Firebase with generated platform options
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    debugPrint('[Firebase] Initialized with DefaultFirebaseOptions');
-  } catch (e) {
-    debugPrint('[Firebase] Init error / already initialized: $e');
-  }
-
-  // 1. Load saved theme mode from persistent storage
+  // 1. Load saved theme mode from local storage
   try {
     final prefs = await SharedPreferences.getInstance();
     final savedTheme = prefs.getString('app_theme_mode');
@@ -48,22 +38,20 @@ Future<void> main() async {
     }
   } catch (_) {}
 
-  // 2. Initialize persistent AI settings & allowed peers
-  await AiSettingsService().load();
+  // 2. Initialize local AI settings, calls, streaming & identity (100% offline-ready)
+  try {
+    await AiSettingsService().load();
+    await CallService().init();
+    await StreamingService().init();
+  } catch (e) {
+    debugPrint('[Startup] Local services warning: $e');
+  }
 
-  await CallService().init();
-  await StreamingService().init();
   final identity = DeviceIdentity();
   final id = await identity.getId();
   final name = await identity.getName();
 
-  // Initialize Persistent Internet Identity & Firebase Presence Service
-  try {
-    await InternetDeviceIdentityService().init(customName: name);
-    await FirebasePresenceService().init();
-  } catch (e) {
-    debugPrint('[InternetIdentity] Main init warning: $e');
-  }
+  // Run the app IMMEDIATELY — zero blocking on Firebase/Network so app opens instantly offline
   runApp(
     ProviderScope(
       child: FarmitraNearbyApp(
@@ -72,21 +60,38 @@ Future<void> main() async {
     ),
   );
 
+  // Initialize Firebase in background without blocking UI or offline startup
+  _initFirebaseInBackground(name);
+
   // Request critical permissions non-blocking after first frame renders
   WidgetsBinding.instance.addPostFrameCallback((_) async {
-    // Fix 3a: POST_NOTIFICATIONS — Required on Android 13+ for any call/notification UI
-    final notifStatus = await Permission.notification.status;
-    if (!notifStatus.isGranted) {
-      await Permission.notification.request();
-    }
+    try {
+      final notifStatus = await Permission.notification.status;
+      if (!notifStatus.isGranted) {
+        await Permission.notification.request();
+      }
+    } catch (_) {}
 
-    // Fix 3b: USE_FULL_SCREEN_INTENT — Required on Android 14+ for lock screen CallKit UI
-    // Without this, incoming call notification won't wake the screen when locked
     try {
       const channel = MethodChannel('farmitra_nearby/network');
       await channel.invokeMethod('requestFullScreenIntentPermission');
-    } catch (_) {
-      // Non-critical — CallKit will still show as heads-up notification
+    } catch (_) {}
+  });
+}
+
+void _initFirebaseInBackground(String customName) {
+  Future.microtask(() async {
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        ).timeout(const Duration(seconds: 4));
+        debugPrint('[Firebase] Initialized in background');
+      }
+      await InternetDeviceIdentityService().init(customName: customName);
+      await FirebasePresenceService().init();
+    } catch (e) {
+      debugPrint('[Firebase] Background init skipped / offline: $e');
     }
   });
 }

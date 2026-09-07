@@ -63,15 +63,43 @@ NearMitra bridges mobile devices and desktop workstations across local Wi-Fi net
 
 ---
 
-### Series 6: Windows Desktop Workstation Interface
+### Series 6: Windows Desktop Workstation Hub & High-Speed P2P Transfers
 
-| Windows Node Discovery & Network Status | Windows P2P Chat & High-Speed Transfer |
+| Windows Network Dashboard & 50+ MB/s Dropzone | Encrypted Direct P2P Chat & File Transfers |
 | :---: | :---: |
-| ![Windows Overview](screenshot/windowsapp/win_app_overview.png) | ![Windows Chat Transfer](screenshot/windowsapp/win_p2p_chat_transfer.png) |
+| ![Windows Dashboard](screenshot/windowsapp/0.png) | ![Windows P2P Chat](screenshot/windowsapp/1.png) |
 
-| Windows Local Ollama AI Host Engine | Windows AI Host Security & Model Configuration |
+---
+
+### Series 7: Windows AI Fleet, Local Ollama Host & Neural Studio
+
+| Multi-Provider Nearby AI Engine | AI Fleet & Local GPU Ollama Compute Node |
 | :---: | :---: |
-| ![Windows Ollama Host](screenshot/windowsapp/win_nearby_ai_host.png) | ![Windows AI Settings](screenshot/windowsapp/win_ai_settings.png) |
+| ![Nearby AI Windows](screenshot/windowsapp/3.png) | ![AI Fleet Studio](screenshot/windowsapp/08.png) |
+
+---
+
+### Series 8: AI Vision CCTV Surveillance & Telemetry Diagnostics
+
+| CCTV Surveillance Node (OpenCV Engine) | AI Vision Telemetry (Intruder, Theft, NDVI) |
+| :---: | :---: |
+| ![Windows CCTV Node](screenshot/windowsapp/04.png) | ![AI Vision Telemetry](screenshot/windowsapp/05.png) |
+
+---
+
+### Series 9: HD Audio Intercom Studio, WebRTC Call, IoT & Storage
+
+| HD Voice & Live Audio Intercom Studio | Active Encrypted WebRTC Voice Stream |
+| :---: | :---: |
+| ![Audio Intercom Studio](screenshot/windowsapp/06.png) | ![Encrypted Voice Call](screenshot/windowsapp/07.png) |
+
+| Hardware & IoT Virtualization Hub | Recents Storage & CCTV Recordings Hub |
+| :---: | :---: |
+| ![Hardware IoT Hub](screenshot/windowsapp/09.png) | ![Recents & Storage](screenshot/windowsapp/10.png) |
+
+| Windows System Settings & Streaming Security |
+| :---: |
+| ![Windows Settings](screenshot/windowsapp/11.png) |
 
 ---
 
