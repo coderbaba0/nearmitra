@@ -13,12 +13,27 @@ import 'services/device_identity.dart';
 import 'services/nearby_service.dart';
 import 'services/streaming_service.dart';
 
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'services/internet_device_identity_service.dart';
+import 'services/firebase_presence_service.dart';
+
 final themeNotifier = ValueNotifier<ThemeMode>(ThemeMode.system);
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+  // Initialize Firebase with generated platform options
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    debugPrint('[Firebase] Initialized with DefaultFirebaseOptions');
+  } catch (e) {
+    debugPrint('[Firebase] Init error / already initialized: $e');
+  }
 
   // 1. Load saved theme mode from persistent storage
   try {
@@ -41,6 +56,14 @@ Future<void> main() async {
   final identity = DeviceIdentity();
   final id = await identity.getId();
   final name = await identity.getName();
+
+  // Initialize Persistent Internet Identity & Firebase Presence Service
+  try {
+    await InternetDeviceIdentityService().init(customName: name);
+    await FirebasePresenceService().init();
+  } catch (e) {
+    debugPrint('[InternetIdentity] Main init warning: $e');
+  }
   runApp(
     ProviderScope(
       child: FarmitraNearbyApp(

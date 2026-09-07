@@ -85,7 +85,7 @@ class AboutScreen extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               const Text(
-                'Offline P2P Mesh • HD Calling • CCTV Streaming • Dual-Tier AI',
+                'Offline P2P Mesh • Global Internet (WAN) P2P • HD Calling • CCTV Streaming • Dual-Tier AI',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12.5,
@@ -107,7 +107,7 @@ class AboutScreen extends StatelessWidget {
                   ),
                 ),
                 child: const Text(
-                  'v2.0.0 • Riverpod Reactive • WebRTC Unified-Plan',
+                  'v2.1.0 • P2P WebRTC DataChannel • Global WAN • Riverpod Reactive',
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
                 ),
               ),
@@ -121,12 +121,28 @@ class AboutScreen extends StatelessWidget {
                 iconColor: const Color(0xFF10B981),
                 title: 'What is NearMitra?',
                 description:
-                    'NearMitra is an enterprise-grade local communication, live media streaming, and AI ecosystem built for everyone — individuals, teams, families, field professionals, and off-grid communities. It operates 100% peer-to-peer over local Wi-Fi and Wi-Fi Direct without requiring cellular data, internet, or external servers.',
+                    'NearMitra is an enterprise-grade peer-to-peer communication, live media streaming, global internet sync, and AI ecosystem built for everyone — individuals, teams, families, field professionals, and off-grid communities. It operates 100% peer-to-peer over local Wi-Fi, Wi-Fi Direct, and global Internet (WAN) without storing private data on third-party cloud servers.',
               ),
 
               const SizedBox(height: 14),
 
-              // Section 2: Core Feature Highlights
+              // Section 2: Global Internet (WAN) P2P Mode
+              _buildInfoCard(
+                context,
+                icon: Icons.public_rounded,
+                iconColor: const Color(0xFF10B981),
+                title: 'Global Internet (WAN) P2P Connection',
+                description:
+                    '• Worldwide Direct Connection: Chat and transfer files directly with paired devices across any network, city, or country over the Internet.\n'
+                    '• Zero Cloud Storage: All messages and files travel directly device-to-device via encrypted WebRTC DataChannels — zero private data is ever stored on Firebase or cloud databases.\n'
+                    '• 6-Digit Pair Code & QR: 1-tap secure pairing with mutual authentication and trusted device management.\n'
+                    '• Interactive Radar Scan: Visual live presence radar showing online status and real-time WebRTC connection indicators.\n'
+                    '• Offline Outbox Auto-Sync: Queue messages and files offline; they automatically deliver the moment your peer comes online.',
+              ),
+
+              const SizedBox(height: 14),
+
+              // Section 3: Core Feature Highlights
               _buildInfoCard(
                 context,
                 icon: Icons.videocam_rounded,
@@ -141,7 +157,7 @@ class AboutScreen extends StatelessWidget {
 
               const SizedBox(height: 14),
 
-              // Section 3: WebRTC HD Calling & Screen Sharing
+              // Section 4: WebRTC HD Calling & Screen Sharing
               _buildInfoCard(
                 context,
                 icon: Icons.phone_in_talk_rounded,
@@ -155,7 +171,7 @@ class AboutScreen extends StatelessWidget {
 
               const SizedBox(height: 14),
 
-              // Section 4: Dual-Tier AI System
+              // Section 5: Dual-Tier AI System
               _buildInfoCard(
                 context,
                 icon: Icons.auto_awesome_rounded,
@@ -169,7 +185,7 @@ class AboutScreen extends StatelessWidget {
 
               const SizedBox(height: 14),
 
-              // Section 5: Mesh Relay & High-Speed File Transfer
+              // Section 6: Mesh Relay & High-Speed File Transfer
               _buildInfoCard(
                 context,
                 icon: Icons.hub_rounded,

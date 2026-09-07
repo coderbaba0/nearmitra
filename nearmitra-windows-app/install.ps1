@@ -24,6 +24,20 @@ foreach ($pidToKill in $portPids) {
 }
 Start-Sleep -Milliseconds 600
 
+# 0. Compile Fresh Binary
+Write-Host "Compiling fresh NearMitra binary..." -ForegroundColor Yellow
+Push-Location $SourceDir
+try {
+    $env:GOOS = "windows"
+    $env:GOARCH = "amd64"
+    go build -ldflags="-H windowsgui -s -w" -o NearMitra.exe .
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Go build failed with code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
+}
+
 # 1. Create installation directory
 if (!(Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
