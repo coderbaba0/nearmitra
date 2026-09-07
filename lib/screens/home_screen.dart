@@ -44,6 +44,7 @@ import '../services/wan_webrtc_manager.dart';
 import '../services/firebase_presence_service.dart';
 import '../widgets/wan_pair_dialog.dart';
 import '../widgets/wan_radar_view.dart';
+import '../widgets/home_walkthrough_guide.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, required this.service});
@@ -75,6 +76,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   int _bottomNavIndex = 0;
   DateTime? _lastBackPressTime;
   Timer? _peerStatusRefreshTimer;
+  final GlobalKey _nearbyTabKey = GlobalKey();
+  final GlobalKey _p2pTabKey = GlobalKey();
+  final GlobalKey _wanTabKey = GlobalKey();
+  bool _showWalkthrough = false;
   final WanService _wanService = WanService();
   final WanWebRtcManager _wanRtcManager = WanWebRtcManager();
   final FirebasePresenceService _firebasePresenceService = FirebasePresenceService();
@@ -169,6 +174,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     };
     _initCallService();
     _initShareHandler();
+
+    final walkthroughDone = await HomeWalkthroughGuide.isCompleted();
+    if (!walkthroughDone && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 700), () {
+          if (mounted && !_showWalkthrough) {
+            _startWalkthrough(force: false);
+          }
+        });
+      });
+    }
 
     _notificationSub = NotificationService().onNotificationClick.listen((peerId) {
       if (peerId != null && mounted) {
@@ -1490,7 +1506,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
 
+  void _startWalkthrough({bool force = false}) async {
+    if (!force) {
+      final completed = await HomeWalkthroughGuide.isCompleted();
+      if (completed) return;
+    }
+    if (mounted) {
+      setState(() {
+        _showWalkthrough = true;
+        _bottomNavIndex = 0;
+        _selectedPeerId = null;
+        _connectionMode = ConnectionMode.lan;
+      });
+    }
+  }
+
   bool _handleBackPress() {
+    // 0. If walkthrough is open, dismiss it
+    if (_showWalkthrough) {
+      setState(() {
+        _showWalkthrough = false;
+      });
+      HomeWalkthroughGuide.markCompleted();
+      return false;
+    }
+
     // 1. If a peer chat is selected on compact layout, close the chat first
     if (_selectedPeerId != null) {
       setState(() {
@@ -1563,7 +1603,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           systemNavigationBarColor: isDark ? const Color(0xFF111B21) : Colors.white,
           systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
         ),
-        child: Scaffold(
+        child: Stack(
+          children: [
+            Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
       floatingActionButton: (_selectedPeer == null)
           ? _AnimatedAiFab(
@@ -1675,7 +1717,74 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ),
       ),
     ),
-    ),
+    if (_showWalkthrough)
+      HomeWalkthroughGuide(
+        steps: [
+          WalkthroughStepItem(
+            key: _nearbyTabKey,
+            title: 'Nearby',
+            description: 'Find NearMitra devices on the same Wi-Fi or local network. Tap a discovered device to connect.',
+            howToUse: 'Open Nearby and NearMitra will scan for nearby Android and Windows devices. When a device appears, tap it to connect.',
+            icon: Icons.wifi_rounded,
+            onEnter: () {
+              if (_connectionMode != ConnectionMode.lan) {
+                setState(() {
+                  _connectionMode = ConnectionMode.lan;
+                });
+                _firebasePresenceService.setInternetMode(false);
+                _wanService.setInternetMode(false);
+              }
+            },
+          ),
+          WalkthroughStepItem(
+            key: _p2pTabKey,
+            title: 'P2P',
+            description: 'Connect directly to another device for private device-to-device communication and file sharing.',
+            howToUse: 'Select a compatible device and establish a direct P2P connection for supported features such as chat and file sharing.',
+            icon: Icons.radar_rounded,
+            onEnter: () {
+              if (_connectionMode != ConnectionMode.p2p) {
+                setState(() {
+                  _connectionMode = ConnectionMode.p2p;
+                });
+                _wanService.setInternetMode(false);
+              }
+            },
+          ),
+          WalkthroughStepItem(
+            key: _wanTabKey,
+            title: 'WAN',
+            description: 'Connect to your paired NearMitra devices across different networks, including mobile data and remote Wi-Fi.',
+            howToUse: 'Enable Internet Mode, pair a remote device once, and connect whenever both devices are online.',
+            icon: Icons.public_rounded,
+            onEnter: () {
+              if (_connectionMode != ConnectionMode.wan) {
+                setState(() {
+                  _connectionMode = ConnectionMode.wan;
+                });
+                _wanService.setInternetMode(true);
+              }
+            },
+          ),
+        ],
+        onFinish: () {
+          if (mounted) {
+            setState(() {
+              _showWalkthrough = false;
+            });
+          }
+        },
+        onSkip: () {
+          if (mounted) {
+            setState(() {
+              _showWalkthrough = false;
+            });
+          }
+        },
+      ),
+    ],
+  ),
+  ),
   );
 }
 
@@ -2171,6 +2280,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             context,
                             MaterialPageRoute(builder: (_) => const AiSettingsScreen()),
                           );
+                        },
+                      ),
+                      const SizedBox(height: 6),
+
+                      // 4b. Show Feature Guide (Walkthrough)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.explore_rounded, color: Color(0xFF6366F1), size: 22),
+                        ),
+                        title: const Text('Show Feature Guide', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text('Interactive tour of Nearby, P2P & WAN modes', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        trailing: const Icon(Icons.chevron_right_rounded, size: 22),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _startWalkthrough(force: true);
                         },
                       ),
                       const SizedBox(height: 6),
@@ -2762,6 +2892,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         children: [
           Expanded(
             child: GestureDetector(
+              key: _nearbyTabKey,
               onTap: () {
                 setState(() => _connectionMode = ConnectionMode.lan);
                 _firebasePresenceService.setInternetMode(false);
@@ -2799,6 +2930,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
           Expanded(
             child: GestureDetector(
+              key: _p2pTabKey,
               onTap: () {
                 setState(() => _connectionMode = ConnectionMode.p2p);
                 _wanService.setInternetMode(false);
@@ -2835,6 +2967,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
           Expanded(
             child: GestureDetector(
+              key: _wanTabKey,
               onTap: () {
                 setState(() => _connectionMode = ConnectionMode.wan);
                 _wanService.setInternetMode(true);
