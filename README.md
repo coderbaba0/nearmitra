@@ -1,6 +1,6 @@
-# NearMitra: Local-First Distributed Edge Computing & Communication Framework
+# NearMitra: Local-First Distributed Edge Computing, P2P Mesh & Global WAN Communication Framework
 
-**NearMitra is a local-first distributed edge computing and communication platform.** It combines high-speed private local network and direct peer-to-peer (P2P) transport with **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet connections, cellular data, or external cloud infrastructure**.
+**NearMitra is a versatile local-first distributed edge computing and communication platform with seamless Triple-Link connectivity (Nearby LAN, Direct P2P, and Global WAN).** It combines high-speed private local network and direct peer-to-peer (P2P) hardware transport with **Global WAN (Internet / Cloud Relay) connectivity**, **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet or cellular data, while providing seamless on-demand WAN bridge capabilities for global communication**.
 
 ---
 
@@ -14,10 +14,10 @@
 
 ## Cross-Platform Architecture (Android Mobile & Windows Desktop)
 
-NearMitra bridges mobile devices and desktop workstations across local Wi-Fi networks and direct Wi-Fi Direct links:
+NearMitra bridges mobile devices and desktop workstations across local Wi-Fi networks, direct Wi-Fi Direct links, and global WAN:
 
-- **Android Mobile Application**: Native Flutter + Kotlin integration featuring a 60 FPS P2P Radar, live camera QR pairing, scoped storage file pipeline, WebRTC audio/video calling, live CCTV/audio streaming, persistent outbox queue, and Android Quick Settings Tile.
-- **Windows PC Desktop Application**: Desktop workstation application with direct P2P link support, real-time activity tracker, local Ollama AI hosting, and system tray integration.
+- **Android Mobile Application**: Native Flutter + Kotlin integration featuring a 60 FPS P2P Radar, live camera QR pairing, Triple-Mode Switch (Nearby / P2P / WAN), scoped storage file pipeline, WebRTC audio/video calling, live CCTV/audio streaming, persistent outbox queue, first-time interactive walkthrough, and Android Quick Settings Tile.
+- **Windows PC Desktop Application**: Desktop workstation application with direct P2P link support, real-time activity tracker, local Ollama AI hosting, CCTV vision telemetry node, and system tray integration.
 
 ---
 
