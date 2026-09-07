@@ -63,15 +63,43 @@ NearMitra bridges mobile devices and desktop workstations across local Wi-Fi net
 
 ---
 
-### Series 6: Windows Desktop Workstation Interface
+### Series 6: Windows Desktop Workstation Hub & High-Speed P2P Transfers
 
-| Windows Node Discovery & Network Status | Windows P2P Chat & High-Speed Transfer |
+| Windows Network Dashboard & 50+ MB/s Dropzone | Encrypted Direct P2P Chat & File Transfers |
 | :---: | :---: |
-| ![Windows Overview](screenshot/windowsapp/win_app_overview.png) | ![Windows Chat Transfer](screenshot/windowsapp/win_p2p_chat_transfer.png) |
+| ![Windows Dashboard](screenshot/windowsapp/0.png) | ![Windows P2P Chat](screenshot/windowsapp/1.png) |
 
-| Windows Local Ollama AI Host Engine | Windows AI Host Security & Model Configuration |
+---
+
+### Series 7: Windows AI Fleet, Local Ollama Host & Neural Studio
+
+| Multi-Provider Nearby AI Engine | AI Fleet & Local GPU Ollama Compute Node |
 | :---: | :---: |
-| ![Windows Ollama Host](screenshot/windowsapp/win_nearby_ai_host.png) | ![Windows AI Settings](screenshot/windowsapp/win_ai_settings.png) |
+| ![Nearby AI Windows](screenshot/windowsapp/3.png) | ![AI Fleet Studio](screenshot/windowsapp/08.png) |
+
+---
+
+### Series 8: AI Vision CCTV Surveillance & Telemetry Diagnostics
+
+| CCTV Surveillance Node (OpenCV Engine) | AI Vision Telemetry (Intruder, Theft, NDVI) |
+| :---: | :---: |
+| ![Windows CCTV Node](screenshot/windowsapp/04.png) | ![AI Vision Telemetry](screenshot/windowsapp/05.png) |
+
+---
+
+### Series 9: HD Audio Intercom Studio, WebRTC Call, IoT & Storage
+
+| HD Voice & Live Audio Intercom Studio | Active Encrypted WebRTC Voice Stream |
+| :---: | :---: |
+| ![Audio Intercom Studio](screenshot/windowsapp/06.png) | ![Encrypted Voice Call](screenshot/windowsapp/07.png) |
+
+| Hardware & IoT Virtualization Hub | Recents Storage & CCTV Recordings Hub |
+| :---: | :---: |
+| ![Hardware IoT Hub](screenshot/windowsapp/09.png) | ![Recents & Storage](screenshot/windowsapp/10.png) |
+
+| Windows System Settings & Streaming Security |
+| :---: |
+| ![Windows Settings](screenshot/windowsapp/11.png) |
 
 ---
 
@@ -123,15 +151,25 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 3. Dual Link Layer: Direct P2P & Nearby LAN Modes
+### 3. Triple Link Layer: Nearby (LAN), Direct P2P & Global WAN (Internet)
 
+NearMitra offers a flexible multi-mode connectivity layer to seamlessly connect devices whether they are offline, in close proximity, or across the globe:
+
+- **Nearby Mode (LAN Discovery)**: Automatically discovers all peers on a shared Wi-Fi network or mobile hotspot using zero-configuration UDP multicast (`239.255.43.88:43888`) and subnet scans.
 - **Direct P2P Mode (Wi-Fi Direct v7.1 Radar)**: Establishes a direct high-throughput hardware link between two devices without requiring an external Wi-Fi router, hotspot, or internet connectivity.
-- **Nearby Mode (LAN Discovery)**: Automatically discovers all peers on a shared Wi-Fi network or hotspot using zero-configuration UDP multicast (`239.255.43.88:43888`) and subnet scans.
-- **Hardware Type Identification**: Automatically identifies nodes as Android phones, Windows PCs, or generic hardware with dedicated icons.
+- **Global WAN Mode (Internet / Cloud Relay)**: Extends NearMitra beyond local boundaries, allowing users to securely chat, transfer files, and initiate encrypted WebRTC calls with global remote peers over cellular data or public internet when offline local transport is unavailable.
+- **Hardware Type Identification**: Automatically identifies nodes as Android phones, Windows PCs, or generic hardware with dedicated indicators.
 
 ---
 
-### 4. 60 FPS Continuous P2P Radar & Smart Setup
+### 4. Interactive Guided Walkthrough & Onboarding Tour
+
+- **Smart First-Time Tour**: An animated, non-intrusive spotlight onboarding tour on first launch highlighting Nearby, P2P, and WAN modes.
+- **Dynamic Pointer & Replay Support**: Features dynamic focus target bounds, step indicators, and instant replay capability anytime from App Settings.
+
+---
+
+### 5. 60 FPS Continuous P2P Radar & Smart Setup
 
 - **60 FPS Hardware Sweep**: Continuous rotating radar sweep arc with expanding wave pulses and fading trails.
 - **Dynamic Hardware Diagnostics**: Detects Wi-Fi or Location (GPS) states on Android and presents 1-tap action banners to enable required radios without navigating through settings menus.
@@ -139,7 +177,7 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 5. Offline Outbox Queue (Store & Forward Auto-Sync)
+### 6. Offline Outbox Queue (Store & Forward Auto-Sync)
 
 - **Persistent Outbox Queue**: Messages and files sent to offline or temporarily unreachable peers are preserved in local storage (`SharedPreferences`).
 - **Visual Status Badges**: Displays a distinct **Queued** status indicator on pending bubbles.
@@ -148,15 +186,15 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 6. Real-Time Audio & Video Calling (WebRTC P2P)
+### 7. Real-Time Audio & Video Calling (WebRTC P2P & WAN)
 
-- **P2P HD Voice & Video Calls**: Direct device-to-device audio and video streams powered by WebRTC over local sockets.
+- **P2P & WAN HD Voice & Video Calls**: Direct device-to-device audio and video streams powered by WebRTC over local sockets or secure global signaling.
 - **Full-Screen Call Interface**: Audio mute, camera flip, speakerphone switching, and call duration tracking.
 - **Background Call Delivery**: Integrated with native Android full-screen incoming call notifications even when the application is backgrounded or the screen is locked.
 
 ---
 
-### 7. Live Streaming Hub (CCTV & Audio)
+### 8. Live Streaming Hub (CCTV & Audio)
 
 - **CCTV Video Feed**: Stream live camera feeds from one device to any authorized peer on the network.
 - **Live Microphone Audio**: Broadcast live low-latency audio to connected nodes.
@@ -164,7 +202,7 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 8. High-Speed Offline File & Folder Transfer
+### 9. High-Speed Offline File & Folder Transfer
 
 - **High Throughput Transfers**: Exchange documents, media, APKs, and compressed archives at full hardware Wi-Fi link speeds (up to 50+ MB/s).
 - **Live Transfer Metrics**: Real-time progress indicators, transfer speed (MB/s), and estimated time remaining (ETA).
@@ -172,7 +210,7 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 9. Android Quick Settings Tile (`NearMitra Share`)
+### 10. Android Quick Settings Tile (`NearMitra Share`)
 
 - **Notification Shade Tile**: Native `TileService` allows 1-tap application launch directly from Android Quick Settings (alongside Wi-Fi and Bluetooth).
 - **Monochrome Vector Icon**: Clean vector drawable (`ic_qs_nearmitra.xml`) that dynamically tints across Android Light and Dark system themes.
@@ -180,7 +218,7 @@ NearMitra contains a built-in **Multi-Hop Mesh Networking Engine** designed for 
 
 ---
 
-### 10. Native Android Background Service
+### 11. Native Android Background Service
 
 - **Foreground Socket Daemon**: Native `FarmitraForegroundService` with `WAKE_LOCK`, `WifiLock`, and `MulticastLock` maintains socket listeners when minimized or locked.
 - **Run in Background Switch**: Configurable toggle in App Settings with persistent state.
@@ -195,8 +233,9 @@ NearMitra uses a low-overhead JSON-over-Socket wire protocol compatible across A
 | :--- | :--- | :--- |
 | **UDP Discovery** | `UDP 239.255.43.88:43888` / Broadcast | Device presence announcement & IP discovery |
 | **TCP Socket Transport** | `TCP 0.0.0.0:43889` | Chat messages, file payloads, typing indicators, AI prompts |
-| **WebRTC Signaling** | TCP Socket Overlay | Session Description Protocol (SDP) and ICE candidate exchange |
+| **WebRTC Signaling** | TCP Socket Overlay / WAN Relay | Session Description Protocol (SDP) and ICE candidate exchange |
 | **Wi-Fi Direct P2P** | Android `WifiP2pManager` | Point-to-point Wi-Fi Direct subnet link formation (`192.168.49.x`) |
+| **WAN / Internet Relay** | Firebase RTDB / WebSocket | Global presence, discovery, and signaling for remote devices |
 
 ### Packet Header Schema (JSON + `\n`):
 
