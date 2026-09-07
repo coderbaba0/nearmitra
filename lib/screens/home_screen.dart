@@ -37,6 +37,13 @@ import '../widgets/p2p_qr_widget.dart';
 import '../widgets/p2p_radar_view.dart';
 import '../widgets/peer_tile.dart';
 import '../widgets/transfer_card.dart';
+import 'wan_active_session_screen.dart';
+import '../models/wan_models.dart';
+import '../services/wan_service.dart';
+import '../services/wan_webrtc_manager.dart';
+import '../services/firebase_presence_service.dart';
+import '../widgets/wan_pair_dialog.dart';
+import '../widgets/wan_radar_view.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, required this.service});
@@ -48,7 +55,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 enum ChatMode { people, ai }
-enum ConnectionMode { lan, p2p }
+enum ConnectionMode { lan, p2p, wan }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   final _message = TextEditingController();
@@ -66,13 +73,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _aiThinking = false;
   int _chatDisplayCount = 20;
   int _bottomNavIndex = 0;
+  DateTime? _lastBackPressTime;
   Timer? _peerStatusRefreshTimer;
+  final WanService _wanService = WanService();
+  final WanWebRtcManager _wanRtcManager = WanWebRtcManager();
+  final FirebasePresenceService _firebasePresenceService = FirebasePresenceService();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     widget.service.addListener(_onServiceChanged);
+    _wanService.addListener(_onServiceChanged);
+    _wanRtcManager.addListener(_onServiceChanged);
+    _firebasePresenceService.addListener(_onServiceChanged);
     _scroll.addListener(_onScroll);
     _peerStatusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) setState(() {});
@@ -107,6 +121,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     await AiSettingsService().load();
     _history.addAll(await _historyService.load());
     await widget.service.start();
+    await _wanService.init();
+    _wanRtcManager.init();
+    _wanService.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _wanRtcManager.addListener(() {
+      if (mounted) setState(() {});
+    });
+    _wanService.onIncomingPairRequest = (request) {
+      if (!mounted) return;
+      _showIncomingPairRequestDialog(request);
+    };
+    _wanRtcManager.onIncomingSessionRequest = (session) async {
+      if (!mounted) return;
+      if (_wanService.isDeviceTrusted(session.callerId)) {
+        final peer = _wanService.trustedDevicesList.firstWhere(
+          (d) => d.id == session.callerId,
+          orElse: () => WanDevice(
+            id: session.callerId,
+            name: session.callerName,
+            platform: session.callerPlatform,
+            isOnline: true,
+            isTrusted: true,
+          ),
+        );
+        await _wanRtcManager.acceptIncomingSession(session);
+        if (mounted && !WanActiveSessionScreen.isScreenOpen) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => WanActiveSessionScreen(peer: peer),
+            ),
+          ).then((_) async {
+            final updated = await _historyService.load();
+            if (mounted) {
+              setState(() {
+                _history.clear();
+                _history.addAll(updated);
+              });
+            }
+          });
+        }
+        return;
+      }
+      _showIncomingSessionDialog(session);
+    };
     _initCallService();
     _initShareHandler();
 
@@ -789,6 +849,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _replySub?.cancel();
     _scroll.removeListener(_onScroll);
     widget.service.removeListener(_onServiceChanged);
+    _wanService.removeListener(_onServiceChanged);
+    _wanRtcManager.removeListener(_onServiceChanged);
+    _firebasePresenceService.removeListener(_onServiceChanged);
     widget.service.stop();
     _message.dispose();
     _scroll.dispose();
@@ -1427,14 +1490,81 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
 
+  bool _handleBackPress() {
+    // 1. If a peer chat is selected on compact layout, close the chat first
+    if (_selectedPeerId != null) {
+      setState(() {
+        _selectedPeerId = null;
+        widget.service.activeChatPeerId = null;
+      });
+      return false;
+    }
+
+    // 2. If on another bottom nav tab, switch to main Chats tab first
+    if (_bottomNavIndex != 0) {
+      setState(() {
+        _bottomNavIndex = 0;
+      });
+      return false;
+    }
+
+    // 3. Double press back check within 2 seconds
+    final now = DateTime.now();
+    if (_lastBackPressTime == null || now.difference(_lastBackPressTime!) > const Duration(seconds: 2)) {
+      _lastBackPressTime = now;
+      ScaffoldMessenger.of(context).removeCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Row(
+            children: [
+              Icon(Icons.exit_to_app_rounded, color: Colors.white, size: 18),
+              SizedBox(width: 10),
+              Text(
+                'Press back again to exit',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            ],
+          ),
+          backgroundColor: const Color(0xFF1F2C34),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return false;
+    }
+
+    // Allow exit
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final compact = width < 760;
     final peer = _selectedPeer;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.surface,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        final shouldExit = _handleBackPress();
+        if (shouldExit) {
+          SystemNavigator.pop();
+        }
+      },
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+          statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+          systemNavigationBarColor: isDark ? const Color(0xFF111B21) : Colors.white,
+          systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        ),
+        child: Scaffold(
+        backgroundColor: Theme.of(context).colorScheme.surface,
       floatingActionButton: (_selectedPeer == null)
           ? _AnimatedAiFab(
               onPressed: () {
@@ -1544,8 +1674,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ],
         ),
       ),
-    );
-  }
+    ),
+    ),
+  );
+}
 
   Widget _topBar() {
     final scheme = Theme.of(context).colorScheme;
@@ -2630,7 +2762,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         children: [
           Expanded(
             child: GestureDetector(
-              onTap: () => setState(() => _connectionMode = ConnectionMode.lan),
+              onTap: () {
+                setState(() => _connectionMode = ConnectionMode.lan);
+                _firebasePresenceService.setInternetMode(false);
+                _wanService.setInternetMode(false);
+              },
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 7),
                 decoration: BoxDecoration(
@@ -2647,11 +2783,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       size: 14,
                       color: _connectionMode == ConnectionMode.lan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
                     ),
-                    const SizedBox(width: 5),
+                    const SizedBox(width: 4),
                     Text(
                       'Nearby',
                       style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: 12.0,
                         fontWeight: FontWeight.bold,
                         color: _connectionMode == ConnectionMode.lan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
                       ),
@@ -2663,7 +2799,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
           Expanded(
             child: GestureDetector(
-              onTap: () => setState(() => _connectionMode = ConnectionMode.p2p),
+              onTap: () {
+                setState(() => _connectionMode = ConnectionMode.p2p);
+                _wanService.setInternetMode(false);
+              },
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 7),
                 decoration: BoxDecoration(
@@ -2680,11 +2819,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       size: 14,
                       color: _connectionMode == ConnectionMode.p2p ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
                     ),
-                    const SizedBox(width: 5),
+                    const SizedBox(width: 4),
                     Text(
                       'Direct P2P',
                       style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: 12.0,
                         fontWeight: FontWeight.bold,
                         color: _connectionMode == ConnectionMode.p2p ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
                       ),
@@ -2694,9 +2833,231 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               ),
             ),
           ),
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _connectionMode = ConnectionMode.wan);
+                _wanService.setInternetMode(true);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: _connectionMode == ConnectionMode.wan
+                      ? (isDark ? const Color(0xFF005C4B) : const Color(0xFF075E54))
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.public_rounded,
+                      size: 14,
+                      color: _connectionMode == ConnectionMode.wan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      'WAN Mesh',
+                      style: TextStyle(
+                        fontSize: 12.0,
+                        fontWeight: FontWeight.bold,
+                        color: _connectionMode == ConnectionMode.wan ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  void _showIncomingPairRequestDialog(WanPairRequest request) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.phonelink_lock_rounded, color: Color(0xFF10B981)),
+            const SizedBox(width: 8),
+            const Text('Pairing Request', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          '${request.fromDeviceName} (${request.fromPlatform}) wants to pair with your device via Internet Mode.\n\nAllow this device as a trusted peer?',
+          style: const TextStyle(fontSize: 13.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _wanService.rejectPairRequest(request);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Pairing request rejected'),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            child: const Text('Reject', style: TextStyle(color: Colors.redAccent)),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _wanService.acceptPairRequest(request);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Paired with ${request.fromDeviceName}!'),
+                  backgroundColor: const Color(0xFF005C4B),
+                  behavior: SnackBarBehavior.floating,
+                ),
+              );
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF005C4B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showIncomingSessionDialog(WanSignalingSession session) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.hub_rounded, color: Color(0xFF10B981)),
+            const SizedBox(width: 8),
+            const Text('Incoming Internet P2P', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          '${session.callerName} (${session.callerPlatform}) is requesting a direct WebRTC P2P connection.\n\nAccept connection?',
+          style: const TextStyle(fontSize: 13.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _wanRtcManager.rejectIncomingSession(session.sessionId);
+            },
+            child: const Text('Decline', style: TextStyle(color: Colors.redAccent)),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final peer = _wanService.trustedDevicesList.firstWhere(
+                (d) => d.id == session.callerId,
+                orElse: () => WanDevice(
+                  id: session.callerId,
+                  name: session.callerName,
+                  platform: session.callerPlatform,
+                  isOnline: true,
+                  isTrusted: true,
+                ),
+              );
+              await _wanRtcManager.acceptIncomingSession(session);
+              if (mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => WanActiveSessionScreen(peer: peer),
+                  ),
+                );
+              }
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF005C4B),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Accept & Connect'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleUnpairDevice(WanDevice device) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Unpair Device', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        content: Text('Are you sure you want to unpair "${device.name}"? You will need to enter a pair code again to reconnect.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _wanService.removeTrustedDevice(device.id);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Unpaired ${device.name}'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Unpair'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openWanPairingModal() async {
+    final paired = await showDialog<WanDevice>(
+      context: context,
+      builder: (_) => const WanPairDialog(),
+    );
+    if (paired != null && mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _connectToWanPeer(WanDevice peer) async {
+    _wanService.clearUnreadCount(peer.id);
+    if (peer.isOnline && _wanService.isOnline) {
+      _wanRtcManager.connectToPeer(peer).catchError((e) {
+        debugPrint('[HomeScreen] WAN connect error: $e');
+      });
+    }
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WanActiveSessionScreen(peer: peer),
+        ),
+      ).then((_) async {
+        final updated = await _historyService.load();
+        if (mounted) {
+          setState(() {
+            _history.clear();
+            _history.addAll(updated);
+          });
+        }
+      });
+    }
   }
 
   Widget _devicePane() {
@@ -2723,7 +3084,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         p.id == peerName ||
                         p.ip == peerName) {
                       matched = p;
-                      break;
                     }
                   }
                   if (matched != null) {
@@ -2735,7 +3095,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 onManualPairingTap: _openManualPairingModal,
               ),
             )
-
+          else if (_connectionMode == ConnectionMode.wan)
+            Expanded(
+              child: WanRadarView(
+                devices: _wanService.trustedDevicesList,
+                isOnline: _wanService.isOnline,
+                isFirebaseConnected: _wanService.isFirebaseConnected,
+                isInternetModeOn: _wanService.isInternetModeEnabled,
+                currentDeviceId: _wanService.deviceId,
+                currentDeviceName: _wanService.deviceName,
+                onPairCodePressed: _openWanPairingModal,
+                onDeviceSelected: (wanDevice) => _connectToWanPeer(wanDevice),
+                onUnpairDevice: _handleUnpairDevice,
+              ),
+            )
           else ...[
             Row(
               children: [

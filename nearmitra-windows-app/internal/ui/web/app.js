@@ -3005,6 +3005,10 @@ function openRecordingsFolder() {
 // PROFESSIONAL WEBRTC VOICE & AUDIO INTERCOM STUDIO
 // =============================================================================
 let isCallActive = false;
+let localMediaStream = null;
+let peerConnection = null;
+let isScreenSharing = false;
+let incomingCallData = null;
 let testMicStream = null;
 let testMicInterval = null;
 
@@ -3512,6 +3516,47 @@ function endVoiceCall() {
     fetch("/api/voice/end", { method: "POST" }).catch(() => { });
     showToast("Call session ended.");
   }
+}
+
+function showIncomingCallOverlay(peerName, peerIP, isVideo) {
+  incomingCallData = { peerName, peerIP, isVideo };
+  const overlay = document.getElementById("incomingCallOverlay");
+  const nameEl = document.getElementById("icPeerName");
+  const avatarEl = document.getElementById("icAvatar");
+  const typeEl = document.getElementById("icCallType");
+
+  if (nameEl) nameEl.innerText = peerName || "Unknown Peer";
+  if (avatarEl) avatarEl.innerText = getInitials(peerName || "Peer");
+  if (typeEl) typeEl.innerText = isVideo ? "HD Video • P2P WebRTC" : "Audio • P2P WebRTC";
+  if (overlay) overlay.style.display = "flex";
+}
+
+function hideIncomingCallOverlay() {
+  incomingCallData = null;
+  const overlay = document.getElementById("incomingCallOverlay");
+  if (overlay) overlay.style.display = "none";
+}
+
+async function answerIncomingCall() {
+  const data = incomingCallData;
+  hideIncomingCallOverlay();
+  try {
+    await fetch("/api/call/answer", { method: "POST" });
+  } catch (e) { }
+
+  if (data) {
+    startCallWithPeer(data.peerIP, data.peerName, data.isVideo);
+  } else {
+    switchTab('voice', true);
+  }
+}
+
+async function declineIncomingCall() {
+  hideIncomingCallOverlay();
+  try {
+    await fetch("/api/call/decline", { method: "POST" });
+  } catch (e) { }
+  showToast("Incoming call declined.");
 }
 
 // -----------------------------------------------------------------------------

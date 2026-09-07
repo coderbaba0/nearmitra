@@ -519,22 +519,48 @@ class ChatBubble extends StatelessWidget {
 
   Widget _buildFileCard(BuildContext context, bool isDark, Color textColor) {
     final isFolder = item.kind == ChatKind.folder;
-    final isApk = FileOpenerService.isApkFile(item.fileName ?? item.filePath);
+    final fileName = item.fileName ?? item.filePath?.split(RegExp(r'[/\\]')).last ?? 'Attachment';
+    final isApk = FileOpenerService.isApkFile(fileName);
+    final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+
+    IconData fileIcon = Icons.insert_drive_file_rounded;
+    Color iconBgColor = item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54);
+
+    if (isApk) {
+      fileIcon = Icons.android_rounded;
+      iconBgColor = const Color(0xFF10B981);
+    } else if (isFolder || ext == 'zip' || ext == 'rar' || ext == '7z' || ext == 'tar' || ext == 'gz') {
+      fileIcon = isFolder ? Icons.folder_rounded : Icons.folder_zip_rounded;
+      iconBgColor = const Color(0xFFF59E0B);
+    } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].contains(ext)) {
+      fileIcon = Icons.image_rounded;
+      iconBgColor = const Color(0xFF3B82F6);
+    } else if (['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp'].contains(ext)) {
+      fileIcon = Icons.video_file_rounded;
+      iconBgColor = const Color(0xFF8B5CF6);
+    } else if (['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus'].contains(ext)) {
+      fileIcon = Icons.audiotrack_rounded;
+      iconBgColor = const Color(0xFFEC4899);
+    } else if (ext == 'pdf') {
+      fileIcon = Icons.picture_as_pdf_rounded;
+      iconBgColor = const Color(0xFFEF4444);
+    } else if (['doc', 'docx', 'txt', 'rtf', 'pdf', 'csv', 'xls', 'xlsx', 'ppt', 'pptx'].contains(ext)) {
+      fileIcon = Icons.description_rounded;
+      iconBgColor = const Color(0xFF0EA5E9);
+    }
 
     return InkWell(
       onTap: item.filePath == null ? null : () => _openFileOrCopyPath(context, item.filePath!),
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
-          color: isDark ? Colors.black.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(12),
-          border: isApk
-              ? Border.all(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.35),
-                  width: 1,
-                )
-              : null,
+          color: isDark ? Colors.black.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isDark ? Colors.white12 : Colors.black12,
+            width: 0.8,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -543,54 +569,83 @@ class ChatBubble extends StatelessWidget {
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: isApk
-                    ? const Color(0xFF10B981)
-                    : (item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54)),
+                color: iconBgColor,
                 borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: iconBgColor.withValues(alpha: 0.35),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
               child: Icon(
-                isApk
-                    ? Icons.android_rounded
-                    : (isFolder ? Icons.folder_rounded : Icons.insert_drive_file_rounded),
+                fileIcon,
                 color: Colors.white,
-                size: 24,
+                size: 22,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Flexible(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    item.fileName ?? (isApk ? 'Application Package' : 'Attachment'),
+                    fileName,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: textColor,
                       fontWeight: FontWeight.bold,
-                      fontSize: 14,
+                      fontSize: 13.5,
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    '${_size(item.fileSize ?? 0)} • ${isApk ? (item.mine ? "APK Sent" : "Tap to Install") : (item.status ?? 'Received')}',
-                    style: TextStyle(
-                      color: isApk && !item.mine
-                          ? const Color(0xFF10B981)
-                          : textColor.withValues(alpha: 0.7),
-                      fontSize: 11.5,
-                      fontWeight: isApk && !item.mine ? FontWeight.bold : FontWeight.normal,
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _size(item.fileSize ?? 0),
+                        style: TextStyle(
+                          color: textColor.withValues(alpha: 0.7),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      Text(
+                        ' • ',
+                        style: TextStyle(color: textColor.withValues(alpha: 0.5), fontSize: 11),
+                      ),
+                      Text(
+                        isApk
+                            ? (item.mine ? 'APK Sent' : 'Tap to Install')
+                            : (item.status ?? 'Received'),
+                        style: TextStyle(
+                          color: isApk && !item.mine
+                              ? const Color(0xFF10B981)
+                              : textColor.withValues(alpha: 0.7),
+                          fontSize: 11,
+                          fontWeight: isApk && !item.mine ? FontWeight.bold : FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
             const SizedBox(width: 8),
-            Icon(
-              isApk ? Icons.install_mobile_rounded : Icons.open_in_new_rounded,
-              size: 19,
-              color: isApk ? const Color(0xFF10B981) : textColor.withValues(alpha: 0.7),
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                isApk ? Icons.install_mobile_rounded : (item.mine ? Icons.file_present_rounded : Icons.open_in_new_rounded),
+                size: 16,
+                color: isApk ? const Color(0xFF10B981) : textColor.withValues(alpha: 0.7),
+              ),
             ),
           ],
         ),

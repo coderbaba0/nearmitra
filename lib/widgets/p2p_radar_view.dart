@@ -202,33 +202,44 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
               ),
               if (hasWarning) ...[
                 const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    if (!isWifiOn)
-                      FilledButton.icon(
-                        onPressed: () => widget.p2pService.openWifiSettings(),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF10B981),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      if (!isWifiOn)
+                        FilledButton.icon(
+                          onPressed: () => widget.p2pService.openWifiSettings(),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF10B981),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.wifi_rounded, size: 15),
+                          label: const Text('Turn ON Wi-Fi', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
                         ),
-                        icon: const Icon(Icons.wifi_rounded, size: 16),
-                        label: const Text('Turn ON Wi-Fi', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      ),
-                    if (!isWifiOn && !isLocationOn) const SizedBox(width: 8),
-                    if (!isLocationOn)
-                      FilledButton.icon(
-                        onPressed: () => widget.p2pService.openLocationSettings(),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: Colors.amber[800],
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      if (!isLocationOn)
+                        FilledButton.icon(
+                          onPressed: () => widget.p2pService.openLocationSettings(),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.amber[800],
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.location_on_rounded, size: 15),
+                          label: const Text('Turn ON Location (GPS)', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
                         ),
-                        icon: const Icon(Icons.location_on_rounded, size: 16),
-                        label: const Text('Turn ON Location (GPS)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ],

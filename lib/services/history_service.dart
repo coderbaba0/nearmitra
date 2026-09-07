@@ -26,4 +26,29 @@ class HistoryService {
     final trimmed = items.length > 800 ? items.sublist(items.length - 800) : items;
     await prefs.setString(_key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
   }
+
+  Future<void> addItem(ChatItem item) async {
+    final list = await load();
+    final idx = list.indexWhere((e) => e.id == item.id);
+    if (idx != -1) {
+      list[idx] = item;
+    } else {
+      list.add(item);
+    }
+    await save(list);
+  }
+
+  Future<void> addItems(List<ChatItem> newItems) async {
+    if (newItems.isEmpty) return;
+    final list = await load();
+    for (final item in newItems) {
+      final idx = list.indexWhere((e) => e.id == item.id);
+      if (idx != -1) {
+        list[idx] = item;
+      } else {
+        list.add(item);
+      }
+    }
+    await save(list);
+  }
 }

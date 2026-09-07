@@ -826,13 +826,15 @@ func (hs *HTTPServer) handleVoicePTT(w http.ResponseWriter, r *http.Request) {
 func (hs *HTTPServer) handleVoiceMute(w http.ResponseWriter, r *http.Request) {
 	muted := hs.signaling.ToggleMute()
 	hs.AddLog(fmt.Sprintf("Microphone Mute: %v", muted))
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"muted": muted})
 }
 
 func (hs *HTTPServer) handleVoiceEnd(w http.ResponseWriter, r *http.Request) {
 	hs.signaling.EndCall()
 	hs.AddLog("Voice call session ended.")
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 func (hs *HTTPServer) handleCallInvite(w http.ResponseWriter, r *http.Request) {
