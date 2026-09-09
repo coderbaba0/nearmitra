@@ -1189,7 +1189,14 @@ class NearbyService extends ChangeNotifier {
               }
             }
 
+            final rId = payload['reply_to_id']?.toString();
+            final rSender = payload['reply_to_sender']?.toString();
+            final rText = payload['reply_to_text']?.toString();
+            final isFwd = payload['is_forwarded'] == true;
+            final mId = payload['msg_id']?.toString() ?? msgId;
+
             _incomingItems.add(ChatItem(
+              id: mId,
               peerId: originId,
               sender: originName,
               mine: false,
@@ -1198,6 +1205,10 @@ class NearbyService extends ChangeNotifier {
               text: payloadMsg,
               isMeshRelay: true,
               relayHops: hops,
+              replyToId: rId,
+              replyToSender: rSender,
+              replyToText: rText,
+              isForwarded: isFwd,
             ));
             log('[Mesh Relay] Delivered message from $originName ($originId) via ${hops.join(" -> ")}');
             notifyListeners();
@@ -1265,6 +1276,11 @@ class NearbyService extends ChangeNotifier {
 
       if (type == 'chat') {
         final text = h['message']?.toString() ?? '';
+        final replyToId = h['reply_to_id']?.toString();
+        final replyToSender = h['reply_to_sender']?.toString();
+        final replyToText = h['reply_to_text']?.toString();
+        final isForwarded = h['is_forwarded'] == true;
+        final msgId = h['msg_id']?.toString();
         if (text.isNotEmpty) {
           final isCurrentlyOpen = _isChatActive(resolvedPeerId, remoteIp);
           final peerObj = _peers[resolvedPeerId] ?? _peers[remoteIp];
@@ -1272,12 +1288,17 @@ class NearbyService extends ChangeNotifier {
             peerObj.unreadCount++;
           }
           _incomingItems.add(ChatItem(
+            id: msgId,
             peerId: resolvedPeerId,
             sender: sender,
             mine: false,
             createdAt: DateTime.now(),
             kind: ChatKind.text,
             text: text,
+            replyToId: replyToId,
+            replyToSender: replyToSender,
+            replyToText: replyToText,
+            isForwarded: isForwarded,
           ));
           log('Message received from $sender');
           if (notificationsEnabled && !isCurrentlyOpen) {
@@ -1307,7 +1328,7 @@ class NearbyService extends ChangeNotifier {
         var previous = 0;
         var previousMs = 0;
         _setTransfer(
-            TransferState(active: true, label: 'Receiving $name', progress: 0));
+            TransferState(active: true, peerId: resolvedPeerId, label: 'Receiving $name', progress: 0));
         while (received < size) {
           final chunk = await reader
               .readBytes((size - received).clamp(1, 256 * 1024).toInt());
@@ -1328,6 +1349,7 @@ class NearbyService extends ChangeNotifier {
           final eta = speed > 0 ? ((size - received) / speed).round() : null;
           _setTransfer(TransferState(
             active: true,
+            peerId: resolvedPeerId,
             label: 'Receiving $name',
             progress: size == 0 ? 1 : received / size,
             speedBytesPerSec: speed,
@@ -1341,7 +1363,7 @@ class NearbyService extends ChangeNotifier {
         if (folder) {
           try {
             _setTransfer(TransferState(
-                active: true, label: 'Extracting $name…', progress: 1));
+                active: true, peerId: resolvedPeerId, label: 'Extracting $name…', progress: 1));
             final extractParentPath = await _uniquePath('${dir.path}/$name');
             final extractDir = Directory(extractParentPath);
             await extractDir.create(recursive: true);
@@ -1355,7 +1377,7 @@ class NearbyService extends ChangeNotifier {
           }
         }
 
-        _setTransfer(TransferState(label: 'Received $name', progress: 1));
+        _setTransfer(TransferState(peerId: resolvedPeerId, label: 'Received $name', progress: 1));
         final isCurrentlyOpen = _isChatActive(resolvedPeerId, remoteIp);
         if (!isCurrentlyOpen && _peers.containsKey(resolvedPeerId)) {
           _peers[resolvedPeerId]!.unreadCount++;
@@ -1575,8 +1597,19 @@ class NearbyService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<bool> sendChat(Peer peer, String text) async {
+  Future<bool> sendChat(
+    Peer peer,
+    String text, {
+    String? msgId,
+    String? replyToId,
+    String? replyToSender,
+    String? replyToText,
+    bool isForwarded = false,
+  }) async {
     if (text.trim().isEmpty) return false;
+
+    final resolvedMsgId = msgId ??
+        '${deviceId}_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(99999)}';
 
     // 1. Direct TCP attempt if peer has IP and is not purely a mesh peer
     if (!peer.isMeshPeer && peer.ip.isNotEmpty) {
@@ -1587,9 +1620,14 @@ class NearbyService extends ChangeNotifier {
               timeout: const Duration(seconds: 4));
           socket.write('${jsonEncode({
                 'type': 'chat',
+                'msg_id': resolvedMsgId,
                 'sender': deviceName,
                 'sender_id': deviceId,
                 'message': text.trim(),
+                if (replyToId != null) 'reply_to_id': replyToId,
+                if (replyToSender != null) 'reply_to_sender': replyToSender,
+                if (replyToText != null) 'reply_to_text': replyToText,
+                if (isForwarded) 'is_forwarded': true,
               })}\n');
           await socket.flush();
           log('Direct message sent to ${peer.name}');
@@ -1606,12 +1644,10 @@ class NearbyService extends ChangeNotifier {
 
     // 2. Mesh Relay Fallback: Broadcast packet through connected neighbors
     if (_meshRelayEnabled) {
-      final msgId =
-          '${deviceId}_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(99999)}';
-      _seenMeshMsgIds.add(msgId);
+      _seenMeshMsgIds.add(resolvedMsgId);
       final meshPacket = jsonEncode({
         'type': 'mesh_relay',
-        'msg_id': msgId,
+        'msg_id': resolvedMsgId,
         'origin_id': deviceId,
         'origin_name': deviceName,
         'target_id': peer.id,
@@ -1619,7 +1655,12 @@ class NearbyService extends ChangeNotifier {
         'hops': [deviceName],
         'payload': {
           'type': 'chat',
+          'msg_id': resolvedMsgId,
           'message': text.trim(),
+          if (replyToId != null) 'reply_to_id': replyToId,
+          if (replyToSender != null) 'reply_to_sender': replyToSender,
+          if (replyToText != null) 'reply_to_text': replyToText,
+          if (isForwarded) 'is_forwarded': true,
         },
       });
 
@@ -1667,7 +1708,7 @@ class NearbyService extends ChangeNotifier {
         var previousMs = 0;
         double speed = 0;
         _setTransfer(
-            TransferState(active: true, label: 'Sending $name', progress: 0));
+            TransferState(active: true, peerId: peer.id, label: 'Sending $name', progress: 0));
         while (sent < size) {
           final chunk =
               await raf.read((size - sent).clamp(1, 256 * 1024).toInt());
@@ -1685,6 +1726,7 @@ class NearbyService extends ChangeNotifier {
           final eta = speed > 0 ? ((size - sent) / speed).round() : null;
           _setTransfer(TransferState(
             active: true,
+            peerId: peer.id,
             label: 'Sending $name',
             progress: size == 0 ? 1 : sent / size,
             speedBytesPerSec: speed,
@@ -1693,13 +1735,13 @@ class NearbyService extends ChangeNotifier {
           if (sent % (1024 * 1024) < 256 * 1024) await socket.flush();
         }
         await socket.flush();
-        _setTransfer(TransferState(label: 'Sent $name', progress: 1));
+        _setTransfer(TransferState(peerId: peer.id, label: 'Sent $name', progress: 1));
         log('Sent $name to ${peer.name}');
         return sent == size;
       } catch (e) {
         log('Transfer attempt $attempt failed: $e');
         if (attempt == 2) {
-          _setTransfer(const TransferState(label: 'Transfer failed'));
+          _setTransfer(TransferState(peerId: peer.id, label: 'Transfer failed'));
           return false;
         }
         await Future.delayed(const Duration(milliseconds: 300));
@@ -1722,7 +1764,7 @@ class NearbyService extends ChangeNotifier {
 
     try {
       _setTransfer(TransferState(
-          active: true, label: 'Compressing $folderName…', progress: 0));
+          active: true, peerId: peer.id, label: 'Compressing $folderName…', progress: 0));
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
       await encoder.addDirectory(dir);
@@ -1745,7 +1787,7 @@ class NearbyService extends ChangeNotifier {
       return ok;
     } catch (e) {
       log('Error creating/sending folder archive: $e');
-      _setTransfer(const TransferState(label: 'Folder transfer failed'));
+      _setTransfer(TransferState(peerId: peer.id, label: 'Folder transfer failed'));
       return false;
     }
   }

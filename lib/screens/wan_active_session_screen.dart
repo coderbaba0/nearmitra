@@ -8,6 +8,7 @@ import '../models/wan_models.dart';
 import '../services/wan_service.dart';
 import '../services/wan_webrtc_manager.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/forward_message_dialog.dart';
 
 class WanActiveSessionScreen extends StatefulWidget {
   final WanDevice peer;
@@ -28,6 +29,7 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
   int _chatDisplayCount = 20;
   bool _isLoadingMore = false;
   Timer? _typingDebounceTimer;
+  ChatItem? _replyingToItem;
 
   @override
   void initState() {
@@ -390,9 +392,22 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
     _msgController.clear();
     HapticFeedback.lightImpact();
 
+    final replyingTo = _replyingToItem;
+    if (mounted) {
+      setState(() {
+        _replyingToItem = null;
+      });
+    }
+
     try {
       final wasConnected = _rtcManager.isConnected;
-      await _rtcManager.sendDirectMessage(text);
+      await _rtcManager.sendDirectMessage(
+        text,
+        null,
+        replyingTo?.id,
+        replyingTo?.sender,
+        replyingTo?.text ?? replyingTo?.fileName,
+      );
       _scrollToBottom();
       if (!wasConnected && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -467,7 +482,13 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
         .where((t) => !t.isCompleted && !t.isCancelled)
         .toList();
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
       backgroundColor: chatBg,
       appBar: AppBar(
         systemOverlayStyle: const SystemUiOverlayStyle(
@@ -779,6 +800,27 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
                                 : (item.kind == ChatKind.file && (item.status == 'sending' || item.status == 'downloading'))
                                     ? () => _rtcManager.cancelFileTransfer(item.id)
                                     : null,
+                            onReply: (replyItem) {
+                              setState(() {
+                                _replyingToItem = replyItem;
+                              });
+                            },
+                            onForward: (fwdItem) {
+                              ForwardMessageDialog.show(
+                                context,
+                                item: fwdItem,
+                                onForwardComplete: (targetName) async {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Forwarded to $targetName'),
+                                      behavior: SnackBarBehavior.floating,
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                  await _loadHistory();
+                                },
+                              );
+                            },
                           );
                         },
                       );
@@ -793,6 +835,77 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
               child: _WhatsAppTypingIndicator(
                 isDark: isDark,
                 peerName: widget.peer.name,
+              ),
+            ),
+
+          // WhatsApp Quoted Reply Preview Bar
+          if (_replyingToItem != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
+                borderRadius: BorderRadius.circular(12),
+                border: Border(
+                  left: BorderSide(
+                    color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                    width: 4,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _replyingToItem!.mine ? 'You' : _replyingToItem!.sender,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _replyingToItem!.kind == ChatKind.text
+                              ? (_replyingToItem!.text ?? '')
+                              : '📁 ${_replyingToItem!.fileName ?? "Attachment"}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    color: isDark ? Colors.white60 : Colors.black54,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    splashRadius: 16,
+                    onPressed: () {
+                      setState(() {
+                        _replyingToItem = null;
+                      });
+                    },
+                    tooltip: 'Cancel reply',
+                  ),
+                ],
               ),
             ),
 
@@ -892,6 +1005,7 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
           ),
         ],
       ),
+    ),
     );
   }
 }

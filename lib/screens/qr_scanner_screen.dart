@@ -65,8 +65,14 @@ class _QrScannerScreenState extends State<QrScannerScreen> with SingleTickerProv
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
@@ -183,6 +189,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> with SingleTickerProv
                     ),
                   ],
                 ),
+    ),
     );
   }
 }

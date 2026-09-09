@@ -96,8 +96,14 @@ class _DeviceProfileScreenState extends State<DeviceProfileScreen> {
     final isDark = theme.brightness == Brightness.dark;
     final emojiList = DeviceIdentity.presetEmojis;
 
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
       appBar: AppBar(
         backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
         elevation: 0,
@@ -213,6 +219,7 @@ class _DeviceProfileScreenState extends State<DeviceProfileScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 

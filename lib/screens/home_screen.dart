@@ -46,6 +46,7 @@ import '../services/firebase_presence_service.dart';
 import '../widgets/wan_pair_dialog.dart';
 import '../widgets/wan_radar_view.dart';
 import '../widgets/home_walkthrough_guide.dart';
+import '../widgets/forward_message_dialog.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key, required this.service});
@@ -84,6 +85,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   final WanService _wanService = WanService();
   final WanWebRtcManager _wanRtcManager = WanWebRtcManager();
   final FirebasePresenceService _firebasePresenceService = FirebasePresenceService();
+  ChatItem? _replyingToItem;
 
   @override
   void initState() {
@@ -987,15 +989,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
-  void _selectPeer(Peer p) {
-    setState(() {
-      _selectedPeerId = p.id;
-      _lastSelectedPeer = p;
-      p.unreadCount = 0;
-      _chatDisplayCount = 20;
-      widget.service.activeChatPeerId = p.id;
-    });
-    _triggerScrollToBottom();
+  void _selectPeer(Peer p) async {
+    final updated = await _historyService.load();
+    if (mounted) {
+      setState(() {
+        _history.clear();
+        _history.addAll(updated);
+        _selectedPeerId = p.id;
+        _lastSelectedPeer = p;
+        p.unreadCount = 0;
+        _chatDisplayCount = 20;
+        widget.service.activeChatPeerId = p.id;
+      });
+      _triggerScrollToBottom();
+    }
   }
 
   void _triggerScrollToBottom({bool immediate = true}) {
@@ -1260,8 +1267,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       return;
     }
 
+    final replyingTo = _replyingToItem;
+    if (mounted) {
+      setState(() {
+        _replyingToItem = null;
+      });
+    }
+
     final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-    final ok = await widget.service.sendChat(peer, text);
+    final ok = await widget.service.sendChat(
+      peer,
+      text,
+      msgId: itemId,
+      replyToId: replyingTo?.id,
+      replyToSender: replyingTo?.sender,
+      replyToText: replyingTo?.text ?? replyingTo?.fileName,
+    );
     final status = ok ? 'Sent' : 'Queued';
 
     if (!ok) {
@@ -1286,6 +1307,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       text: text,
       status: status,
       isAi: false,
+      replyToId: replyingTo?.id,
+      replyToSender: replyingTo?.sender,
+      replyToText: replyingTo?.text ?? replyingTo?.fileName,
     ));
     await _historyService.save(_history);
     setState(() {});
@@ -1670,6 +1694,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
+        if (ModalRoute.of(context)?.isCurrent != true) return;
         final shouldExit = _handleBackPress();
         if (shouldExit) {
           SystemNavigator.pop();
@@ -4650,13 +4675,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 : null,
                             onReact: (emoji) => _toggleReactionOnMessage(
                                 chat[itemIndex], emoji, peer),
+                            onReply: (item) {
+                              setState(() {
+                                _replyingToItem = item;
+                              });
+                            },
+                            onForward: (item) {
+                              ForwardMessageDialog.show(
+                                context,
+                                item: item,
+                                onForwardComplete: (targetName) async {
+                                  _toast('Forwarded to $targetName');
+                                  final updated = await _historyService.load();
+                                  if (mounted) {
+                                    setState(() {
+                                      _history.clear();
+                                      _history.addAll(updated);
+                                    });
+                                  }
+                                },
+                              );
+                            },
                           );
                         },
                       );
                     },
                   ),
           ),
-          if (_chatMode == ChatMode.people && widget.service.transfer.active) TransferCard(state: widget.service.transfer),
+          if (_chatMode == ChatMode.people &&
+              widget.service.transfer.active &&
+              (widget.service.transfer.peerId == peer.id ||
+               widget.service.transfer.peerId == peer.ip))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+              child: TransferCard(state: widget.service.transfer),
+            ),
           if (_showLogs) ...[
             Container(
               height: 120,
@@ -4668,6 +4721,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               ),
             ),
           ],
+          // WhatsApp Quoted Reply Preview Bar
+          if (_replyingToItem != null)
+            Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
+                borderRadius: BorderRadius.circular(12),
+                border: Border(
+                  left: BorderSide(
+                    color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                    width: 4,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _replyingToItem!.mine ? 'You' : _replyingToItem!.sender,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _replyingToItem!.kind == ChatKind.text
+                              ? (_replyingToItem!.text ?? '')
+                              : '📁 ${_replyingToItem!.fileName ?? "Attachment"}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    color: isDark ? Colors.white60 : Colors.black54,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    splashRadius: 16,
+                    onPressed: () {
+                      setState(() {
+                        _replyingToItem = null;
+                      });
+                    },
+                    tooltip: 'Cancel reply',
+                  ),
+                ],
+              ),
+            ),
           // Floating Input Box
           Container(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),

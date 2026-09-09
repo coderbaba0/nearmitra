@@ -17,6 +17,10 @@ class ChatItem {
     this.isMeshRelay = false,
     this.relayHops,
     this.reaction,
+    this.replyToId,
+    this.replyToSender,
+    this.replyToText,
+    this.isForwarded = false,
   }) : id = id ?? '${createdAt.millisecondsSinceEpoch}_$peerId';
 
   final String id;
@@ -34,6 +38,10 @@ class ChatItem {
   final bool isMeshRelay;
   final List<String>? relayHops;
   String? reaction;
+  final String? replyToId;
+  final String? replyToSender;
+  final String? replyToText;
+  final bool isForwarded;
 
   String get formattedTime {
     final hour = createdAt.hour == 0
@@ -71,6 +79,10 @@ class ChatItem {
         'isMeshRelay': isMeshRelay,
         if (relayHops != null) 'relayHops': relayHops,
         'reaction': reaction,
+        if (replyToId != null) 'replyToId': replyToId,
+        if (replyToSender != null) 'replyToSender': replyToSender,
+        if (replyToText != null) 'replyToText': replyToText,
+        if (isForwarded) 'isForwarded': true,
       };
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
@@ -94,5 +106,9 @@ class ChatItem {
             ?.map((e) => e.toString())
             .toList(),
         reaction: json['reaction'] as String?,
+        replyToId: json['replyToId'] as String?,
+        replyToSender: json['replyToSender'] as String?,
+        replyToText: json['replyToText'] as String?,
+        isForwarded: json['isForwarded'] == true,
       );
 }

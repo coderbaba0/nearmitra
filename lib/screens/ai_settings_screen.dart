@@ -199,8 +199,13 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('Nearby AI Settings',
             style: TextStyle(fontWeight: FontWeight.bold)),
@@ -589,6 +594,7 @@ class _AiSettingsScreenState extends ConsumerState<AiSettingsScreen> {
           const SizedBox(height: 32),
         ],
       ),
+    ),
     );
   }
 

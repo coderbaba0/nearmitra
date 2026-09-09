@@ -272,11 +272,21 @@ class WanDataMessage {
   })  : id = id ?? const Uuid().v4(),
         timestamp = timestamp ?? DateTime.now().millisecondsSinceEpoch;
 
-  static WanDataMessage text(String text) {
+  static WanDataMessage text(
+    String text, {
+    String? replyToId,
+    String? replyToSender,
+    String? replyToText,
+    bool isForwarded = false,
+  }) {
     return WanDataMessage(
       type: WanDataMessageType.text,
       payload: {
         'text': text,
+        if (replyToId != null) 'replyToId': replyToId,
+        if (replyToSender != null) 'replyToSender': replyToSender,
+        if (replyToText != null) 'replyToText': replyToText,
+        if (isForwarded) 'isForwarded': true,
       },
     );
   }
