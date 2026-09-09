@@ -41,21 +41,21 @@ class FarmitraForegroundService : Service() {
             stopForegroundService()
             return START_NOT_STICKY
         }
-        startForegroundServiceNow()
+        val isMediaProjection = action == ACTION_START_MEDIA_PROJECTION
+        startForegroundServiceNow(isMediaProjection)
         return START_STICKY
     }
 
-    private fun startForegroundServiceNow() {
+    private fun startForegroundServiceNow(isMediaProjection: Boolean = false) {
         createNotificationChannel()
-        val notification = buildNotification()
+        val notification = buildNotification(isMediaProjection)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    serviceType = serviceType or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                val serviceType = if (isMediaProjection) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
                 }
                 startForeground(NOTIFICATION_ID, notification, serviceType)
             } else {
@@ -63,7 +63,7 @@ class FarmitraForegroundService : Service() {
             }
             isRunning = true
             acquireLocks()
-            Log.d(TAG, "NearMitra background service started with WakeLock and WifiLock")
+            Log.d(TAG, "NearMitra background service started (mediaProjection=$isMediaProjection)")
         } catch (e: Exception) {
             Log.e(TAG, "Error starting foreground service: ${e.message}", e)
         }
@@ -130,7 +130,7 @@ class FarmitraForegroundService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(isMediaProjection: Boolean = false): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -141,9 +141,12 @@ class FarmitraForegroundService : Service() {
             else PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val title = if (isMediaProjection) "NearMitra Screen Casting Active" else "NearMitra Active"
+        val text = if (isMediaProjection) "Broadcasting your phone screen to peer" else "P2P Transfers, Calls & Streams Active"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("NearMitra Active")
-            .setContentText("P2P Transfers, Calls & Streams Active")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)

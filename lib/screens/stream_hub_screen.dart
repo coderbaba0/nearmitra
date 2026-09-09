@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -16,11 +17,13 @@ class StreamHubScreen extends ConsumerStatefulWidget {
     required this.service,
     this.targetPeer,
     this.initialStreamType = 'camera',
+    this.onOpenSettings,
   });
 
   final NearbyService service;
   final Peer? targetPeer;
   final String initialStreamType;
+  final VoidCallback? onOpenSettings;
 
   @override
   ConsumerState<StreamHubScreen> createState() => _StreamHubScreenState();
@@ -39,6 +42,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   MediaStream? _remoteStream;
   RTCPeerConnection? _peerConnection;
   final List<RTCIceCandidate> _pendingStreamCandidates = [];
+  Timer? _connectionTimeoutTimer;
 
   // Default: OFF (idle). Camera only starts when user explicitly taps Start Host Camera.
   StreamerRole _role = StreamerRole.remoteViewer;
@@ -73,7 +77,13 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _tabController = TabController(length: 3, vsync: this);
+    int initialIdx = 0;
+    if (widget.initialStreamType == 'audio') {
+      initialIdx = 1;
+    } else if (widget.initialStreamType == 'screen') {
+      initialIdx = 2;
+    }
+    _tabController = TabController(length: 4, vsync: this, initialIndex: initialIdx);
     _selectedPeer = widget.targetPeer ??
         (widget.service.peers.isNotEmpty ? widget.service.peers.first : null);
 
@@ -99,6 +109,10 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.detached) {
       _resetStreamState(notifyPeer: true);
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      if ((_isRemoteConnected || _isHostActive) && !_isRequestingScreenShare) {
+        _enterPipMode();
+      }
     }
   }
 
@@ -205,6 +219,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
     // 2. Remote Viewer receives Answer from Host
     widget.service.onStreamAnswer = (peerId, answer) async {
+      _connectionTimeoutTimer?.cancel();
+      _connectionTimeoutTimer = null;
       final pc = _peerConnection;
       final sdp = answer['sdp']?.toString();
       if (pc != null && sdp != null && sdp.isNotEmpty) {
@@ -254,6 +270,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
     // 4. Remote Viewer receives Stream Rejected
     widget.service.onStreamRejected = (peerId, data) {
+      _connectionTimeoutTimer?.cancel();
+      _connectionTimeoutTimer = null;
       final reason =
           data['reason']?.toString() ?? 'Stream request declined by host';
       if (mounted) {
@@ -277,6 +295,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
     // 5. Remote Host / Viewer receives Stream Stopped
     widget.service.onStreamStopped = (peerId, data) {
+      _connectionTimeoutTimer?.cancel();
+      _connectionTimeoutTimer = null;
       _resetStreamState(notifyPeer: false);
     };
 
@@ -396,8 +416,14 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         }
       }
 
-      if (_localStream == null) {
-        await _startHostCamera();
+      if (streamType == 'screen') {
+        if (_localStream == null) {
+          await _startHostScreen();
+        }
+      } else {
+        if (_localStream == null) {
+          await _startHostCamera();
+        }
       }
 
       _peerConnection?.close();
@@ -461,7 +487,76 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
   // --- HOST CAMERA OPERATIONS ---
 
+  Future<bool> _showStreamPermissionDialog({
+    required String title,
+    required String message,
+    required String type,
+  }) async {
+    final bool? result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.security_rounded, color: Color(0xFF10B981)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(fontSize: 13.5)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          if (widget.onOpenSettings != null)
+            OutlinedButton(
+              onPressed: () {
+                Navigator.pop(ctx, false);
+                Navigator.pop(context);
+                widget.onOpenSettings?.call();
+              },
+              child: const Text('Open Settings'),
+            ),
+          FilledButton(
+            onPressed: () async {
+              if (type == 'camera') {
+                await _streamingService.setAllowCamera(true);
+              } else if (type == 'audio') {
+                await _streamingService.setAllowAudio(true);
+              } else if (type == 'screen') {
+                await _streamingService.setAllowScreen(true);
+              }
+              if (mounted) setState(() {});
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop(true);
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
+            child: const Text('Enable & Proceed'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
   Future<void> _startHostCamera() async {
+    if (!_streamingService.allowCamera) {
+      if (!mounted) return;
+      final enable = await _showStreamPermissionDialog(
+        title: 'Camera Access Disabled in Settings',
+        message: 'You need to enable "Allow Incoming Camera Access" in App Settings before using Live Camera / CCTV Streaming.\n\nWould you like to enable it now?',
+        type: 'camera',
+      );
+      if (!enable) return;
+    }
+
     try {
       _stopHostMediaOnly();
 
@@ -511,6 +606,94 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         _isTorchOn = false;
         _streamStatus = 'Host Camera Stopped';
       });
+    }
+  }
+
+  bool _isRequestingScreenShare = false;
+
+  Future<void> _startHostScreen() async {
+    if (!_streamingService.allowScreen) {
+      if (!mounted) return;
+      final enable = await _showStreamPermissionDialog(
+        title: 'Screen Casting Disabled in Settings',
+        message: 'You need to enable "Allow Screen Casting Stream" in App Settings before broadcasting phone screen.\n\nWould you like to enable it now?',
+        type: 'screen',
+      );
+      if (!enable) return;
+    }
+
+    _isRequestingScreenShare = true;
+    try {
+      _stopHostMediaOnly();
+      if (mounted && Theme.of(context).platform == TargetPlatform.android) {
+        try {
+          await const MethodChannel('farmitra_nearby/network')
+              .invokeMethod('startMediaProjectionService');
+          await Future.delayed(const Duration(milliseconds: 350));
+        } catch (_) {}
+      }
+
+      final screenStream = await navigator.mediaDevices.getDisplayMedia({
+        'audio': false,
+        'video': true,
+      });
+      _isRequestingScreenShare = false;
+
+      _localStream = screenStream;
+      _localRenderer.srcObject = screenStream;
+
+      final screenTracks = screenStream.getVideoTracks();
+      if (screenTracks.isNotEmpty) {
+        screenTracks.first.onEnded = () {
+          if (mounted && _isHostActive) {
+            _stopHostScreen();
+          }
+        };
+      }
+
+      if (mounted) {
+        setState(() {
+          _role = StreamerRole.hostCamera;
+          _isHostActive = true;
+          _streamStatus = 'Screen Casting Live • Sharing Phone Screen';
+        });
+      }
+      _toast('Screen Casting Active');
+    } catch (e) {
+      _isRequestingScreenShare = false;
+      debugPrint('Screen casting start error: $e');
+      if (mounted) {
+        setState(() {
+          _isHostActive = false;
+          _streamStatus = 'Screen Cast Error: $e';
+        });
+      }
+    }
+  }
+
+  Future<void> _stopHostScreen() async {
+    _stopHostMediaOnly();
+    if (mounted && Theme.of(context).platform == TargetPlatform.android) {
+      try {
+        await const MethodChannel('farmitra_nearby/network')
+            .invokeMethod('startForegroundService');
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {
+        _isHostActive = false;
+        _streamStatus = 'Screen Casting Stopped';
+      });
+    }
+  }
+
+  Future<bool> _enterPipMode() async {
+    try {
+      final entered = await const MethodChannel('farmitra_nearby/network')
+          .invokeMethod<bool>('enterPipMode');
+      return entered == true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -567,8 +750,28 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       return;
     }
 
-    // ── Pre-flight: OS hardware permission check ──────────────────────────
     final isAudio = streamType == 'audio';
+    if (!isAudio && !_streamingService.allowCamera) {
+      if (!mounted) return;
+      final enable = await _showStreamPermissionDialog(
+        title: 'Camera Access Disabled in Settings',
+        message: 'You need to enable "Allow Incoming Camera Access" in App Settings before using Remote CCTV Camera Streaming.\n\nWould you like to enable it now?',
+        type: 'camera',
+      );
+      if (!enable) return;
+    }
+
+    if (isAudio && !_streamingService.allowAudio) {
+      if (!mounted) return;
+      final enable = await _showStreamPermissionDialog(
+        title: 'Audio Relay Disabled in Settings',
+        message: 'You need to enable "Allow Incoming Audio Access" in App Settings before using Live Audio Relay.\n\nWould you like to enable it now?',
+        type: 'audio',
+      );
+      if (!enable) return;
+    }
+
+    // ── Pre-flight: OS hardware permission check ──────────────────────────
     final neededPerms = isAudio
         ? [Permission.microphone]
         : [Permission.camera, Permission.microphone];
@@ -635,6 +838,20 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     });
 
 
+    _connectionTimeoutTimer?.cancel();
+    _connectionTimeoutTimer = Timer(const Duration(seconds: 14), () {
+      if (mounted && (_isConnecting || _isAudioConnecting)) {
+        _disconnectStream();
+        setState(() {
+          _isConnecting = false;
+          _isAudioConnecting = false;
+          _streamStatus = 'Host not responding • Timed out';
+          _audioStatus = 'Host not responding • Timed out';
+        });
+        _toast('Host ${peer.name} did not respond. Tap to retry.');
+      }
+    });
+
     try {
       _peerConnection?.close();
       _peerConnection?.dispose();
@@ -692,8 +909,13 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       };
 
       pc.onAddStream = (stream) {
+        _connectionTimeoutTimer?.cancel();
+        _connectionTimeoutTimer = null;
         _remoteStream = stream;
         _remoteRenderer.srcObject = stream;
+        for (final track in stream.getTracks()) {
+          track.enabled = true;
+        }
         if (mounted) {
           setState(() {
             _role = StreamerRole.remoteViewer;
@@ -704,11 +926,15 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         }
       };
 
-      pc.onTrack = (event) {
+      pc.onTrack = (event) async {
+        _connectionTimeoutTimer?.cancel();
+        _connectionTimeoutTimer = null;
+        event.track.enabled = true;
         if (event.streams.isNotEmpty) {
           _remoteStream = event.streams.first;
           _remoteRenderer.srcObject = event.streams.first;
-        } else if (_remoteStream != null) {
+        } else {
+          _remoteStream ??= await createLocalMediaStream('remote_stream_${peer.id}');
           _remoteStream!.addTrack(event.track);
           _remoteRenderer.srcObject = _remoteStream;
         }
@@ -731,6 +957,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       pc.onConnectionState = (state) {
         if (!mounted) return;
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          _connectionTimeoutTimer?.cancel();
+          _connectionTimeoutTimer = null;
           setState(() {
             if (isAudio) {
               _isAudioActive = true;
@@ -745,6 +973,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         } else if (state ==
                 RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
             state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          _connectionTimeoutTimer?.cancel();
+          _connectionTimeoutTimer = null;
           setState(() {
             if (isAudio) {
               _isAudioActive = false;
@@ -774,6 +1004,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         'audio_mode': _audioRole == AudioStreamRole.broadcastMic ? 'mic' : 'listen',
       });
     } catch (e) {
+      _connectionTimeoutTimer?.cancel();
+      _connectionTimeoutTimer = null;
       if (mounted) {
         setState(() {
           if (isAudio) {
@@ -800,6 +1032,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   void _disconnectStream() {
+    _connectionTimeoutTimer?.cancel();
+    _connectionTimeoutTimer = null;
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream?.dispose();
     _localStream = null;
@@ -838,34 +1072,557 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final size = MediaQuery.of(context).size;
+    final isSystemPip = size.height < 320 || size.width < 250;
+
+    final isStreamingActive = _isRemoteConnected || (_isHostActive && _localStream != null);
+    final activeRenderer = _isRemoteConnected ? _remoteRenderer : _localRenderer;
+
+    // PiP Mode Rendering: 100% clean video canvas without overlays (YouTube style)
+    if (isSystemPip && isStreamingActive) {
+      return PopScope(
+        canPop: false,
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+            child: RTCVideoView(
+              activeRenderer,
+              key: const ValueKey('stream_pip_view'),
+              objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+            ),
+          ),
+        ),
+      );
+    }
 
     if (_isFullScreen) {
       return _buildFullScreenView();
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Remote Streaming',
-            style: TextStyle(fontWeight: FontWeight.bold)),
-        bottom: TabBar(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (isStreamingActive) {
+          final entered = await _enterPipMode();
+          if (!entered) {
+            _disconnectStream();
+            if (context.mounted) Navigator.pop(context);
+          }
+        } else {
+          if (context.mounted) Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Remote Streaming',
+              style: TextStyle(fontWeight: FontWeight.bold)),
+          actions: [
+            if (isStreamingActive)
+              IconButton(
+                icon: const Icon(Icons.picture_in_picture_alt_rounded),
+                tooltip: 'Enter PiP Mode',
+                onPressed: () => _enterPipMode(),
+              ),
+          ],
+          bottom: TabBar(
+            controller: _tabController,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
+            indicatorColor: const Color(0xFF10B981),
+            labelColor: const Color(0xFF10B981),
+            unselectedLabelColor: scheme.onSurfaceVariant,
+            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5),
+            unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+            indicatorWeight: 3,
+            tabs: const [
+              Tab(
+                height: 48,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.videocam_rounded, size: 20),
+                    SizedBox(width: 7),
+                    Text('Camera CCTV'),
+                  ],
+                ),
+              ),
+              Tab(
+                height: 48,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.mic_rounded, size: 20),
+                    SizedBox(width: 7),
+                    Text('Live Audio'),
+                  ],
+                ),
+              ),
+              Tab(
+                height: 48,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.screen_share_rounded, size: 20),
+                    SizedBox(width: 7),
+                    Text('Screen Cast'),
+                  ],
+                ),
+              ),
+              Tab(
+                height: 48,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.security_rounded, size: 20),
+                    SizedBox(width: 7),
+                    Text('Security'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        body: TabBarView(
           controller: _tabController,
-          indicatorColor: const Color(0xFF10B981),
-          labelColor: const Color(0xFF10B981),
-          unselectedLabelColor: scheme.onSurfaceVariant,
-          tabs: const [
-            Tab(icon: Icon(Icons.videocam_rounded), text: 'Camera CCTV'),
-            Tab(icon: Icon(Icons.mic_rounded), text: 'Live Audio'),
-            Tab(icon: Icon(Icons.security_rounded), text: 'Security'),
+          children: [
+            _buildCameraCctvTab(scheme),
+            _buildLiveAudioTab(scheme),
+            _buildScreenCastTab(scheme),
+            _buildSecurityHubTab(scheme),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+    );
+  }
+
+  Widget _buildScreenCastTab(ColorScheme scheme) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final mediaHeight = MediaQuery.sizeOf(context).height;
+    final videoCardHeight = mediaHeight * 0.44;
+
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildCameraCctvTab(scheme),
-          _buildLiveAudioTab(scheme),
-          _buildSecurityHubTab(scheme),
+          // Mode Switcher (Cast My Screen vs Watch Remote Screen)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () async {
+                      if (_role != StreamerRole.hostCamera) {
+                        setState(() => _role = StreamerRole.hostCamera);
+                        _stopHostMediaOnly();
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                      decoration: BoxDecoration(
+                        color: _role == StreamerRole.hostCamera
+                            ? const Color(0xFF10B981)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.screen_share_rounded,
+                              size: 17,
+                              color: _role == StreamerRole.hostCamera
+                                  ? Colors.white
+                                  : scheme.onSurface),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Cast My Screen',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                              color: _role == StreamerRole.hostCamera
+                                  ? Colors.white
+                                  : scheme.onSurface,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      if (_role != StreamerRole.remoteViewer) {
+                        setState(() => _role = StreamerRole.remoteViewer);
+                        _stopHostMediaOnly();
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                      decoration: BoxDecoration(
+                        color: _role == StreamerRole.remoteViewer
+                            ? const Color(0xFF10B981)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.desktop_windows_rounded,
+                              size: 17,
+                              color: _role == StreamerRole.remoteViewer
+                                  ? Colors.white
+                                  : scheme.onSurface),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Watch Remote Screen',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                              color: _role == StreamerRole.remoteViewer
+                                  ? Colors.white
+                                  : scheme.onSurface,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Main Video Feed Canvas Container
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            height: videoCardHeight,
+            decoration: BoxDecoration(
+              color: Colors.black,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: (_role == StreamerRole.hostCamera && _isHostActive) ||
+                        (_role == StreamerRole.remoteViewer && _isRemoteConnected)
+                    ? const Color(0xFF10B981)
+                    : Colors.white12,
+                width: 2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.4),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Screen Renderer or Placeholders
+                  if (_role == StreamerRole.hostCamera) ...[
+                    if (_isHostActive && _localStream != null)
+                      RTCVideoView(
+                        _localRenderer,
+                        key: const ValueKey('host_screen_view'),
+                        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+                      )
+                    else
+                      _buildPlaceholder(
+                        icon: Icons.screen_share_rounded,
+                        title: 'Screen Cast Inactive',
+                        subtitle: 'Tap "Start Screen Casting" below to share phone screen',
+                      ),
+                  ] else ...[
+                    if (_remoteRenderer.srcObject != null ||
+                        _isRemoteConnected ||
+                        _remoteStream != null)
+                      RTCVideoView(
+                        _remoteRenderer,
+                        key: const ValueKey('remote_screen_view'),
+                        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+                      )
+                    else if (_isConnecting)
+                      _buildLoadingPlaceholder('Negotiating Screen Feed…')
+                    else
+                      _buildPlaceholder(
+                        icon: Icons.desktop_access_disabled_rounded,
+                        title: 'No Remote Screen Connected',
+                        subtitle: 'Select peer below and tap "Watch Screen"',
+                      ),
+                  ],
+
+                  // Top Screen Cast HUD
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    right: 10,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Flexible(
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.75),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: (_role == StreamerRole.hostCamera &&
+                                            _isHostActive) ||
+                                        (_role == StreamerRole.remoteViewer &&
+                                            _isRemoteConnected)
+                                    ? const Color(0xFF10B981)
+                                    : Colors.white24,
+                                width: 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: (_role == StreamerRole.hostCamera &&
+                                                _isHostActive) ||
+                                            (_role ==
+                                                    StreamerRole.remoteViewer &&
+                                                _isRemoteConnected)
+                                        ? const Color(0xFF10B981)
+                                        : Colors.amberAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    _streamStatus,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_isRemoteConnected || _isHostActive)
+                              IconButton(
+                                icon: const Icon(Icons.picture_in_picture_alt_rounded,
+                                    color: Colors.white, size: 20),
+                                tooltip: 'Floating PiP Window',
+                                style: IconButton.styleFrom(
+                                    backgroundColor: Colors.black54),
+                                onPressed: () => _enterPipMode(),
+                              ),
+                            if (_role == StreamerRole.remoteViewer && _isRemoteConnected) ...[
+                              const SizedBox(width: 4),
+                              IconButton(
+                                icon: const Icon(Icons.fullscreen_rounded,
+                                    color: Colors.white, size: 20),
+                                tooltip: 'Fullscreen',
+                                style: IconButton.styleFrom(
+                                    backgroundColor: Colors.black54),
+                                onPressed: () =>
+                                    setState(() => _isFullScreen = true),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Dynamic Action Controls (Host vs Remote)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: _role == StreamerRole.hostCamera
+                ? _buildScreenCastHostControls(scheme)
+                : _buildScreenCastRemoteControls(scheme),
+          ),
+
+          const SizedBox(height: 14),
+
+          // Screen Cast Usage Guide Card
+          _buildScreenCastGuideCard(isDark, scheme),
         ],
+      ),
+    );
+  }
+
+  Widget _buildScreenCastHostControls(ColorScheme scheme) {
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: _isHostActive ? _stopHostScreen : _startHostScreen,
+            style: FilledButton.styleFrom(
+              backgroundColor: _isHostActive
+                  ? const Color(0xFFEF4444)
+                  : const Color(0xFF10B981),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+            ),
+            icon: Icon(
+              _isHostActive
+                  ? Icons.stop_screen_share_rounded
+                  : Icons.screen_share_rounded,
+            ),
+            label: Text(
+              _isHostActive ? 'Stop Screen Cast' : 'Start Screen Casting',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildScreenCastRemoteControls(ColorScheme scheme) {
+    return Column(
+      children: [
+        _buildPeerSelector(scheme),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _isRemoteConnected
+                    ? _disconnectStream
+                    : () => _connectToRemoteViewer('screen'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _isRemoteConnected
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF10B981),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+                icon: Icon(
+                  _isRemoteConnected
+                      ? Icons.link_off_rounded
+                      : (_isConnecting
+                          ? Icons.hourglass_top_rounded
+                          : Icons.desktop_windows_rounded),
+                ),
+                label: Text(
+                  _isRemoteConnected
+                      ? 'Disconnect Screen Feed'
+                      : (_isConnecting
+                          ? 'Connecting…'
+                          : 'Watch ${_selectedPeer?.name ?? 'Peer'}\'s Screen'),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildScreenCastGuideCard(bool isDark, ColorScheme scheme) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.info_outline_rounded,
+                  color: Color(0xFF10B981), size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                'How to Use Screen Casting:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '1. On Host Phone: Select "Cast My Screen" and tap "Start Screen Casting" to broadcast your screen.\n'
+            '2. On Viewer Phone: Select "Watch Remote Screen", choose host from the list, and tap "Watch Screen".\n'
+            '3. Seamless PiP: Minimize or switch apps anytime to keep viewing in a YouTube-style floating window!',
+            style: TextStyle(fontSize: 12.5, height: 1.45),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPeerSelector(ColorScheme scheme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          isExpanded: true,
+          hint: const Text('Select Host Device to Connect'),
+          value: widget.service.peers.contains(_selectedPeer)
+              ? _selectedPeer?.id
+              : (widget.service.peers.isNotEmpty
+                  ? widget.service.peers.first.id
+                  : null),
+          items: widget.service.peers.map((peer) {
+            return DropdownMenuItem<String>(
+              value: peer.id,
+              child: Row(
+                children: [
+                  const Icon(Icons.phone_android_rounded,
+                      size: 18, color: Color(0xFF10B981)),
+                  const SizedBox(width: 8),
+                  Text(peer.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 6),
+                  Text('(${peer.ip})',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            );
+          }).toList(),
+          onChanged: (peerId) {
+            final p = widget.service.peers
+                .where((peer) => peer.id == peerId)
+                .firstOrNull;
+            if (p != null) {
+              setState(() => _selectedPeer = p);
+            }
+          },
+        ),
       ),
     );
   }
@@ -1164,10 +1921,38 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
                           ),
                         ),
 
-                        // Right: Quick Actions (1-Tap Reset & Fullscreen)
+                        // Right: Quick Actions (PiP, 1-Tap Reset & Fullscreen)
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            // PiP Mode Button (available whenever streaming is active: Host or Viewer)
+                            if (_isRemoteConnected || _isHostActive)
+                              Container(
+                                margin: const EdgeInsets.only(right: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.70),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: Colors.white24,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: IconButton(
+                                  constraints: const BoxConstraints(
+                                    minWidth: 34,
+                                    minHeight: 34,
+                                  ),
+                                  padding: const EdgeInsets.all(6),
+                                  icon: const Icon(
+                                    Icons.picture_in_picture_alt_rounded,
+                                    color: Colors.white,
+                                    size: 19,
+                                  ),
+                                  tooltip: 'Floating PiP Window',
+                                  onPressed: () => _enterPipMode(),
+                                ),
+                              ),
+
                             // 1-Tap Reset / Stop Stream Icon Button (Only in Remote Monitor)
                             if (_role == StreamerRole.remoteViewer)
                               Container(
@@ -1767,64 +2552,98 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   Widget _buildFullScreenView() {
+    final isCameraStream = _tabController.index == 0;
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (_remoteStream != null)
+            if (_remoteStream != null || _remoteRenderer.srcObject != null)
               RTCVideoView(
                 _remoteRenderer,
-                objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                objectFit: isCameraStream
+                    ? RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+                    : RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
               ),
             Positioned(
               top: 16,
-              left: 16,
-              right: 16,
+              left: 14,
+              right: 14,
               child: Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.65),
+                  color: Colors.black.withValues(alpha: 0.70),
                   borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: Colors.white24, width: 0.8),
                 ),
                 child: Row(
                   children: [
-                    Text(
-                      'Live • ${_selectedPeer?.name ?? "Host"}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
+                    Container(
+                      width: 8,
+                      height: 8,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF10B981),
+                        shape: BoxShape.circle,
                       ),
                     ),
-                    const Spacer(),
-                    IconButton(
-                      icon: Icon(
-                        _remoteTorchState
-                            ? Icons.flash_on_rounded
-                            : Icons.flash_off_rounded,
-                        color: _remoteTorchState
-                            ? Colors.amberAccent
-                            : Colors.white,
+                    Expanded(
+                      child: Text(
+                        'Live • ${_selectedPeer?.name ?? "Host"}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
                       ),
-                      onPressed: () {
-                        final nextTorch = !_remoteTorchState;
-                        setState(() => _remoteTorchState = nextTorch);
-                        _sendRemoteControl('toggle_torch', nextTorch);
-                      },
-                      tooltip: 'Toggle Remote Torch',
+                    ),
+                    const SizedBox(width: 8),
+                    if (isCameraStream) ...[
+                      IconButton(
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        padding: const EdgeInsets.all(6),
+                        icon: Icon(
+                          _remoteTorchState
+                              ? Icons.flash_on_rounded
+                              : Icons.flash_off_rounded,
+                          color: _remoteTorchState
+                              ? Colors.amberAccent
+                              : Colors.white,
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          final nextTorch = !_remoteTorchState;
+                          setState(() => _remoteTorchState = nextTorch);
+                          _sendRemoteControl('toggle_torch', nextTorch);
+                        },
+                        tooltip: 'Toggle Remote Torch',
+                      ),
+                      IconButton(
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        padding: const EdgeInsets.all(6),
+                        icon: const Icon(Icons.flip_camera_ios_rounded,
+                            color: Colors.white, size: 20),
+                        onPressed: () => _sendRemoteControl('switch_camera'),
+                        tooltip: 'Flip Remote Lens',
+                      ),
+                    ],
+                    IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: const EdgeInsets.all(6),
+                      icon: const Icon(Icons.picture_in_picture_alt_rounded,
+                          color: Colors.white, size: 20),
+                      onPressed: () => _enterPipMode(),
+                      tooltip: 'Floating PiP Window',
                     ),
                     IconButton(
-                      icon: const Icon(Icons.flip_camera_ios_rounded,
-                          color: Colors.white),
-                      onPressed: () => _sendRemoteControl('switch_camera'),
-                      tooltip: 'Flip Remote Lens',
-                    ),
-                    IconButton(
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      padding: const EdgeInsets.all(6),
                       icon: const Icon(Icons.fullscreen_exit_rounded,
-                          color: Colors.white),
+                          color: Colors.white, size: 22),
                       onPressed: () => setState(() => _isFullScreen = false),
                       tooltip: 'Exit Full Screen',
                     ),

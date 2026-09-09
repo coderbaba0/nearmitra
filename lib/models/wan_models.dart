@@ -1,6 +1,12 @@
 import 'dart:convert';
 import 'package:uuid/uuid.dart';
 
+enum WanDiscoveryMode {
+  publicRadar,
+  privateGhost,
+  pinOnly,
+}
+
 enum WanConnectionState {
   offline,
   online,
@@ -16,6 +22,7 @@ class WanDevice {
   final String id;
   final String name;
   final String platform;
+  final String? avatarEmoji;
   final bool isOnline;
   final DateTime? lastSeen;
   final bool isTrusted;
@@ -25,6 +32,7 @@ class WanDevice {
     required this.id,
     required this.name,
     required this.platform,
+    this.avatarEmoji,
     required this.isOnline,
     this.lastSeen,
     this.isTrusted = false,
@@ -36,6 +44,7 @@ class WanDevice {
       id: id,
       name: (map['name'] as String?) ?? (map['deviceName'] as String?) ?? 'Unknown Device',
       platform: (map['platform'] as String?) ?? 'unknown',
+      avatarEmoji: (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?),
       isOnline: (map['online'] as bool?) ?? false,
       lastSeen: map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null,
       isTrusted: isTrusted,
@@ -47,6 +56,7 @@ class WanDevice {
     return {
       'name': name,
       'platform': platform,
+      if (avatarEmoji != null && avatarEmoji!.isNotEmpty) 'avatarEmoji': avatarEmoji,
       'online': isOnline,
       'lastSeen': DateTime.now().millisecondsSinceEpoch,
     };
@@ -56,6 +66,7 @@ class WanDevice {
     String? id,
     String? name,
     String? platform,
+    String? avatarEmoji,
     bool? isOnline,
     DateTime? lastSeen,
     bool? isTrusted,
@@ -65,6 +76,7 @@ class WanDevice {
       id: id ?? this.id,
       name: name ?? this.name,
       platform: platform ?? this.platform,
+      avatarEmoji: avatarEmoji ?? this.avatarEmoji,
       isOnline: isOnline ?? this.isOnline,
       lastSeen: lastSeen ?? this.lastSeen,
       isTrusted: isTrusted ?? this.isTrusted,
@@ -109,6 +121,8 @@ class WanPairRequest {
   final String toDeviceId;
   final String code;
   final String status; // 'pending', 'accepted', 'rejected'
+  final bool isDirectRadar;
+  final String? fromAvatarEmoji;
   final DateTime? createdAt;
 
   WanPairRequest({
@@ -116,9 +130,11 @@ class WanPairRequest {
     required this.fromDeviceId,
     required this.fromDeviceName,
     required this.fromPlatform,
+    this.fromAvatarEmoji,
     required this.toDeviceId,
     required this.code,
     this.status = 'pending',
+    this.isDirectRadar = false,
     this.createdAt,
   });
 
@@ -128,9 +144,11 @@ class WanPairRequest {
       fromDeviceId: (map['fromDeviceId'] as String?) ?? '',
       fromDeviceName: (map['fromDeviceName'] as String?) ?? 'NearMitra Peer',
       fromPlatform: (map['fromPlatform'] as String?) ?? 'unknown',
+      fromAvatarEmoji: (map['fromAvatarEmoji'] as String?) ?? (map['avatarEmoji'] as String?),
       toDeviceId: (map['toDeviceId'] as String?) ?? '',
       code: (map['code'] as String?) ?? '',
       status: (map['status'] as String?) ?? 'pending',
+      isDirectRadar: (map['isDirectRadar'] as bool?) ?? false,
       createdAt: map['createdAt'] != null
           ? DateTime.fromMillisecondsSinceEpoch(map['createdAt'] as int)
           : null,
@@ -143,9 +161,11 @@ class WanPairRequest {
       'fromDeviceId': fromDeviceId,
       'fromDeviceName': fromDeviceName,
       'fromPlatform': fromPlatform,
+      if (fromAvatarEmoji != null && fromAvatarEmoji!.isNotEmpty) 'fromAvatarEmoji': fromAvatarEmoji,
       'toDeviceId': toDeviceId,
       'code': code,
       'status': status,
+      'isDirectRadar': isDirectRadar,
     };
   }
 }

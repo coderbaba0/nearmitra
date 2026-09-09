@@ -1,5 +1,21 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+@pragma('vm:entry-point')
+void notificationTapBackground(NotificationResponse details) {
+  if (details.notificationResponseType == NotificationResponseType.selectedNotificationAction &&
+      details.actionId == 'reply_action' &&
+      details.input != null &&
+      details.input!.trim().isNotEmpty &&
+      details.payload != null) {
+    NotificationService().handleReplyAction(
+      peerId: details.payload!,
+      text: details.input!.trim(),
+      notificationId: details.id,
+    );
+  }
+}
 
 class NotificationService {
   factory NotificationService() => _instance;
@@ -15,6 +31,30 @@ class NotificationService {
   final StreamController<Map<String, String>> _onNotificationReply = StreamController<Map<String, String>>.broadcast();
   Stream<Map<String, String>> get onNotificationReply => _onNotificationReply.stream;
 
+  Future<void> handleReplyAction({
+    required String peerId,
+    required String text,
+    int? notificationId,
+  }) async {
+    if (notificationId != null) {
+      try {
+        await _notifications.cancel(notificationId);
+      } catch (e) {
+        debugPrint('[NotificationService] Failed to cancel notification: $e');
+      }
+    }
+    _onNotificationReply.add({
+      'peerId': peerId,
+      'text': text,
+    });
+  }
+
+  Future<void> cancelNotification(int id) async {
+    try {
+      await _notifications.cancel(id);
+    } catch (_) {}
+  }
+
   Future<void> init() async {
     if (_initialized) return;
 
@@ -29,14 +69,16 @@ class NotificationService {
             details.input != null &&
             details.input!.trim().isNotEmpty &&
             details.payload != null) {
-          _onNotificationReply.add({
-            'peerId': details.payload!,
-            'text': details.input!.trim(),
-          });
+          handleReplyAction(
+            peerId: details.payload!,
+            text: details.input!.trim(),
+            notificationId: details.id,
+          );
         } else if (details.payload != null) {
           _onNotificationClick.add(details.payload);
         }
       },
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
 
     // Create Notification Channel for Android 8.0+

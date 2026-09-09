@@ -15,7 +15,14 @@ import '../models/transfer_state.dart';
 import 'ai_settings_service.dart';
 import 'android_network_bridge.dart';
 import 'call_service.dart';
+import 'device_identity.dart';
+import 'firebase_presence_service.dart';
+import 'internet_device_identity_service.dart';
 import 'notification_service.dart';
+
+const int discoveryPort = 43888;
+const int transferPort = 43889;
+final InternetAddress multicastAddress = InternetAddress('239.255.43.88');
 
 class QueuedOutboxItem {
   final String id;
@@ -74,18 +81,44 @@ class NearbyService extends ChangeNotifier {
   static NearbyService? _instance;
   static NearbyService get instance => _instance!;
 
-  NearbyService({required this.deviceId, required this.deviceName}) {
+  final String deviceId;
+  String _deviceName;
+  String get deviceName => _deviceName;
+  String _avatarEmoji;
+  String get avatarEmoji => _avatarEmoji;
+
+  NearbyService({required this.deviceId, required String deviceName, String avatarEmoji = '📱'})
+      : _deviceName = deviceName,
+        _avatarEmoji = avatarEmoji {
     _instance = this;
     _loadOutbox();
   }
 
-  static const int discoveryPort = 43888;
-  static const int transferPort = 43889;
-  static final InternetAddress multicastAddress =
-      InternetAddress('239.255.43.88');
+  /// Updates device display name & avatar emoji across all services (LAN, P2P, WAN)
+  Future<void> updateDeviceIdentity({required String name, required String emoji}) async {
+    final cleanName = name.trim();
+    final cleanEmoji = emoji.trim();
+    if (cleanName.isNotEmpty) {
+      _deviceName = cleanName;
+    }
+    if (cleanEmoji.isNotEmpty) {
+      _avatarEmoji = cleanEmoji;
+    }
 
-  final String deviceId;
-  final String deviceName;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('farmitra_nearby_device_name', _deviceName);
+    await prefs.setString('farmitra_device_avatar_emoji', _avatarEmoji);
+
+    final identity = DeviceIdentity();
+    await identity.setName(_deviceName);
+    await identity.setAvatarEmoji(_avatarEmoji);
+
+    await InternetDeviceIdentityService().updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
+    await FirebasePresenceService().updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
+
+    await announce();
+    notifyListeners();
+  }
   final AndroidNetworkBridge _bridge = AndroidNetworkBridge();
   final NotificationService _notificationService = NotificationService();
 
@@ -343,6 +376,42 @@ class NearbyService extends ChangeNotifier {
   Timer? _keepaliveTimer;
   bool _started = false;
 
+  final Set<String> _pinnedPeerIds = {};
+  static const _kPinnedPeersKey = 'nearby_pinned_peer_ids_v1';
+
+  bool isPeerPinned(String peerId) {
+    return _pinnedPeerIds.contains(peerId);
+  }
+
+  Future<void> _loadPinnedPeers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_kPinnedPeersKey) ?? [];
+      _pinnedPeerIds.clear();
+      _pinnedPeerIds.addAll(list);
+    } catch (_) {}
+  }
+
+  Future<void> _savePinnedPeers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_kPinnedPeersKey, _pinnedPeerIds.toList());
+    } catch (_) {}
+  }
+
+  Future<bool> togglePinPeer(String peerId) async {
+    if (peerId.isEmpty) return false;
+    final isNowPinned = !_pinnedPeerIds.contains(peerId);
+    if (isNowPinned) {
+      _pinnedPeerIds.add(peerId);
+    } else {
+      _pinnedPeerIds.remove(peerId);
+    }
+    await _savePinnedPeers();
+    notifyListeners();
+    return isNowPinned;
+  }
+
   List<Peer> get peers {
     final uniquePeers = <Peer>{};
     for (final p in _peers.values) {
@@ -353,8 +422,29 @@ class NearbyService extends ChangeNotifier {
       }
     }
     final list = uniquePeers.toList();
-    list.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    list.sort((a, b) {
+      final aPinned = _pinnedPeerIds.contains(a.id) || _pinnedPeerIds.contains(a.ip);
+      final bPinned = _pinnedPeerIds.contains(b.id) || _pinnedPeerIds.contains(b.ip);
+      if (aPinned != bPinned) {
+        return aPinned ? -1 : 1;
+      }
+      if (a.unreadCount != b.unreadCount) {
+        return b.unreadCount.compareTo(a.unreadCount);
+      }
+      final nameComp = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      if (nameComp != 0) return nameComp;
+      return a.id.compareTo(b.id);
+    });
     return list;
+  }
+
+  Peer? getPeer(String idOrIp) {
+    if (idOrIp.isEmpty) return null;
+    if (_peers.containsKey(idOrIp)) return _peers[idOrIp];
+    for (final p in _peers.values) {
+      if (p.id == idOrIp || p.ip == idOrIp) return p;
+    }
+    return null;
   }
 
   List<ChatItem> takeIncomingItems() {
@@ -526,6 +616,7 @@ class NearbyService extends ChangeNotifier {
   Future<void> start() async {
     if (_started) return;
     _started = true;
+    await _loadPinnedPeers();
     await _loadNotificationsSetting();
     await _loadCustomSavePath();
     await _loadBackgroundServiceSetting();
@@ -608,8 +699,11 @@ class NearbyService extends ChangeNotifier {
           jsonDecode(utf8.decode(datagram.data)) as Map<String, dynamic>;
       final id = map['id']?.toString() ?? '';
       final name = map['name']?.toString() ?? 'Nearby device';
+      final avatar = map['avatar']?.toString() ?? map['avatarEmoji']?.toString();
+      final platform = map['platform']?.toString();
       if (id.isEmpty || id == deviceId) return;
-      _upsertPeer(id, name, datagram.address.address);
+      _upsertPeer(id, name, datagram.address.address,
+          avatarEmoji: avatar, platform: platform);
     } catch (_) {}
   }
 
@@ -617,7 +711,15 @@ class NearbyService extends ChangeNotifier {
     if (_udp == null) {
       await _startDiscovery();
     }
-    final data = utf8.encode(jsonEncode({'id': deviceId, 'name': deviceName}));
+    final data = utf8.encode(jsonEncode({
+      'id': deviceId,
+      'name': deviceName,
+      'avatar': avatarEmoji,
+      'avatarEmoji': avatarEmoji,
+      'platform': Platform.isWindows
+          ? 'windows'
+          : (Platform.isAndroid ? 'android' : 'ios'),
+    }));
     try {
       _udp?.send(data, multicastAddress, discoveryPort);
       _udp?.send(data, InternetAddress('255.255.255.255'), discoveryPort);
@@ -706,7 +808,12 @@ class NearbyService extends ChangeNotifier {
       socket.write('${jsonEncode({
             'type': 'hello',
             'sender': deviceName,
-            'sender_id': deviceId
+            'sender_id': deviceId,
+            'avatar': avatarEmoji,
+            'avatarEmoji': avatarEmoji,
+            'platform': Platform.isWindows
+                ? 'windows'
+                : (Platform.isAndroid ? 'android' : 'ios'),
           })}\n');
       await socket.flush();
       final line =
@@ -716,8 +823,12 @@ class NearbyService extends ChangeNotifier {
       if (map['type'] == 'hello') {
         final id = map['sender_id']?.toString() ?? '';
         final peerId = id.isNotEmpty ? id : ip;
+        final avatar =
+            map['avatar']?.toString() ?? map['avatarEmoji']?.toString();
+        final platform = map['platform']?.toString();
         if (id != deviceId) {
-          _upsertPeer(peerId, map['sender']?.toString() ?? 'Nearby device', ip);
+          _upsertPeer(peerId, map['sender']?.toString() ?? 'Nearby device', ip,
+              avatarEmoji: avatar, platform: platform);
           return peerId;
         }
       }
@@ -797,14 +908,29 @@ class NearbyService extends ChangeNotifier {
       final sender =
           h['sender']?.toString() ?? h['name']?.toString() ?? 'Nearby device';
       final senderId = h['sender_id']?.toString() ?? h['id']?.toString() ?? '';
+      final senderAvatar =
+          h['avatar']?.toString() ?? h['avatarEmoji']?.toString();
+      final senderPlatform = h['platform']?.toString();
       final remoteIp = socket.remoteAddress.address;
       final resolvedPeerId = _resolvePeerId(senderId, sender, remoteIp);
 
       if (type == 'hello') {
+        if (senderAvatar != null && senderAvatar.isNotEmpty) {
+          final peerObj = _peers[resolvedPeerId] ?? _peers[remoteIp];
+          if (peerObj != null) {
+            peerObj.avatarEmoji = senderAvatar;
+            if (senderPlatform != null) peerObj.platform = senderPlatform;
+          }
+        }
         socket.write('${jsonEncode({
               'type': 'hello',
               'sender': deviceName,
-              'sender_id': deviceId
+              'sender_id': deviceId,
+              'avatar': avatarEmoji,
+              'avatarEmoji': avatarEmoji,
+              'platform': Platform.isWindows
+                  ? 'windows'
+                  : (Platform.isAndroid ? 'android' : 'ios'),
             })}\n');
         await socket.flush();
         final peerObj = _peers[resolvedPeerId] ?? _peers[remoteIp];
@@ -1624,11 +1750,32 @@ class NearbyService extends ChangeNotifier {
     }
   }
 
-  Peer _upsertPeer(String id, String name, String ip) {
+  Peer _upsertPeer(String id, String name, String ip,
+      {String? avatarEmoji, String? platform}) {
+    String? resolvedAvatar = avatarEmoji;
+    if (resolvedAvatar == null || resolvedAvatar.trim().isEmpty) {
+      final trimmed = name.trim();
+      if (trimmed.isNotEmpty) {
+        final firstRune = trimmed.runes.first;
+        if ((firstRune >= 0x1F300 && firstRune <= 0x1F9FF) ||
+            (firstRune >= 0x2600 && firstRune <= 0x27BF) ||
+            (firstRune >= 0x1FA70 && firstRune <= 0x1FAFF) ||
+            (firstRune >= 0xFE00 && firstRune <= 0xFE0F) ||
+            (firstRune >= 0x1F000 && firstRune <= 0x1F2FF)) {
+          resolvedAvatar = String.fromCharCode(firstRune);
+        }
+      }
+    }
+
     if (id == deviceId ||
         name.toLowerCase() == deviceName.toLowerCase() ||
         id == 'local_ai_assistant') {
-      return Peer(id: id, name: name, ip: ip);
+      return Peer(
+          id: id,
+          name: name,
+          ip: ip,
+          avatarEmoji: resolvedAvatar,
+          platform: platform);
     }
 
     Peer? existing = _peers[id];
@@ -1654,7 +1801,9 @@ class NearbyService extends ChangeNotifier {
                   ? ip
                   : 'peer_${DateTime.now().millisecondsSinceEpoch}'),
           name: name,
-          ip: ip);
+          ip: ip,
+          avatarEmoji: resolvedAvatar,
+          platform: platform);
       _peers[p.id] = p;
       if (id.isNotEmpty) _peers[id] = p;
       if (ip.isNotEmpty) _peers[ip] = p;
@@ -1664,6 +1813,8 @@ class NearbyService extends ChangeNotifier {
       existing
         ..name = name.isNotEmpty ? name : existing.name
         ..ip = ip.isNotEmpty ? ip : existing.ip
+        ..avatarEmoji = resolvedAvatar ?? existing.avatarEmoji
+        ..platform = platform ?? existing.platform
         ..lastSeen = DateTime.now();
       _peers[existing.id] = existing;
       if (id.isNotEmpty) _peers[id] = existing;

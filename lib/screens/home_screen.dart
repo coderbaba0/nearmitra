@@ -17,6 +17,7 @@ import 'active_call_screen.dart';
 import 'activity_logs_screen.dart';
 import 'ai_fleet_screen.dart';
 import 'ai_settings_screen.dart';
+import 'device_profile_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'stream_hub_screen.dart';
 import '../main.dart';
@@ -104,10 +105,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       widget.service.isAppInForeground = true;
+      _wanService.isAppInForeground = true;
     } else if (state == AppLifecycleState.paused ||
                state == AppLifecycleState.inactive ||
                state == AppLifecycleState.hidden) {
       widget.service.isAppInForeground = false;
+      _wanService.isAppInForeground = false;
     }
   }
 
@@ -188,11 +191,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     _notificationSub = NotificationService().onNotificationClick.listen((peerId) {
       if (peerId != null && mounted) {
+        if (peerId.startsWith('wan:')) {
+          final cleanId = peerId.substring(4);
+          final wanDev = _wanService.trustedDevicesList.where((d) => d.id == cleanId).firstOrNull ??
+              _wanService.publicDevices.where((d) => d.id == cleanId).firstOrNull;
+          if (wanDev != null && !WanActiveSessionScreen.isScreenOpen) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => WanActiveSessionScreen(peer: wanDev),
+              ),
+            );
+          }
+          return;
+        }
+
         final peer = widget.service.peers.where(
           (p) => p.id == peerId || p.ip == peerId,
-        ).firstOrNull;
+        ).firstOrNull ?? widget.service.getPeer(peerId);
+
         if (peer != null) {
           _selectPeer(peer);
+        } else {
+          final wanDev = _wanService.trustedDevicesList.where((d) => d.id == peerId).firstOrNull ??
+              _wanService.publicDevices.where((d) => d.id == peerId).firstOrNull;
+          if (wanDev != null && !WanActiveSessionScreen.isScreenOpen) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => WanActiveSessionScreen(peer: wanDev),
+              ),
+            );
+          }
         }
       }
     });
@@ -200,26 +230,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _replySub = NotificationService().onNotificationReply.listen((data) async {
       final targetPeerId = data['peerId'];
       final replyText = data['text'];
-      if (targetPeerId != null && replyText != null && replyText.isNotEmpty) {
-        final peer = widget.service.peers.where(
-          (p) => p.id == targetPeerId || p.ip == targetPeerId,
-        ).firstOrNull;
-        if (peer != null) {
-          final ok = await widget.service.sendChat(peer, replyText);
-          if (ok) {
-            _history.add(ChatItem(
-              peerId: peer.id,
-              sender: widget.service.deviceName,
-              mine: true,
-              createdAt: DateTime.now(),
-              kind: ChatKind.text,
-              text: replyText,
-              isAi: false,
-            ));
-            await _historyService.save(_history);
-            if (mounted) setState(() {});
-          }
+      if (targetPeerId == null || replyText == null || replyText.trim().isEmpty) return;
+
+      final trimmedReply = replyText.trim();
+      final isWan = targetPeerId.startsWith('wan:') ||
+          _wanService.isDeviceTrusted(targetPeerId) ||
+          _wanService.publicDevices.any((d) => d.id == targetPeerId) ||
+          (_wanRtcManager.activePeerId != null && _wanRtcManager.activePeerId == targetPeerId);
+
+      if (isWan) {
+        final cleanPeerId = targetPeerId.startsWith('wan:') ? targetPeerId.substring(4) : targetPeerId;
+        await _wanRtcManager.sendDirectMessage(trimmedReply, cleanPeerId);
+        if (mounted) setState(() {});
+        return;
+      }
+
+      // Nearby LAN resolution:
+      Peer? peer = widget.service.peers.where(
+        (p) => p.id == targetPeerId || p.ip == targetPeerId,
+      ).firstOrNull;
+
+      peer ??= widget.service.getPeer(targetPeerId);
+
+      if (peer != null) {
+        final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
+        final ok = await widget.service.sendChat(peer, trimmedReply);
+        final status = ok ? 'Sent' : 'Queued';
+
+        if (!ok) {
+          await widget.service.queueOutboxItem(QueuedOutboxItem(
+            id: itemId,
+            peerId: peer.id,
+            peerName: peer.name,
+            kind: ChatKind.text,
+            text: trimmedReply,
+            createdAt: DateTime.now(),
+          ));
         }
+
+        _history.add(ChatItem(
+          id: itemId,
+          peerId: peer.id,
+          sender: widget.service.deviceName,
+          mine: true,
+          createdAt: DateTime.now(),
+          kind: ChatKind.text,
+          text: trimmedReply,
+          status: status,
+          isAi: false,
+        ));
+        await _historyService.save(_history);
+        if (mounted) setState(() {});
       }
     });
 
@@ -734,11 +795,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (_isCallScreenOpen) return;
     _isCallScreenOpen = true;
 
+    // Resolve peer accurately in case of partial peer data from background CallKit event
+    Peer resolvedPeer = peer;
+    if (resolvedPeer.ip.isEmpty || resolvedPeer.name == 'Peer Device') {
+      final matched = widget.service.peers.where((p) =>
+        p.id == peer.id || (peer.id.isNotEmpty && p.ip == peer.id) || (peer.ip.isNotEmpty && p.ip == peer.ip)
+      ).firstOrNull;
+      if (matched != null) {
+        resolvedPeer = matched;
+      }
+    }
+
+    CallService().setCallActive(true);
+
     final nav = rootNavigatorKey.currentState ?? Navigator.of(context);
     nav.push<int>(
       MaterialPageRoute(
         builder: (_) => ActiveCallScreen(
-          peer: peer,
+          peer: resolvedPeer,
           service: widget.service,
           isVideoCall: isVideoCall,
           isIncoming: isIncoming,
@@ -746,13 +820,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       ),
     ).then((durationSecs) {
       _isCallScreenOpen = false;
+      CallService().setCallActive(false);
       final callTypeStr = isVideoCall ? 'Video Call' : 'Audio Call';
       final durationStr = durationSecs != null && durationSecs > 0
           ? '${(durationSecs ~/ 60).toString().padLeft(2, '0')}:${(durationSecs % 60).toString().padLeft(2, '0')}'
           : 'Ended';
       widget.service.addCallLog(
-        peerId: peer.id,
-        peerName: peer.name,
+        peerId: resolvedPeer.id,
+        peerName: resolvedPeer.name,
         text: '$callTypeStr • $durationStr',
         mine: !isIncoming,
       );
@@ -853,6 +928,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           service: widget.service,
           targetPeer: _selectedPeer,
           initialStreamType: initialType,
+          onOpenSettings: _openSettingsModal,
         ),
       ),
     ).then((_) {
@@ -2034,6 +2110,152 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       ),
                       const Divider(height: 28),
                       
+                      // 0. Device Profile & Identity Card (Custom Name & Avatar Emoji)
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () async {
+                            final res = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => DeviceProfileScreen(service: widget.service),
+                              ),
+                            );
+                            if (res == true || mounted) {
+                              setModalState(() {});
+                              setState(() {});
+                            }
+                          },
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: isDark
+                                    ? [const Color(0xFF1E293B), const Color(0xFF0F172A)]
+                                    : [const Color(0xFFE8F5E9), const Color(0xFFFFFFFF)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: const Color(0xFF10B981).withValues(alpha: isDark ? 0.35 : 0.5),
+                                width: 1.4,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFF10B981).withValues(alpha: isDark ? 0.1 : 0.08),
+                                  blurRadius: 14,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              children: [
+                                Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    Container(
+                                      width: 54,
+                                      height: 54,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                                        border: Border.all(
+                                          color: const Color(0xFF10B981),
+                                          width: 2,
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: const Color(0xFF10B981).withValues(alpha: 0.3),
+                                            blurRadius: 8,
+                                          ),
+                                        ],
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: Text(
+                                        widget.service.avatarEmoji.isNotEmpty ? widget.service.avatarEmoji : '📱',
+                                        style: const TextStyle(fontSize: 27),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      bottom: 0,
+                                      right: 0,
+                                      child: Container(
+                                        width: 13,
+                                        height: 13,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF10B981),
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: isDark ? const Color(0xFF0F172A) : Colors.white,
+                                            width: 2,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        widget.service.deviceName,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 16,
+                                          letterSpacing: 0.2,
+                                          color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        'Broadcasting identity on LAN, P2P & WAN',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: isDark ? Colors.white60 : Colors.black54,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: const Color(0xFF10B981).withValues(alpha: 0.35),
+                                    ),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.edit_rounded, size: 14, color: Color(0xFF10B981)),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Edit',
+                                        style: TextStyle(
+                                          color: Color(0xFF10B981),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+
                       // 1. App Theme Mode Switcher
                       const Text('App Theme', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                       const SizedBox(height: 10),
@@ -2182,6 +2404,174 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               : 'Offline Mesh Relay Disabled');
                         },
                       ),
+                      const SizedBox(height: 12),
+                      const Divider(height: 1),
+                      const SizedBox(height: 12),
+
+                      // 2d. Remote Streaming Security & Access Permissions
+                      Row(
+                        children: [
+                          const Icon(Icons.videocam_rounded, color: Color(0xFF10B981), size: 20),
+                          const SizedBox(width: 8),
+                          const Text('Remote Streaming Permissions',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'CCTV / RELAY',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF10B981),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Control which live streaming feeds nearby peers can request from this device',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // 1. Camera Access
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF10B981),
+                        title: const Text('Allow Incoming Camera Access',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                        subtitle: const Text(
+                            'Allows trusted nearby peers to request live CCTV stream',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        value: StreamingService().allowCamera,
+                        onChanged: (val) async {
+                          await StreamingService().setAllowCamera(val);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast(val ? 'Camera Access Allowed 📹' : 'Camera Access Disabled 🚫');
+                        },
+                      ),
+
+                      // 2. Audio Access
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF10B981),
+                        title: const Text('Allow Incoming Audio Access',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                        subtitle: const Text('Allows peers to stream microphone audio relay',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        value: StreamingService().allowAudio,
+                        onChanged: (val) async {
+                          await StreamingService().setAllowAudio(val);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast(val ? 'Audio Access Allowed 🎙️' : 'Audio Access Disabled 🚫');
+                        },
+                      ),
+
+                      // 3. Screen Casting Access
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        activeThumbColor: const Color(0xFF10B981),
+                        title: const Text('Allow Screen Casting Stream',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                        subtitle: const Text('Allows remote viewing of phone screen',
+                            style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        value: StreamingService().allowScreen,
+                        onChanged: (val) async {
+                          await StreamingService().setAllowScreen(val);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast(val ? 'Screen Stream Allowed 📱' : 'Screen Stream Disabled 🚫');
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      const Divider(height: 1),
+                      const SizedBox(height: 12),
+
+                      // 2e. WAN Discovery & Privacy Mode
+                      Row(
+                        children: [
+                          const Icon(Icons.public_rounded, color: Color(0xFF10B981), size: 20),
+                          const SizedBox(width: 8),
+                          const Text('WAN Discovery & Privacy Mode',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              'INTERNET RADAR',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF10B981),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Control how your device appears to other users on the global WAN radar',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 10),
+                      _buildWanPrivacySettingTile(
+                        context,
+                        title: 'Public Radar Mode',
+                        subtitle: 'Visible on Radar for instant 1-tap connection requests from nearby online users',
+                        icon: Icons.public_rounded,
+                        color: const Color(0xFF10B981),
+                        isSelected: _wanService.discoveryMode == WanDiscoveryMode.publicRadar,
+                        onTap: () async {
+                          await _wanService.setDiscoveryMode(WanDiscoveryMode.publicRadar);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast('Public Radar Mode Active 🌐');
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      _buildWanPrivacySettingTile(
+                        context,
+                        title: 'Ghost / Private Mode',
+                        subtitle: 'Invisible on public radar. Only previously paired trusted contacts can connect',
+                        icon: Icons.visibility_off_rounded,
+                        color: const Color(0xFF6366F1),
+                        isSelected: _wanService.discoveryMode == WanDiscoveryMode.privateGhost,
+                        onTap: () async {
+                          await _wanService.setDiscoveryMode(WanDiscoveryMode.privateGhost);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast('Ghost / Private Mode Active 👻');
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      _buildWanPrivacySettingTile(
+                        context,
+                        title: 'PIN Code Only',
+                        subtitle: 'Hidden from radar. New devices must enter your 6-digit pair PIN code to connect',
+                        icon: Icons.pin_rounded,
+                        color: const Color(0xFFF59E0B),
+                        isSelected: _wanService.discoveryMode == WanDiscoveryMode.pinOnly,
+                        onTap: () async {
+                          await _wanService.setDiscoveryMode(WanDiscoveryMode.pinOnly);
+                          setModalState(() {});
+                          setState(() {});
+                          _toast('PIN Code Only Mode Active 🔢');
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      const Divider(height: 1),
                       const SizedBox(height: 12),
 
                       // 3. Received File Save Location
@@ -2449,6 +2839,85 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
+  Widget _buildWanPrivacySettingTile(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required Color color,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Material(
+      color: isSelected
+          ? color.withValues(alpha: isDark ? 0.18 : 0.10)
+          : (isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC)),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected ? color : (isDark ? Colors.white10 : Colors.black12),
+              width: isSelected ? 1.6 : 1.0,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 2),
+                padding: const EdgeInsets.all(7),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: color.withValues(alpha: 0.2),
+                ),
+                child: Icon(icon, size: 18, color: color),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          title,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13.5,
+                            color: isSelected ? color : (isDark ? Colors.white : Colors.black87),
+                          ),
+                        ),
+                        const Spacer(),
+                        if (isSelected)
+                          Icon(Icons.check_circle_rounded, color: color, size: 18),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: isDark ? Colors.white60 : Colors.black54,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _openReceivedFilesModal() async {
     final dir = await widget.service.getReceiveDirectory();
     if (!mounted) return;
@@ -2675,6 +3144,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
+  String? _resolvePeerAvatar(Peer peer) {
+    if (peer.avatarEmoji != null && peer.avatarEmoji!.trim().isNotEmpty) {
+      return peer.avatarEmoji!.trim();
+    }
+    final trimmed = peer.name.trim();
+    if (trimmed.isNotEmpty) {
+      final firstRune = trimmed.runes.first;
+      if ((firstRune >= 0x1F300 && firstRune <= 0x1F9FF) ||
+          (firstRune >= 0x2600 && firstRune <= 0x27BF) ||
+          (firstRune >= 0x1FA70 && firstRune <= 0x1FAFF) ||
+          (firstRune >= 0xFE00 && firstRune <= 0xFE0F) ||
+          (firstRune >= 0x1F000 && firstRune <= 0x1F2FF)) {
+        return String.fromCharCode(firstRune);
+      }
+    }
+    try {
+      final peerNameClean = peer.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      for (final wd in _wanService.trustedDevicesList) {
+        if (wd.avatarEmoji != null && wd.avatarEmoji!.trim().isNotEmpty) {
+          final wdNameClean = wd.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+          if (wd.id == peer.id ||
+              wd.name.toLowerCase() == peer.name.toLowerCase() ||
+              (peerNameClean.isNotEmpty && wdNameClean.isNotEmpty &&
+                  (wdNameClean.contains(peerNameClean) || peerNameClean.contains(wdNameClean)))) {
+            return wd.avatarEmoji!.trim();
+          }
+        }
+      }
+      for (final pd in _wanService.publicDevices) {
+        if (pd.avatarEmoji != null && pd.avatarEmoji!.trim().isNotEmpty) {
+          final pdNameClean = pd.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+          if (pd.id == peer.id ||
+              pd.name.toLowerCase() == peer.name.toLowerCase() ||
+              (peerNameClean.isNotEmpty && pdNameClean.isNotEmpty &&
+                  (pdNameClean.contains(peerNameClean) || peerNameClean.contains(pdNameClean)))) {
+            return pd.avatarEmoji!.trim();
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Widget _whatsappPeerHeader(Peer peer) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -2704,15 +3216,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           Builder(
             builder: (context) {
               final isOnline = _isPeerOnline(peer);
+              final avatar = _resolvePeerAvatar(peer);
               return Stack(
                 children: [
                   CircleAvatar(
                     radius: 20,
                     backgroundColor: isOnline ? Colors.white24 : Colors.white12,
-                    child: Text(
-                      peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
-                    ),
+                    child: (avatar != null && avatar.isNotEmpty)
+                        ? Center(
+                            child: Text(
+                              avatar,
+                              style: const TextStyle(fontSize: 20),
+                            ),
+                          )
+                        : (peer.id == 'local_ai_assistant'
+                            ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 20)
+                            : Icon(
+                                _isWindowsDevice(peer)
+                                    ? Icons.laptop_windows_rounded
+                                    : Icons.smartphone_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              )),
                   ),
                   Positioned(
                     right: 0,
@@ -2740,15 +3265,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      peer.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            peer.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _isWindowsDevice(peer) ? 'PC' : 'Mobile',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     peer.isTyping
                         ? const Text(
@@ -3016,6 +3563,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   void _showIncomingPairRequestDialog(WanPairRequest request) {
+    final isRadar = request.isDirectRadar;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -3023,14 +3572,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Row(
           children: [
-            const Icon(Icons.phonelink_lock_rounded, color: Color(0xFF10B981)),
+            Icon(
+              isRadar ? Icons.public_rounded : Icons.phonelink_lock_rounded,
+              color: const Color(0xFF10B981),
+            ),
             const SizedBox(width: 8),
-            const Text('Pairing Request', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              isRadar ? 'Radar Connection Request' : 'PIN Pairing Request',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
           ],
         ),
-        content: Text(
-          '${request.fromDeviceName} (${request.fromPlatform}) wants to pair with your device via Internet Mode.\n\nAllow this device as a trusted peer?',
-          style: const TextStyle(fontSize: 13.5),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isRadar
+                  ? '${request.fromDeviceName} (${request.fromPlatform}) discovered your device on WAN Radar and wants to connect.'
+                  : '${request.fromDeviceName} (${request.fromPlatform}) entered your pair PIN code to connect.',
+              style: const TextStyle(fontSize: 13.5),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF10B981).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.verified_user_rounded, color: Color(0xFF10B981), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Accepting will add ${request.fromDeviceName} as a trusted contact for direct messaging & file sharing.',
+                      style: const TextStyle(fontSize: 11.5, color: Color(0xFF005C4B)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
@@ -3039,12 +3623,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               _wanService.rejectPairRequest(request);
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('Pairing request rejected'),
+                  content: Text('Connection request declined'),
                   behavior: SnackBarBehavior.floating,
                 ),
               );
             },
-            child: const Text('Reject', style: TextStyle(color: Colors.redAccent)),
+            child: const Text('Decline', style: TextStyle(color: Colors.redAccent)),
           ),
           FilledButton(
             onPressed: () {
@@ -3052,7 +3636,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               _wanService.acceptPairRequest(request);
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('Paired with ${request.fromDeviceName}!'),
+                  content: Text('Connected with ${request.fromDeviceName}!'),
                   backgroundColor: const Color(0xFF005C4B),
                   behavior: SnackBarBehavior.floating,
                 ),
@@ -3062,7 +3646,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               backgroundColor: const Color(0xFF005C4B),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            child: const Text('Accept'),
+            child: const Text('Accept & Connect'),
           ),
         ],
       ),
@@ -3145,6 +3729,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               Navigator.pop(ctx);
               await _wanService.removeTrustedDevice(device.id);
               if (mounted) {
+                setState(() {});
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text('Unpaired ${device.name}'),
@@ -3237,7 +3822,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           else if (_connectionMode == ConnectionMode.wan)
             Expanded(
               child: WanRadarView(
-                devices: _wanService.trustedDevicesList,
+                devices: _wanService.allRadarDevices,
                 isOnline: _wanService.isOnline,
                 isFirebaseConnected: _wanService.isFirebaseConnected,
                 isInternetModeOn: _wanService.isInternetModeEnabled,
@@ -3320,10 +3905,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       separatorBuilder: (_, __) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
                         final p = peers[index];
+                        final isPinned = widget.service.isPeerPinned(p.id);
                         return PeerTile(
                           peer: p,
                           selected: p.id == _selectedPeerId,
+                          isPinned: isPinned,
                           onTap: () => _selectPeer(p),
+                          onLongPress: () => _showPeerContextMenu(p),
                         );
                       },
                     ),
@@ -3331,6 +3919,153 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ],
         ],
       ),
+    );
+  }
+
+  String _getPeerAvatar(Peer peer) {
+    if (peer.avatarEmoji != null && peer.avatarEmoji!.trim().isNotEmpty) {
+      return peer.avatarEmoji!.trim();
+    }
+    final lowerName = peer.name.toLowerCase();
+    if (lowerName.contains('windows') || lowerName.contains('pc') || lowerName.contains('desktop') || lowerName.contains('laptop') || lowerName.contains('win')) {
+      return '💻';
+    }
+    return '📱';
+  }
+
+  void _showPeerContextMenu(Peer peer) {
+    final isPinned = widget.service.isPeerPinned(peer.id);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 38,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: scheme.outlineVariant.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 20,
+                        backgroundColor: scheme.primary.withValues(alpha: 0.15),
+                        child: Text(
+                          _getPeerAvatar(peer),
+                          style: const TextStyle(fontSize: 18),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              peer.name,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              peer.isMeshPeer ? 'Mesh Relay Device' : peer.ip,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (isPinned)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: scheme.primary.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.push_pin_rounded, size: 12, color: scheme.primary),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Pinned',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: scheme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 16),
+                ListTile(
+                  leading: Icon(
+                    isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+                    color: isPinned ? Colors.orange : scheme.primary,
+                  ),
+                  title: Text(
+                    isPinned ? 'Unpin from top' : 'Pin to top',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final nowPinned = await widget.service.togglePinPeer(peer.id);
+                    _toast(nowPinned ? '📌 Pinned ${peer.name} to top' : 'Unpinned ${peer.name}');
+                    setState(() {});
+                  },
+                ),
+                ListTile(
+                  leading: Icon(Icons.chat_bubble_outline_rounded, color: scheme.primary),
+                  title: const Text('Open Chat', style: TextStyle(fontWeight: FontWeight.w600)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _selectPeer(peer);
+                  },
+                ),
+                if (peer.unreadCount > 0)
+                  ListTile(
+                    leading: const Icon(Icons.mark_chat_read_outlined, color: Color(0xFF22C55E)),
+                    title: const Text('Mark as read', style: TextStyle(fontWeight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        peer.unreadCount = 0;
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -3731,6 +4466,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               service: widget.service,
                               targetPeer: peer,
                               initialStreamType: 'camera',
+                              onOpenSettings: _openSettingsModal,
                             ),
                           ),
                         );
@@ -3742,6 +4478,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               service: widget.service,
                               targetPeer: peer,
                               initialStreamType: 'audio',
+                              onOpenSettings: _openSettingsModal,
                             ),
                           ),
                         );

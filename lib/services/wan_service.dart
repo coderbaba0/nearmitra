@@ -11,6 +11,7 @@ import 'internet_device_identity_service.dart';
 class WanService extends ChangeNotifier {
   static final WanService _instance = WanService._internal();
   factory WanService() => _instance;
+  static WanService get instance => _instance;
   WanService._internal();
 
   final InternetDeviceIdentityService _identityService = InternetDeviceIdentityService();
@@ -18,8 +19,11 @@ class WanService extends ChangeNotifier {
 
   bool _isInitialized = false;
   bool _isInternetModeEnabled = false;
+  WanDiscoveryMode _discoveryMode = WanDiscoveryMode.publicRadar;
+  bool isAppInForeground = true;
 
   final Map<String, WanDevice> _trustedDevices = {};
+  final Map<String, WanDevice> _publicDiscoveredDevices = {};
   final Map<String, StreamSubscription> _presenceSubs = {};
   final Map<String, int> _unreadCounts = {};
 
@@ -28,6 +32,7 @@ class WanService extends ChangeNotifier {
   StreamSubscription<DatabaseEvent>? _trustedDevicesSub;
   StreamSubscription<DatabaseEvent>? _incomingPairRequestsSub;
   StreamSubscription<DatabaseEvent>? _incomingSessionsSub;
+  StreamSubscription<DatabaseEvent>? _publicPresenceSub;
 
   WanPairCode? _activePairCode;
   Timer? _pairCodeTimer;
@@ -50,8 +55,25 @@ class WanService extends ChangeNotifier {
   bool get isInternetModeEnabled => _isInternetModeEnabled;
   bool get isFirebaseConnected => _presenceService.isFirebaseConnected;
   bool get isOnline => _presenceService.isPresenceOnline;
+  WanDiscoveryMode get discoveryMode => _discoveryMode;
 
   List<WanDevice> get trustedDevicesList => _trustedDevices.values.toList();
+  List<WanDevice> get publicDiscoveredDevices => _publicDiscoveredDevices.values
+      .where((d) => d.id != deviceId && !_trustedDevices.containsKey(d.id))
+      .map((d) => d.isTrusted ? d.copyWith(isTrusted: false) : d)
+      .toList();
+  List<WanDevice> get publicDevices => publicDiscoveredDevices;
+
+  /// Combined list of devices for Radar: Paired trusted devices + Discovered public peers
+  List<WanDevice> get allRadarDevices {
+    final list = <WanDevice>[];
+    list.addAll(_trustedDevices.values);
+    if (_discoveryMode == WanDiscoveryMode.publicRadar) {
+      list.addAll(publicDiscoveredDevices);
+    }
+    return list;
+  }
+
   WanPairCode? get activePairCode => _activePairCode;
 
   DatabaseReference get _dbRef => _presenceService.database.ref();
@@ -99,13 +121,41 @@ class WanService extends ChangeNotifier {
         id: tId,
         name: prefs.getString('wan_peer_name_$tId') ?? 'Paired Peer',
         platform: prefs.getString('wan_peer_platform_$tId') ?? 'unknown',
+        avatarEmoji: prefs.getString('wan_peer_avatar_$tId'),
         isOnline: false,
         isTrusted: true,
         unreadCount: _unreadCounts[tId] ?? 0,
       );
     }
 
+    final modeIndex = prefs.getInt('wan_discovery_mode_idx');
+    if (modeIndex != null && modeIndex >= 0 && modeIndex < WanDiscoveryMode.values.length) {
+      _discoveryMode = WanDiscoveryMode.values[modeIndex];
+    } else {
+      _discoveryMode = WanDiscoveryMode.publicRadar;
+    }
+
+    _presenceService.setPublicRadarPresence(_discoveryMode == WanDiscoveryMode.publicRadar);
+
     _isInitialized = true;
+    notifyListeners();
+  }
+
+  /// Change WAN Discovery & Privacy Mode
+  Future<void> setDiscoveryMode(WanDiscoveryMode mode) async {
+    _discoveryMode = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('wan_discovery_mode_idx', mode.index);
+
+    final isPublic = mode == WanDiscoveryMode.publicRadar;
+    await _presenceService.setPublicRadarPresence(isPublic);
+
+    if (isPublic && _isInternetModeEnabled) {
+      _listenToPublicPresence();
+    } else {
+      _stopListeningToPublicPresence();
+    }
+
     notifyListeners();
   }
 
@@ -118,6 +168,9 @@ class WanService extends ChangeNotifier {
       _listenToTrustedDevices();
       _listenToIncomingPairRequests();
       _listenToIncomingSessions();
+      if (_discoveryMode == WanDiscoveryMode.publicRadar) {
+        _listenToPublicPresence();
+      }
 
       // Start periodic database garbage collection and run initial sweep
       _cleanupTimer?.cancel();
@@ -244,6 +297,7 @@ class WanService extends ChangeNotifier {
       'fromDeviceId': deviceId,
       'fromDeviceName': deviceName,
       'fromPlatform': platform,
+      'fromAvatarEmoji': _identityService.avatarEmoji,
       'toDeviceId': targetDeviceId,
       'code': cleanCode,
       'createdAt': ServerValue.timestamp,
@@ -324,6 +378,98 @@ class WanService extends ChangeNotifier {
     return completer.future;
   }
 
+  /// Send a direct 1-tap connection request to a discovered peer on Radar
+  Future<WanDevice> sendDirectPairRequest(WanDevice targetDevice) async {
+    if (!_presenceService.isFirebaseConnected && !_presenceService.isPresenceOnline) {
+      if (!_isInternetModeEnabled) {
+        await setInternetMode(true);
+      }
+    }
+
+    if (targetDevice.id == deviceId) {
+      throw Exception('Cannot connect to your own device');
+    }
+
+    final requestId = const Uuid().v4();
+    final requestRef = _dbRef.child('pairRequests/${targetDevice.id}/$requestId');
+
+    await requestRef.onDisconnect().remove();
+    await requestRef.set({
+      'requestId': requestId,
+      'fromDeviceId': deviceId,
+      'fromDeviceName': deviceName,
+      'fromPlatform': platform,
+      'fromAvatarEmoji': _identityService.avatarEmoji,
+      'toDeviceId': targetDevice.id,
+      'code': '',
+      'isDirectRadar': true,
+      'createdAt': ServerValue.timestamp,
+      'status': 'pending',
+    });
+
+    debugPrint('[WanService] Direct 1-tap pair request sent to ${targetDevice.name}');
+
+    final completer = Completer<WanDevice>();
+    StreamSubscription<DatabaseEvent>? statusSub;
+    Timer? timeoutTimer;
+
+    statusSub = requestRef.onValue.listen((event) async {
+      if (!event.snapshot.exists || event.snapshot.value == null) return;
+      final reqData = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
+      final status = (reqData['status'] as String?) ?? 'pending';
+
+      if (status == 'accepted') {
+        timeoutTimer?.cancel();
+        await statusSub?.cancel();
+
+        await addTrustedDevice(
+          id: targetDevice.id,
+          name: targetDevice.name,
+          platform: targetDevice.platform,
+          avatarEmoji: targetDevice.avatarEmoji,
+        );
+
+        try {
+          await requestRef.remove();
+        } catch (_) {}
+
+        final remoteDevice = WanDevice(
+          id: targetDevice.id,
+          name: targetDevice.name,
+          platform: targetDevice.platform,
+          avatarEmoji: targetDevice.avatarEmoji,
+          isOnline: true,
+          isTrusted: true,
+          unreadCount: _unreadCounts[targetDevice.id] ?? 0,
+        );
+
+        _onPairSuccessController.add(remoteDevice);
+        if (!completer.isCompleted) completer.complete(remoteDevice);
+      } else if (status == 'rejected') {
+        timeoutTimer?.cancel();
+        await statusSub?.cancel();
+        try {
+          await requestRef.remove();
+        } catch (_) {}
+        if (!completer.isCompleted) {
+          completer.completeError(Exception('Connection request was declined by ${targetDevice.name}'));
+        }
+      }
+    });
+
+    timeoutTimer = Timer(const Duration(seconds: 45), () async {
+      await statusSub?.cancel();
+      try {
+        await requestRef.remove();
+      } catch (_) {}
+      if (!completer.isCompleted) {
+        completer.completeError(Exception('Connection request timed out. Please try again.'));
+      }
+    });
+
+    return completer.future;
+  }
+
   /// Listen to incoming pair requests at pairRequests/{myDeviceId}
   void _listenToIncomingPairRequests() {
     _incomingPairRequestsSub?.cancel();
@@ -336,7 +482,7 @@ class WanService extends ChangeNotifier {
 
       if (status == 'pending') {
         final request = WanPairRequest.fromMap(event.snapshot.key ?? '', data);
-        debugPrint('[WanService] Pairing request received from ${request.fromDeviceName}');
+        debugPrint('[WanService] Pairing request received from ${request.fromDeviceName} (directRadar=${request.isDirectRadar})');
         onIncomingPairRequest?.call(request);
       }
     });
@@ -351,6 +497,8 @@ class WanService extends ChangeNotifier {
       'deviceId': request.fromDeviceId,
       'deviceName': request.fromDeviceName,
       'platform': request.fromPlatform,
+      if (request.fromAvatarEmoji != null && request.fromAvatarEmoji!.isNotEmpty)
+        'avatarEmoji': request.fromAvatarEmoji,
       'pairedAt': ServerValue.timestamp,
     });
 
@@ -358,6 +506,8 @@ class WanService extends ChangeNotifier {
       'deviceId': deviceId,
       'deviceName': deviceName,
       'platform': platform,
+      if (_identityService.avatarEmoji.isNotEmpty)
+        'avatarEmoji': _identityService.avatarEmoji,
       'pairedAt': ServerValue.timestamp,
     });
 
@@ -366,6 +516,7 @@ class WanService extends ChangeNotifier {
       id: request.fromDeviceId,
       name: request.fromDeviceName,
       platform: request.fromPlatform,
+      avatarEmoji: request.fromAvatarEmoji,
     );
 
     // 3. Mark pair request as accepted
@@ -384,6 +535,7 @@ class WanService extends ChangeNotifier {
       id: request.fromDeviceId,
       name: request.fromDeviceName,
       platform: request.fromPlatform,
+      avatarEmoji: request.fromAvatarEmoji,
       isOnline: true,
       isTrusted: true,
       unreadCount: _unreadCounts[request.fromDeviceId] ?? 0,
@@ -418,11 +570,13 @@ class WanService extends ChangeNotifier {
     required String id,
     required String name,
     required String platform,
+    String? avatarEmoji,
   }) async {
     _trustedDevices[id] = WanDevice(
       id: id,
       name: name,
       platform: platform,
+      avatarEmoji: avatarEmoji,
       isOnline: true,
       isTrusted: true,
       unreadCount: _unreadCounts[id] ?? 0,
@@ -433,6 +587,9 @@ class WanService extends ChangeNotifier {
     await prefs.setStringList('wan_trusted_ids', list);
     await prefs.setString('wan_peer_name_$id', name);
     await prefs.setString('wan_peer_platform_$id', platform);
+    if (avatarEmoji != null && avatarEmoji.isNotEmpty) {
+      await prefs.setString('wan_peer_avatar_$id', avatarEmoji);
+    }
 
     _presenceSubs[id]?.cancel();
     _presenceSubs.remove(id);
@@ -445,16 +602,21 @@ class WanService extends ChangeNotifier {
         final online = (map['online'] as bool?) ?? true;
         final devName = (map['deviceName'] as String?) ?? (map['name'] as String?) ?? name;
         final devPlatform = (map['platform'] as String?) ?? platform;
+        final devAvatar = (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?) ?? avatarEmoji;
         final lastSeen = map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null;
         _trustedDevices[id] = WanDevice(
           id: id,
           name: devName,
           platform: devPlatform,
+          avatarEmoji: devAvatar,
           isOnline: online,
           lastSeen: lastSeen,
           isTrusted: true,
           unreadCount: _unreadCounts[id] ?? 0,
         );
+        if (devAvatar != null && devAvatar.isNotEmpty) {
+          await prefs.setString('wan_peer_avatar_$id', devAvatar);
+        }
       }
     } catch (_) {}
 
@@ -473,11 +635,33 @@ class WanService extends ChangeNotifier {
     await prefs.setStringList('wan_trusted_ids', list);
     await prefs.remove('wan_peer_name_$id');
     await prefs.remove('wan_peer_platform_$id');
+    await prefs.remove('wan_peer_avatar_$id');
 
     try {
       await _dbRef.child('trustedDevices/$deviceId/$id').remove();
       await _dbRef.child('trustedDevices/$id/$deviceId').remove();
     } catch (_) {}
+
+    // Instantly update public presence discovered devices in real-time
+    if (_publicDiscoveredDevices.containsKey(id)) {
+      _publicDiscoveredDevices[id] = _publicDiscoveredDevices[id]!.copyWith(
+        isTrusted: false,
+      );
+    } else {
+      // Check if peer is currently active on public presence
+      try {
+        final snap = await _dbRef.child('public_presence/$id').get();
+        if (snap.exists && snap.value != null && snap.value is Map) {
+          final peerMap = Map<dynamic, dynamic>.from(snap.value as Map);
+          _publicDiscoveredDevices[id] = WanDevice.fromMap(
+            id,
+            peerMap,
+            isTrusted: false,
+            unreadCount: 0,
+          );
+        }
+      } catch (_) {}
+    }
 
     debugPrint('[WanService] Device unpaired: $id');
     notifyListeners();
@@ -493,8 +677,9 @@ class WanService extends ChangeNotifier {
           if (peerId is String && peerData is Map) {
             final name = (peerData['deviceName'] as String?) ?? (peerData['name'] as String?) ?? 'NearMitra Peer';
             final platform = (peerData['platform'] as String?) ?? 'unknown';
+            final avatarEmoji = (peerData['avatarEmoji'] as String?) ?? (peerData['emoji'] as String?);
             if (!_trustedDevices.containsKey(peerId)) {
-              addTrustedDevice(id: peerId, name: name, platform: platform);
+              addTrustedDevice(id: peerId, name: name, platform: platform, avatarEmoji: avatarEmoji);
             }
           }
         });
@@ -510,23 +695,30 @@ class WanService extends ChangeNotifier {
   void _subscribeToPeerPresence(String peerId) {
     if (_presenceSubs.containsKey(peerId)) return;
 
-    _presenceSubs[peerId] = _dbRef.child('presence/$peerId').onValue.listen((event) {
+    _presenceSubs[peerId] = _dbRef.child('presence/$peerId').onValue.listen((event) async {
       if (event.snapshot.exists && event.snapshot.value != null) {
         final map = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
         final online = (map['online'] as bool?) ?? false;
         final name = (map['deviceName'] as String?) ?? (map['name'] as String?) ?? _trustedDevices[peerId]?.name ?? 'Peer';
         final platform = (map['platform'] as String?) ?? _trustedDevices[peerId]?.platform ?? 'unknown';
+        final avatarEmoji = (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?) ?? _trustedDevices[peerId]?.avatarEmoji;
         final lastSeen = map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null;
 
         _trustedDevices[peerId] = WanDevice(
           id: peerId,
           name: name,
           platform: platform,
+          avatarEmoji: avatarEmoji,
           isOnline: online,
           lastSeen: lastSeen,
           isTrusted: true,
           unreadCount: _unreadCounts[peerId] ?? 0,
         );
+
+        if (avatarEmoji != null && avatarEmoji.isNotEmpty) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('wan_peer_avatar_$peerId', avatarEmoji);
+        }
 
         notifyListeners();
       }
@@ -770,6 +962,48 @@ class WanService extends ChangeNotifier {
     }
   }
 
+  /// Listen to public presence node /public_presence for public radar discovery
+  void _listenToPublicPresence() {
+    _publicPresenceSub?.cancel();
+    final publicRef = _dbRef.child('public_presence');
+
+    _publicPresenceSub = publicRef.onValue.listen((event) {
+      if (!event.snapshot.exists || event.snapshot.value == null) {
+        _publicDiscoveredDevices.clear();
+        notifyListeners();
+        return;
+      }
+
+      final data = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
+      final newMap = <String, WanDevice>{};
+
+      data.forEach((k, v) {
+        final peerId = k.toString();
+        if (peerId != deviceId && v is Map) {
+          final peerMap = Map<dynamic, dynamic>.from(v);
+          final dev = WanDevice.fromMap(
+            peerId,
+            peerMap,
+            isTrusted: _trustedDevices.containsKey(peerId),
+            unreadCount: _unreadCounts[peerId] ?? 0,
+          );
+          newMap[peerId] = dev;
+        }
+      });
+
+      _publicDiscoveredDevices.clear();
+      _publicDiscoveredDevices.addAll(newMap);
+      notifyListeners();
+    });
+  }
+
+  void _stopListeningToPublicPresence() {
+    _publicPresenceSub?.cancel();
+    _publicPresenceSub = null;
+    _publicDiscoveredDevices.clear();
+    notifyListeners();
+  }
+
   void _cancelInternetListeners() {
     _cleanupTimer?.cancel();
     _cleanupTimer = null;
@@ -779,6 +1013,7 @@ class WanService extends ChangeNotifier {
     _incomingPairRequestsSub = null;
     _incomingSessionsSub?.cancel();
     _incomingSessionsSub = null;
+    _stopListeningToPublicPresence();
     for (final s in _presenceSubs.values) {
       s.cancel();
     }

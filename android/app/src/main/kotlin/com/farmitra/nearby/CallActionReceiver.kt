@@ -29,7 +29,6 @@ class CallActionReceiver : BroadcastReceiver() {
             Log.d("CallActionReceiver", "Call ACCEPTED by user for $peerName ($peerIp)")
             val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("call_incoming", true)
                 putExtra("call_action", "accept")

@@ -33,7 +33,16 @@ class CallService {
 
   AcceptedCallData? get pendingAcceptedCall => _pendingAcceptedCall;
   bool get hasPendingAcceptedCall => _pendingAcceptedCall != null;
-  void resetCallActiveState() => _isCallActive = false;
+  bool get isCallActive => _isCallActive;
+
+  void setCallActive(bool active) {
+    _isCallActive = active;
+    if (!active) {
+      _pendingAcceptedCall = null;
+    }
+  }
+
+  void resetCallActiveState() => setCallActive(false);
 
   Future<void> init() async {
     if (_initialized) return;
@@ -43,7 +52,7 @@ class CallService {
       FlutterCallkitIncoming.onEvent.listen((event) {
         if (event == null) return;
         final ev = event.event;
-        debugPrint('[CallService] Received CallKit event: $ev');
+        debugPrint('[CallService] Received CallKit event: $ev (isCallActive: $_isCallActive)');
 
         if (ev == Event.actionCallAccept) {
           final body = event.body as Map<dynamic, dynamic>?;
@@ -53,7 +62,7 @@ class CallService {
           }
         } else if (ev == Event.actionCallDecline) {
           if (_isCallActive) {
-            debugPrint('[CallService] Ignoring CallKit decline event during active call');
+            debugPrint('[CallService] Ignoring CallKit decline event because a call is currently active');
             return;
           }
           final body = event.body as Map<dynamic, dynamic>?;
@@ -61,9 +70,10 @@ class CallService {
             _handleDeclinedCallEvent(body);
           }
           _pendingAcceptedCall = null;
-          FlutterCallkitIncoming.endAllCalls();
         } else if (ev == Event.actionCallTimeout || ev == Event.actionCallEnded) {
-          _pendingAcceptedCall = null;
+          if (!_isCallActive) {
+            _pendingAcceptedCall = null;
+          }
         }
       });
 
@@ -78,6 +88,13 @@ class CallService {
     Map<dynamic, dynamic>? extra;
     if (body['extra'] is Map) {
       extra = body['extra'] as Map<dynamic, dynamic>;
+    } else if (body['extra'] is String) {
+      try {
+        final decoded = jsonDecode(body['extra'] as String);
+        if (decoded is Map) {
+          extra = decoded;
+        }
+      } catch (_) {}
     }
 
     final peerId = extra?['peerId']?.toString() ??
@@ -87,6 +104,7 @@ class CallService {
 
     final cached = _cachedPeers[peerId] ??
         _cachedPeers[body['id']?.toString() ?? ''] ??
+        (extra?['peerIp'] != null ? _cachedPeers[extra!['peerIp'].toString()] : null) ??
         _cachedPeers.values.lastOrNull;
 
     final peerName = extra?['peerName']?.toString() ??
@@ -108,11 +126,12 @@ class CallService {
     }
 
     final isVideo = extra?['isVideo'] == true ||
+        extra?['is_video'] == true ||
         body['type'] == 1 ||
         body['isVideo'] == true;
 
     final peer = Peer(
-      id: peerId.isNotEmpty ? peerId : (cached?.id ?? 'peer_incoming'),
+      id: peerId.isNotEmpty ? peerId : (cached?.id ?? (peerIp.isNotEmpty ? peerIp : 'peer_incoming')),
       name: peerName,
       ip: peerIp,
       lastSeen: DateTime.now(),
@@ -131,6 +150,13 @@ class CallService {
     Map<dynamic, dynamic>? extra;
     if (body['extra'] is Map) {
       extra = body['extra'] as Map<dynamic, dynamic>;
+    } else if (body['extra'] is String) {
+      try {
+        final decoded = jsonDecode(body['extra'] as String);
+        if (decoded is Map) {
+          extra = decoded;
+        }
+      } catch (_) {}
     }
 
     final peerId = extra?['peerId']?.toString() ??
@@ -140,6 +166,7 @@ class CallService {
 
     final cached = _cachedPeers[peerId] ??
         _cachedPeers[body['id']?.toString() ?? ''] ??
+        (extra?['peerIp'] != null ? _cachedPeers[extra!['peerIp'].toString()] : null) ??
         _cachedPeers.values.lastOrNull;
 
     final peerName = extra?['peerName']?.toString() ??

@@ -488,13 +488,20 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
                 CircleAvatar(
                   radius: 19,
                   backgroundColor: Colors.white.withValues(alpha: 0.2),
-                  child: Icon(
-                    widget.peer.platform == 'windows'
-                        ? Icons.laptop_windows_rounded
-                        : Icons.smartphone_rounded,
-                    color: Colors.white,
-                    size: 21,
-                  ),
+                  child: (widget.peer.avatarEmoji != null && widget.peer.avatarEmoji!.trim().isNotEmpty)
+                      ? Center(
+                          child: Text(
+                            widget.peer.avatarEmoji!.trim(),
+                            style: const TextStyle(fontSize: 19),
+                          ),
+                        )
+                      : Icon(
+                          widget.peer.platform == 'windows'
+                              ? Icons.laptop_windows_rounded
+                              : Icons.smartphone_rounded,
+                          color: Colors.white,
+                          size: 21,
+                        ),
                 ),
                 Positioned(
                   right: 0,
