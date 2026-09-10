@@ -496,18 +496,27 @@ class NearbyService extends ChangeNotifier {
   }
 
   String _resolveTargetIp(Peer peer) {
+    // 1. Check live _peers cache first by peer.id
+    if (_peers.containsKey(peer.id)) {
+      final liveIp = _peers[peer.id]!.ip.trim();
+      if (liveIp.isNotEmpty && liveIp != '0.0.0.0' && !liveIp.startsWith('127.')) {
+        return liveIp;
+      }
+    }
+    // 2. Check live _peers cache by peer.name
+    for (final p in _peers.values) {
+      if ((p.id == peer.id || p.name.toLowerCase() == peer.name.toLowerCase()) && p.ip.trim().isNotEmpty) {
+        final liveIp = p.ip.trim();
+        if (liveIp.isNotEmpty && liveIp != '0.0.0.0' && !liveIp.startsWith('127.')) {
+          return liveIp;
+        }
+      }
+    }
+    // 3. Fallback to peer.ip if valid
     if (peer.ip.trim().isNotEmpty && peer.ip != '0.0.0.0' && !peer.ip.startsWith('127.')) {
       return peer.ip.trim();
     }
-    if (_peers.containsKey(peer.id) && _peers[peer.id]!.ip.trim().isNotEmpty) {
-      return _peers[peer.id]!.ip.trim();
-    }
-    for (final p in _peers.values) {
-      if ((p.id == peer.id || p.name == peer.name) && p.ip.trim().isNotEmpty) {
-        return p.ip.trim();
-      }
-    }
-    if (peer.id.contains('.') && !peer.id.contains(':')) {
+    if (peer.id.contains('.') && !peer.id.contains(':') && peer.id != '0.0.0.0' && !peer.id.startsWith('127.')) {
       return peer.id.trim();
     }
     return peer.ip.trim();
@@ -1414,8 +1423,10 @@ class NearbyService extends ChangeNotifier {
   }
 
   Future<void> sendTypingStatus(Peer peer, bool isTyping) async {
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) return;
     try {
-      final socket = await Socket.connect(peer.ip, transferPort,
+      final socket = await Socket.connect(targetIp, transferPort,
           timeout: const Duration(milliseconds: 1500));
       socket.write('${jsonEncode({
             'type': 'typing',
@@ -1611,12 +1622,14 @@ class NearbyService extends ChangeNotifier {
     final resolvedMsgId = msgId ??
         '${deviceId}_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(99999)}';
 
+    final targetIp = _resolveTargetIp(peer);
+
     // 1. Direct TCP attempt if peer has IP and is not purely a mesh peer
-    if (!peer.isMeshPeer && peer.ip.isNotEmpty) {
-      for (var attempt = 1; attempt <= 2; attempt++) {
+    if (!peer.isMeshPeer && targetIp.isNotEmpty && targetIp != '0.0.0.0' && !targetIp.startsWith('127.')) {
+      for (var attempt = 1; attempt <= 3; attempt++) {
         Socket? socket;
         try {
-          socket = await Socket.connect(peer.ip, transferPort,
+          socket = await Socket.connect(targetIp, transferPort,
               timeout: const Duration(seconds: 4));
           socket.write('${jsonEncode({
                 'type': 'chat',
@@ -1630,11 +1643,11 @@ class NearbyService extends ChangeNotifier {
                 if (isForwarded) 'is_forwarded': true,
               })}\n');
           await socket.flush();
-          log('Direct message sent to ${peer.name}');
+          log('Direct message sent to ${peer.name} ($targetIp)');
           return true;
         } catch (e) {
-          log('Direct message attempt $attempt failed (${peer.ip}): $e');
-          if (attempt == 2) break;
+          log('Direct message attempt $attempt failed ($targetIp): $e');
+          if (attempt == 3) break;
           await Future.delayed(const Duration(milliseconds: 250));
         } finally {
           socket?.destroy();
@@ -1685,12 +1698,14 @@ class NearbyService extends ChangeNotifier {
     if (!await file.exists()) return false;
     final size = await file.length();
     final name = displayName ?? file.uri.pathSegments.last;
+    final targetIp = _resolveTargetIp(peer);
+    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) return false;
 
     for (var attempt = 1; attempt <= 2; attempt++) {
       Socket? socket;
       RandomAccessFile? raf;
       try {
-        socket = await Socket.connect(peer.ip, transferPort,
+        socket = await Socket.connect(targetIp, transferPort,
             timeout: const Duration(seconds: 10));
         socket.write('${jsonEncode({
               'type': 'file',

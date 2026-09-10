@@ -648,11 +648,12 @@ class WanWebRtcManager extends ChangeNotifier {
 
           for (final item in _directChatItems) {
             if (item.id == q.id) {
-              item.status = 'sent';
+              item.status = 'Sent';
+              await HistoryService().addItem(item);
               break;
             }
           }
-          saveChatHistory();
+          await saveChatHistory(peerId);
           notifyListeners();
           debugPrint('[WanWebRtc] Successfully flushed queued text message ${q.id}');
         } catch (e) {
@@ -793,9 +794,26 @@ class WanWebRtcManager extends ChangeNotifier {
       return;
     }
 
+    // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+        (_state == WanConnectionState.connecting ||
+         _state == WanConnectionState.signaling ||
+         _state == WanConnectionState.negotiating)) {
+      final watch = Stopwatch()..start();
+      while (watch.elapsedMilliseconds < 1500 &&
+             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+             _state != WanConnectionState.failed &&
+             _state != WanConnectionState.disconnected) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
     final isChannelOpen = _dataChannel != null &&
         _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
-        (overridePeerId == null || overridePeerId == _activePeerId);
+        (overridePeerId == null ||
+            overridePeerId == _activePeerId ||
+            overridePeerId == _activePeer?.id ||
+            _activePeerId == null);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing
@@ -856,7 +874,7 @@ class WanWebRtcManager extends ChangeNotifier {
       createdAt: DateTime.now(),
       kind: ChatKind.text,
       text: text,
-      status: 'sent',
+      status: 'Sent',
       replyToId: replyToId,
       replyToSender: replyToSender,
       replyToText: replyToText,
@@ -917,9 +935,26 @@ class WanWebRtcManager extends ChangeNotifier {
         : (_activePeerId ?? WanService().activeChatPeerId ?? '');
     if (effectivePeerId.isEmpty) return;
 
+    // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+        (_state == WanConnectionState.connecting ||
+         _state == WanConnectionState.signaling ||
+         _state == WanConnectionState.negotiating)) {
+      final watch = Stopwatch()..start();
+      while (watch.elapsedMilliseconds < 1500 &&
+             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+             _state != WanConnectionState.failed &&
+             _state != WanConnectionState.disconnected) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
     final isChannelOpen = _dataChannel != null &&
         _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
-        (overridePeerId == null || overridePeerId == _activePeerId);
+        (overridePeerId == null ||
+            overridePeerId == _activePeerId ||
+            overridePeerId == _activePeer?.id ||
+            _activePeerId == null);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing for File

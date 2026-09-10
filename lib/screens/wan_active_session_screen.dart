@@ -40,6 +40,11 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
     _rtcManager.addListener(_onRtcChanged);
     _scrollController.addListener(_onScroll);
     _loadHistory();
+    if (widget.peer.isOnline && !_rtcManager.isConnected) {
+      _rtcManager.connectToPeer(widget.peer).catchError((e) {
+        debugPrint('[WanActiveSession] auto connect error: $e');
+      });
+    }
   }
 
   Future<void> _loadHistory() async {

@@ -708,7 +708,7 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                             fontWeight: FontWeight.bold)),
                                   ],
                                 ),
-                              ] else if (item.status == 'Sending…') ...[
+                              ] else if (item.kind != ChatKind.text && (item.status == 'Sending…' || item.status == 'sending' || item.status == 'downloading')) ...[
                                 const SizedBox(
                                   width: 11,
                                   height: 11,
