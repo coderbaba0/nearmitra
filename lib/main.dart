@@ -50,18 +50,23 @@ Future<void> main() async {
   final identity = DeviceIdentity();
   final id = await identity.getId();
   final name = await identity.getName();
+  final emoji = await identity.getAvatarEmoji();
 
   // Run the app IMMEDIATELY — zero blocking on Firebase/Network so app opens instantly offline
   runApp(
     ProviderScope(
       child: FarmitraNearbyApp(
-        service: NearbyService(deviceId: id, deviceName: name),
+        service: NearbyService(
+          deviceId: id,
+          deviceName: name,
+          avatarEmoji: emoji,
+        ),
       ),
     ),
   );
 
   // Initialize Firebase in background without blocking UI or offline startup
-  _initFirebaseInBackground(name);
+  _initFirebaseInBackground(name, emoji);
 
   // Request critical permissions non-blocking after first frame renders
   WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -79,7 +84,7 @@ Future<void> main() async {
   });
 }
 
-void _initFirebaseInBackground(String customName) {
+void _initFirebaseInBackground(String customName, String customEmoji) {
   Future.microtask(() async {
     try {
       if (Firebase.apps.isEmpty) {
@@ -88,7 +93,10 @@ void _initFirebaseInBackground(String customName) {
         ).timeout(const Duration(seconds: 4));
         debugPrint('[Firebase] Initialized in background');
       }
-      await InternetDeviceIdentityService().init(customName: customName);
+      await InternetDeviceIdentityService().init(
+        customName: customName,
+        customEmoji: customEmoji,
+      );
       await FirebasePresenceService().init();
     } catch (e) {
       debugPrint('[Firebase] Background init skipped / offline: $e');

@@ -90,9 +90,15 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
         .where((p) => p.isAiHostAllowed || aiService.isPeerAllowed(p.id, p.ip))
         .length;
 
-    return Scaffold(
-      backgroundColor:
-          isDark ? const Color(0xFF0B1120) : const Color(0xFFF8FAFC),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor:
+            isDark ? const Color(0xFF0B1120) : const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
           'AI Fleet Devices',
@@ -823,6 +829,7 @@ class _AiFleetScreenState extends ConsumerState<AiFleetScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 

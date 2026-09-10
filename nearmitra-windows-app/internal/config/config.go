@@ -17,12 +17,13 @@ import (
 
 // AppConfig represents full persistent user preferences.
 type AppConfig struct {
-	DeviceID             string          `json:"device_id"`
-	DeviceName           string          `json:"device_name"`
-	ThemeMode            string          `json:"theme_mode"` // "dark", "light", "system"
-	SaveDirectory        string          `json:"save_directory"`
-	AutoStart            bool            `json:"auto_start"`
-	MinimizeTray         bool            `json:"minimize_tray"`
+	DeviceID             string                         `json:"device_id"`
+	DeviceName           string                         `json:"device_name"`
+	AvatarEmoji          string                         `json:"avatar_emoji"`
+	ThemeMode            string                         `json:"theme_mode"` // "dark", "light", "system"
+	SaveDirectory        string                         `json:"save_directory"`
+	AutoStart            bool                           `json:"auto_start"`
+	MinimizeTray         bool                           `json:"minimize_tray"`
 	NotificationsEnabled bool                           `json:"notifications_enabled"`
 	AIConfig             models.AIConfig                `json:"ai_config"`
 	StreamingSecurity    models.StreamingSecurityConfig `json:"streaming_security"`
@@ -56,6 +57,7 @@ func Get() *ConfigManager {
 		cm := &ConfigManager{
 			path: filepath.Join(dir, "config.json"),
 			config: AppConfig{
+				AvatarEmoji:          "💻",
 				ThemeMode:            "dark",
 				SaveDirectory:        downloadsDir,
 				AutoStart:            false,
@@ -100,6 +102,9 @@ func (cm *ConfigManager) load() {
 
 	if cm.config.DeviceID == "" {
 		cm.config.DeviceID = generateRandomID()
+	}
+	if cm.config.AvatarEmoji == "" {
+		cm.config.AvatarEmoji = "💻"
 	}
 	if cm.config.DeviceName == "" {
 		hostname, err := os.Hostname()
@@ -161,6 +166,36 @@ func (cm *ConfigManager) SetDeviceName(name string) {
 	cm.config.DeviceName = name
 	cm.saveUnsafe()
 	cm.mu.Unlock()
+}
+
+// SetDeviceIdentity updates local device name and avatar emoji.
+func (cm *ConfigManager) SetDeviceIdentity(name, emoji string) {
+	cm.mu.Lock()
+	if name != "" {
+		cm.config.DeviceName = name
+	}
+	if emoji != "" {
+		cm.config.AvatarEmoji = emoji
+	}
+	cm.saveUnsafe()
+	cm.mu.Unlock()
+}
+
+// ResetDeviceIdentity resets name and emoji to hardware defaults.
+func (cm *ConfigManager) ResetDeviceIdentity() (string, string) {
+	cm.mu.Lock()
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" {
+		cm.config.DeviceName = hostname
+	} else {
+		cm.config.DeviceName = "Windows-PC"
+	}
+	cm.config.AvatarEmoji = "💻"
+	cm.saveUnsafe()
+	name := cm.config.DeviceName
+	emoji := cm.config.AvatarEmoji
+	cm.mu.Unlock()
+	return name, emoji
 }
 
 // SetAIConfig updates AI provider parameters.

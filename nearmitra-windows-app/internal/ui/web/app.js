@@ -17,6 +17,8 @@ let appState = {
   searchQuery: "",
   peers: [],
   lanDevices: [],
+  wanState: null,
+  pinnedDevices: JSON.parse(localStorage.getItem("nearmitra_pinned_devices") || "[]"),
   activePeer: null,
   activeLANDevice: null,
   router: {
@@ -108,6 +110,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderMasterList();
   renderChatMessages();
   loadRecentFiles();
+  initWanWebRTC();
   showToast("NearMitra Windows 11 Engine Active • Subnet & P2P Mesh Online");
 });
 
@@ -233,30 +236,64 @@ function navigateBack() {
 }
 
 // -----------------------------------------------------------------------------
-// CONNECTION MODE SWITCHER (P2P Mesh vs LAN Subnet)
+// CONNECTION MODE SWITCHER (Nearby vs P2P vs Internet/WAN)
 // -----------------------------------------------------------------------------
 function setConnectionMode(mode) {
+  if (mode === "lan") mode = "nearby";
   appState.connectionMode = mode;
-  document.getElementById("btnModeP2P").classList.toggle("active", mode === "p2p");
-  document.getElementById("btnModeLAN").classList.toggle("active", mode === "lan");
 
-  if (mode === "lan") {
+  const btnNearby = document.getElementById("btnModeNearby") || document.getElementById("btnModeLAN");
+  const btnP2P = document.getElementById("btnModeP2P");
+  const btnWAN = document.getElementById("btnModeWAN");
+
+  if (btnNearby) btnNearby.classList.toggle("active", mode === "nearby");
+  if (btnP2P) btnP2P.classList.toggle("active", mode === "p2p");
+  if (btnWAN) btnWAN.classList.toggle("active", mode === "wan");
+
+  if (mode === "nearby") {
     scanLANSubnet();
+  } else if (mode === "wan") {
+    fetchWanState();
   }
+  renderMasterList();
+}
+
+function onMasterSearchInput(val) {
+  appState.searchQuery = (val || "").toLowerCase().trim();
+  const clearBtn = document.getElementById("masterSearchClearBtn");
+  if (clearBtn) {
+    clearBtn.style.display = appState.searchQuery ? "block" : "none";
+  }
+  renderMasterList();
+}
+
+function clearMasterSearch() {
+  const input = document.getElementById("masterSearchInput");
+  if (input) {
+    input.value = "";
+    input.focus();
+  }
+  const clearBtn = document.getElementById("masterSearchClearBtn");
+  if (clearBtn) {
+    clearBtn.style.display = "none";
+  }
+  appState.searchQuery = "";
   renderMasterList();
 }
 
 function filterSegment(seg) {
   appState.filterSegment = seg;
-  document.getElementById("segPillActive").classList.toggle("active", seg === "focused");
-  document.getElementById("segPillAll").classList.toggle("active", seg === "other");
-  document.getElementById("segPillIoT").classList.toggle("active", seg === "iot");
+  const pillActive = document.getElementById("segPillActive");
+  const pillAll = document.getElementById("segPillAll");
+  const pillIoT = document.getElementById("segPillIoT");
+  if (pillActive) pillActive.classList.toggle("active", seg === "focused");
+  if (pillAll) pillAll.classList.toggle("active", seg === "other");
+  if (pillIoT) pillIoT.classList.toggle("active", seg === "iot");
   renderMasterList();
 }
 
 function filterMasterList(query) {
-  appState.searchQuery = (query || "").toLowerCase();
-  renderMasterList();
+  onMasterSearchInput(query);
 }
 
 // -----------------------------------------------------------------------------
@@ -277,6 +314,7 @@ async function fetchState() {
   } catch (err) {
     // mock fallback
   }
+  fetchWanState();
 }
 
 function updateUIFromState(data) {
@@ -284,17 +322,40 @@ function updateUIFromState(data) {
     appState.localNodeName = data.local_device.name;
     appState.localNodeID = data.local_device.id;
     appState.localNodeIP = data.local_device.ip;
+    appState.localNodeAvatarEmoji = data.local_device.avatar_emoji || "💻";
+
+    const userAvatarEl = document.getElementById("userAvatarNodeDisplay");
+    if (userAvatarEl) {
+      userAvatarEl.innerText = appState.localNodeAvatarEmoji;
+    }
   }
 
   if (data.peers) {
-    appState.peers = data.peers;
-    document.getElementById("badgePeerCount").innerText = data.peers.length;
-    document.getElementById("modeP2PBadge").innerText = data.peers.length;
+    const seenMap = new Map();
+    (data.peers || []).forEach(p => {
+      const key = (p.ip || p.id || '').trim();
+      if (!key) return;
+      if (!seenMap.has(key)) {
+        seenMap.set(key, p);
+      } else {
+        const existing = seenMap.get(key);
+        if (!existing.is_online && p.is_online) {
+          seenMap.set(key, { ...existing, ...p });
+        }
+      }
+    });
+    const cleanPeers = Array.from(seenMap.values());
+    appState.peers = cleanPeers;
+    const peerBadge = document.getElementById("badgePeerCount");
+    if (peerBadge) peerBadge.innerText = cleanPeers.length;
+    const modeP2P = document.getElementById("modeP2PBadge");
+    if (modeP2P) modeP2P.innerText = cleanPeers.length;
   }
 
   if (data.lan_devices) {
     appState.lanDevices = data.lan_devices;
-    document.getElementById("modeLANBadge").innerText = data.lan_devices.length;
+    const modeNearby = document.getElementById("modeNearbyBadge") || document.getElementById("modeLANBadge");
+    if (modeNearby) modeNearby.innerText = data.lan_devices.length;
   }
 
   if (data.router) {
@@ -351,22 +412,74 @@ function updateUIFromState(data) {
     }
   }
 
-  // ── Merge server-persisted chat messages (incoming from remote device) ──
+  // ── Sync server-persisted chat messages (authoritative sync) ──
   if (data.chat_messages && Array.isArray(data.chat_messages)) {
-    const existingIDs = new Set(appState.messages.map(m => m.id));
-    let added = false;
-    data.chat_messages.forEach(serverMsg => {
-      // Only add messages NOT sent by us (mine===false means received from peer)
-      if (!serverMsg.mine && !existingIDs.has(serverMsg.id)) {
-        // Normalize timestamp
+    const serverMsgs = data.chat_messages;
+    const serverMsgMap = new Map();
+    serverMsgs.forEach(m => {
+      if (!m.id) {
+        m.id = "msg_" + (m.peer_id || m.peer_ip || "dev") + "_" + (m.at ? new Date(m.at).getTime() : Date.now());
+      }
+      serverMsgMap.set(m.id, m);
+    });
+
+    const currentMap = new Map();
+    (appState.messages || []).forEach(m => {
+      if (m && m.id) currentMap.set(m.id, m);
+    });
+
+    let changed = false;
+    let latestIncomingPeer = null;
+
+    // 1. Remove messages from local appState that were permanently cleared on server
+    const validMessages = (appState.messages || []).filter(localMsg => {
+      if (!localMsg || !localMsg.id) return false;
+      // Allow initial welcome message
+      if (localMsg.id === "msg_init_1") return true;
+      // Keep WAN or P2P WebRTC messages in local state
+      if (localMsg.is_wan || (localMsg.peer_ip && localMsg.peer_ip.startsWith("wan://")) || localMsg.peer_ip === "wan" || localMsg.is_p2p) return true;
+      // If message was synced from server and no longer exists on server, drop it
+      return serverMsgMap.has(localMsg.id);
+    });
+
+    if (validMessages.length !== (appState.messages || []).length) {
+      appState.messages = validMessages;
+      changed = true;
+    }
+
+    // 2. Add newly arrived server messages deterministically
+    serverMsgs.forEach(serverMsg => {
+      if (!currentMap.has(serverMsg.id)) {
         if (serverMsg.at) serverMsg.at = new Date(serverMsg.at);
         appState.messages.push(serverMsg);
-        existingIDs.add(serverMsg.id);
-        added = true;
+        currentMap.set(serverMsg.id, serverMsg);
+        changed = true;
+
+        if (!serverMsg.mine) {
+          latestIncomingPeer = {
+            id: serverMsg.peer_id || serverMsg.peer_ip,
+            name: serverMsg.sender,
+            ip: serverMsg.peer_ip
+          };
+        }
       }
     });
-    if (added) {
+
+    if (changed) {
       savePersistedMessages();
+
+      // If no active peer is selected, auto-select the sender so the chat conversation is visible
+      if (!appState.activePeer && latestIncomingPeer) {
+        const foundPeer = (appState.peers || []).find(p => (p.id && p.id === latestIncomingPeer.id) || (p.ip && p.ip === latestIncomingPeer.ip));
+        if (foundPeer) {
+          appState.activePeer = foundPeer;
+          updateDetailViewForPeer(foundPeer);
+        } else if (latestIncomingPeer.ip || latestIncomingPeer.id) {
+          appState.activePeer = latestIncomingPeer;
+          updateDetailViewForPeer(latestIncomingPeer);
+        }
+      }
+
       renderChatMessages();
     }
   }
@@ -388,23 +501,138 @@ function updateUIFromState(data) {
 }
 
 // -----------------------------------------------------------------------------
-// MASTER LIST RENDERING (LAN & P2P Parity)
+// AVATAR & INITIALS HELPER
+// -----------------------------------------------------------------------------
+function renderAvatarCircle(name, avatarEmoji, isNearMitra, isRouter, deviceType) {
+  if (isRouter || deviceType === "router") {
+    return `
+      <div class="card-avatar-circle bg-purple">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
+          <rect x="2" y="2" width="20" height="8" rx="2"/>
+          <rect x="2" y="14" width="20" height="8" rx="2"/>
+        </svg>
+      </div>`;
+  }
+
+  let emoji = (avatarEmoji || "").trim();
+  if (!emoji && name) {
+    // Check if name has leading or embedded emoji
+    const emojiRegex = /(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u;
+    const match = name.match(emojiRegex);
+    if (match) {
+      emoji = match[0];
+    }
+  }
+
+  let iconBg = isNearMitra ? "bg-emerald" : "bg-blue";
+  if (deviceType === "printer") iconBg = "bg-amber";
+  if (deviceType === "camera") iconBg = "bg-emerald";
+
+  if (emoji) {
+    return `<div class="card-avatar-circle ${iconBg} card-avatar-emoji">${emoji}</div>`;
+  }
+
+  if (isNearMitra || name) {
+    const initials = getInitials(name);
+    return `<div class="card-avatar-circle ${iconBg}">${initials}</div>`;
+  }
+
+  return `
+    <div class="card-avatar-circle ${iconBg}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
+        <rect x="2" y="2" width="20" height="8" rx="2"/>
+        <rect x="2" y="14" width="20" height="8" rx="2"/>
+      </svg>
+    </div>`;
+}
+
+// -----------------------------------------------------------------------------
+// PINNED DEVICES HELPER FUNCTIONS
+// -----------------------------------------------------------------------------
+function isDevicePinned(key) {
+  if (!key) return false;
+  const list = appState.pinnedDevices || [];
+  return list.includes(key);
+}
+
+function togglePinDevice(key, e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  if (!key) return;
+  if (!Array.isArray(appState.pinnedDevices)) {
+    appState.pinnedDevices = [];
+  }
+  const idx = appState.pinnedDevices.indexOf(key);
+  if (idx >= 0) {
+    appState.pinnedDevices.splice(idx, 1);
+    showToast("Device unpinned 📌");
+  } else {
+    appState.pinnedDevices.push(key);
+    showToast("Device pinned to top! 📌");
+  }
+  try {
+    localStorage.setItem("nearmitra_pinned_devices", JSON.stringify(appState.pinnedDevices));
+  } catch (err) {}
+  renderMasterList();
+}
+
+// -----------------------------------------------------------------------------
+// MASTER LIST RENDERING (Nearby, P2P, and Internet/WAN)
 // -----------------------------------------------------------------------------
 function renderMasterList() {
   const container = document.getElementById("masterItemsList");
   if (!container) return;
 
-  const mode = appState.connectionMode;
-  const q = appState.searchQuery;
-  const seg = appState.filterSegment;
+  const mode = appState.connectionMode || "nearby";
+  const q = (appState.searchQuery || "").toLowerCase().trim();
+  const seg = appState.filterSegment || "focused";
 
   let html = "";
 
+  if (mode === "wan") {
+    renderWANView();
+    return;
+  }
+
   if (mode === "p2p") {
-    let peers = appState.peers || [];
+    let rawPeers = [...(appState.peers || [])];
+    
+    // Strict deduplication by IP and ID
+    const seenMap = new Map();
+    rawPeers.forEach(p => {
+      const key = (p.ip || p.id || '').trim();
+      if (!key) return;
+      if (!seenMap.has(key)) {
+        seenMap.set(key, p);
+      } else {
+        const existing = seenMap.get(key);
+        if (!existing.is_online && p.is_online) {
+          seenMap.set(key, { ...existing, ...p });
+        }
+      }
+    });
+    let peers = Array.from(seenMap.values());
+
     if (q) {
       peers = peers.filter(p => (p.name || '').toLowerCase().includes(q) || (p.ip || '').includes(q));
     }
+
+    // Stable deterministic sort:
+    // 1. Pinned devices first
+    // 2. Online peers second
+    // 3. Alphabetical / IP ascending
+    peers.sort((a, b) => {
+      const aPinned = (isDevicePinned(a.id) || isDevicePinned(a.ip) || isDevicePinned(a.name)) ? 1 : 0;
+      const bPinned = (isDevicePinned(b.id) || isDevicePinned(b.ip) || isDevicePinned(b.name)) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+
+      const aOnline = a.is_online ? 1 : 0;
+      const bOnline = b.is_online ? 1 : 0;
+      if (aOnline !== bOnline) return bOnline - aOnline;
+      return (a.name || '').localeCompare(b.name || '');
+    });
 
     html += `
       <div class="list-group-header">
@@ -421,17 +649,32 @@ function renderMasterList() {
         </div>
       `;
     } else {
-      peers.forEach((p, idx) => {
-        const initials = getInitials(p.name);
+      peers.forEach((p) => {
         const isActive = appState.activePeer && (appState.activePeer.id === p.id || appState.activePeer.ip === p.ip);
         const isTyping = (appState.typingPeers || []).some(id => id === p.id || id === p.ip || id === p.name);
+        const avatarHTML = renderAvatarCircle(p.name, p.avatar_emoji, true, false, "phone");
+        const safeId = escapeHTML(p.id || p.ip);
+        const pinKey = escapeHTML(p.ip || p.id || p.name);
+        const isPinned = isDevicePinned(p.id) || isDevicePinned(p.ip) || isDevicePinned(p.name);
+
         html += `
-          <div class="master-item-card ${isActive ? 'active' : ''}" onclick="selectPeer(${idx})">
-            <div class="card-avatar-circle bg-emerald">${initials}</div>
+          <div class="master-item-card ${isActive ? 'active' : ''}" onclick="selectPeerByIdOrIP('${safeId}')">
+            ${avatarHTML}
             <div class="card-content">
               <div class="card-top-row">
-                <span class="card-title">${escapeHTML(p.name)}</span>
-                <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : 'Live'}</span>
+                <span class="card-title">
+                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
+                  ${escapeHTML(p.name)}
+                </span>
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : 'Live'}</span>
+                  <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
+                    <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
+                      <path d="M12 17v5"></path>
+                      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div class="card-sub-row">
                 <span class="card-snippet highlight">${isTyping ? '💬 Typing message...' : (p.ip || '192.168.1.55') + ' • 50 MB/s Ready'}</span>
@@ -484,15 +727,46 @@ function renderMasterList() {
     }
 
   } else {
-    // LAN SUB-NET MODE (with real peer names & direct avatars)
-    let lanDevs = appState.lanDevices || [];
+    // NEARBY / LAN SUB-NET MODE (with stable sorting, search filter, avatar emojis, and pin-to-top)
+    let lanDevs = [...(appState.lanDevices || [])];
     if (q) {
-      lanDevs = lanDevs.filter(d => (d.hostname || '').toLowerCase().includes(q) || (d.ip || '').includes(q));
+      lanDevs = lanDevs.filter(d => {
+        const matchedPeer = (appState.peers || []).find(p => p.ip === d.ip);
+        const displayName = matchedPeer ? matchedPeer.name : (d.hostname || d.ip);
+        return displayName.toLowerCase().includes(q) || (d.ip || '').includes(q) || (d.device_type || '').toLowerCase().includes(q);
+      });
     }
+
+    // Stable deterministic sort:
+    // 1. Pinned devices first
+    // 2. NearMitra P2P Ready first
+    // 3. Gateway (.1) second
+    // 4. Ascending IPv4 numeric order
+    lanDevs.sort((a, b) => {
+      const aPinned = (isDevicePinned(a.ip) || isDevicePinned(a.hostname)) ? 1 : 0;
+      const bPinned = (isDevicePinned(b.ip) || isDevicePinned(b.hostname)) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+
+      const aNear = (appState.peers || []).some(p => p.ip === a.ip) || a.is_nearmitra ? 1 : 0;
+      const bNear = (appState.peers || []).some(p => p.ip === b.ip) || b.is_nearmitra ? 1 : 0;
+      if (aNear !== bNear) return bNear - aNear;
+
+      const aRouter = a.device_type === "router" || (a.ip || '').endsWith(".1") ? 1 : 0;
+      const bRouter = b.device_type === "router" || (b.ip || '').endsWith(".1") ? 1 : 0;
+      if (aRouter !== bRouter) return bRouter - aRouter;
+
+      const ipA = (a.ip || "0.0.0.0").split(".").map(Number);
+      const ipB = (b.ip || "0.0.0.0").split(".").map(Number);
+      for (let i = 0; i < 4; i++) {
+        const diff = (ipA[i] || 0) - (ipB[i] || 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    });
 
     html += `
       <div class="list-group-header">
-        <span>LAN NETWORK HOSTS (${lanDevs.length})</span>
+        <span>NEARBY HOSTS (${lanDevs.length})</span>
         <button class="mini-tool-btn" onclick="scanLANSubnet()" title="Re-Scan Subnet">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
         </button>
@@ -507,42 +781,46 @@ function renderMasterList() {
         </div>
       `;
     } else {
-      lanDevs.forEach((dev, idx) => {
+      lanDevs.forEach((dev) => {
         const matchedPeer = (appState.peers || []).find(p => p.ip === dev.ip);
         const displayName = matchedPeer ? matchedPeer.name : (dev.hostname || dev.ip);
         const isNearMitra = dev.is_nearmitra || !!matchedPeer;
-        const initials = getInitials(displayName);
+        const avatarEmoji = (matchedPeer && matchedPeer.avatar_emoji) ? matchedPeer.avatar_emoji : dev.avatar_emoji;
+        const isRouter = dev.device_type === "router" || dev.ip.endsWith(".1");
 
-        let iconBg = isNearMitra ? "bg-emerald" : "bg-blue";
         let devBadge = isNearMitra ? "P2P Ready" : "LAN Host";
-
-        if (dev.device_type === "router" || dev.ip.endsWith(".1")) {
-          iconBg = "bg-purple";
+        if (isRouter) {
           devBadge = "Gateway";
         } else if (dev.device_type === "printer") {
-          iconBg = "bg-amber";
           devBadge = "Printer";
         } else if (dev.device_type === "camera") {
-          iconBg = "bg-emerald";
           devBadge = "CCTV";
         }
 
+        const avatarHTML = renderAvatarCircle(displayName, avatarEmoji, isNearMitra, isRouter, dev.device_type);
         const isActive = appState.activeLANDevice && appState.activeLANDevice.ip === dev.ip;
+        const safeIp = escapeHTML(dev.ip);
+        const pinKey = escapeHTML(dev.ip || displayName);
+        const isPinned = isDevicePinned(dev.ip) || isDevicePinned(displayName);
 
         html += `
-          <div class="master-item-card ${isActive ? 'active' : ''}" onclick="selectLANDevice(${idx})">
-            <div class="card-avatar-circle ${iconBg}">
-              ${isNearMitra ? initials : `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
-                  <rect x="2" y="2" width="20" height="8" rx="2"/>
-                  <rect x="2" y="14" width="20" height="8" rx="2"/>
-                </svg>
-              `}
-            </div>
+          <div class="master-item-card ${isActive ? 'active' : ''}" onclick="selectLANDeviceByIP('${safeIp}')">
+            ${avatarHTML}
             <div class="card-content">
               <div class="card-top-row">
-                <span class="card-title">${escapeHTML(displayName)}</span>
-                <span class="card-time">${dev.ping_ms || 2}ms</span>
+                <span class="card-title">
+                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
+                  ${escapeHTML(displayName)}
+                </span>
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <span class="card-time">${dev.ping_ms || 2}ms</span>
+                  <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
+                    <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
+                      <path d="M12 17v5"></path>
+                      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div class="card-sub-row">
                 <span class="card-snippet">${dev.ip} • ${isNearMitra ? '50 MB/s Ready' : 'TCP Port ' + ((dev.open_ports || [])[0] || '80')}</span>
@@ -558,22 +836,29 @@ function renderMasterList() {
   container.innerHTML = html;
 }
 
-// Clicking a peer or LAN device sets activePeer and immediately opens Chat for ONLY that peer
-function selectPeer(idx) {
-  if (appState.peers && appState.peers[idx]) {
-    appState.activePeer = appState.peers[idx];
-    updateDetailViewForPeer(appState.activePeer);
+// Select peer by ID or IP
+function selectPeerByIdOrIP(idOrIP) {
+  const peer = (appState.peers || []).find(p => p.id === idOrIP || p.ip === idOrIP);
+  if (peer) {
+    appState.activePeer = peer;
+    updateDetailViewForPeer(peer);
     renderMasterList();
     renderChatMessages();
     switchTab('chat', true);
   }
 }
 
-function selectLANDevice(idx) {
-  if (appState.lanDevices && appState.lanDevices[idx]) {
-    const dev = appState.lanDevices[idx];
-    appState.activeLANDevice = dev;
+function selectPeer(idx) {
+  if (appState.peers && appState.peers[idx]) {
+    selectPeerByIdOrIP(appState.peers[idx].id || appState.peers[idx].ip);
+  }
+}
 
+// Select LAN device by IP
+function selectLANDeviceByIP(ip) {
+  const dev = (appState.lanDevices || []).find(d => d.ip === ip);
+  if (dev) {
+    appState.activeLANDevice = dev;
     const matchedPeer = (appState.peers || []).find(p => p.ip === dev.ip);
     if (matchedPeer) {
       appState.activePeer = matchedPeer;
@@ -593,30 +878,46 @@ function selectLANDevice(idx) {
   }
 }
 
+function selectLANDevice(idx) {
+  if (appState.lanDevices && appState.lanDevices[idx]) {
+    selectLANDeviceByIP(appState.lanDevices[idx].ip);
+  }
+}
+
 function updateDetailViewForPeer(peer) {
-  const avatarInitials = getInitials(peer.name);
+  let emoji = (peer.avatar_emoji || "").trim();
+  if (!emoji && peer.name) {
+    const emojiRegex = /(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u;
+    const match = peer.name.match(emojiRegex);
+    if (match) emoji = match[0];
+  }
+  const avatarDisplay = emoji || getInitials(peer.name);
+  const isWan = !!peer.is_wan;
 
   // Radar / Hero
   document.getElementById("heroPeerName").innerText = peer.name;
-  document.getElementById("heroPeerStatus").innerText = "Online • 4ms Latency";
-  document.getElementById("heroPeerType").innerText = "NearMitra Direct P2P";
-  document.getElementById("heroPeerIP").innerText = peer.ip || "192.168.1.55";
+  document.getElementById("heroPeerStatus").innerText = isWan ? (peer.is_online ? "Online" : "Offline") : "Online • 4ms Latency";
+  document.getElementById("heroPeerType").innerText = isWan ? "NearMitra Internet WAN" : "NearMitra Direct P2P";
+  document.getElementById("heroPeerIP").innerText = isWan ? "Internet Peer" : (peer.ip || "192.168.1.55");
+  const heroAvatar = document.getElementById("heroPeerAvatar");
+  if (heroAvatar) heroAvatar.innerText = avatarDisplay;
 
   // Chat Header
   document.getElementById("chatHeaderTitle").innerText = peer.name;
-  document.getElementById("chatHeaderInitials").innerText = avatarInitials;
-  document.getElementById("chatHeaderStatus").innerText = `Encrypted Direct TCP (${peer.ip || '192.168.1.55'})`;
+  const chatInitials = document.getElementById("chatHeaderInitials");
+  if (chatInitials) chatInitials.innerText = avatarDisplay;
+  document.getElementById("chatHeaderStatus").innerText = isWan ? (peer.is_online ? '● Online' : '● Offline') : `Encrypted Direct TCP (${peer.ip || '192.168.1.55'})`;
   const dropLabel = document.getElementById("dropTargetLabel");
-  if (dropLabel) dropLabel.innerText = `Transfer to ${peer.name} (${peer.ip})`;
+  if (dropLabel) dropLabel.innerText = isWan ? `Transfer to ${peer.name} (WAN Mesh)` : `Transfer to ${peer.name} (${peer.ip})`;
 
   // Voice & Video Call
   document.getElementById("callPeerTitle").innerText = peer.name;
   const callInitials = document.getElementById("callAvatarInitials");
-  if (callInitials) callInitials.innerText = avatarInitials;
+  if (callInitials) callInitials.innerText = avatarDisplay;
   const remoteVidName = document.getElementById("remotePeerVideoName");
   if (remoteVidName) remoteVidName.innerText = peer.name;
   const remoteVidInitials = document.getElementById("remoteAvatarInitials");
-  if (remoteVidInitials) remoteVidInitials.innerText = avatarInitials;
+  if (remoteVidInitials) remoteVidInitials.innerText = avatarDisplay;
 }
 
 function updateDetailViewForLAN(dev) {
@@ -658,118 +959,47 @@ function refreshDiscoveryState() {
 // -----------------------------------------------------------------------------
 // P2P ENCRYPTED CHAT (Targeted to Selected Peer + Persistent + Clear Chat)
 // -----------------------------------------------------------------------------
-function handleChatDragOver(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const overlay = document.getElementById("chatDropOverlay");
-  if (overlay) overlay.classList.add("active");
-}
-
-function handleChatDragLeave(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const overlay = document.getElementById("chatDropOverlay");
-  if (overlay && e.relatedTarget && !overlay.contains(e.relatedTarget)) {
-    overlay.classList.remove("active");
-  }
-}
-
-async function handleChatDrop(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const overlay = document.getElementById("chatDropOverlay");
-  if (overlay) overlay.classList.remove("active");
-
-  const files = e.dataTransfer ? e.dataTransfer.files : null;
-  if (!files || files.length === 0) return;
-
-  const targetPeer = appState.activePeer;
-  const targetIP = targetPeer ? targetPeer.ip : (appState.peers && appState.peers[0] ? appState.peers[0].ip : "");
-
-  for (let i = 0; i < files.length; i++) {
-    await uploadAndSendDroppedFile(files[i], targetIP);
-  }
-}
-
-async function uploadAndSendDroppedFile(file, peerIP) {
-  const fileId = "msg_file_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
-  const sizeFormatted = formatBytes(file.size);
-
-  const localMsg = {
-    id: fileId,
-    peer_ip: peerIP,
-    peer_id: appState.activePeer ? appState.activePeer.id : "",
-    sender: "Windows Host",
-    text: `Sent file: ${file.name} (${sizeFormatted})`,
-    mine: true,
-    at: new Date(),
-    status: "Sending...",
-    attachment: {
-      name: file.name,
-      size: sizeFormatted
-    }
-  };
-
-  appState.messages.push(localMsg);
-  savePersistedMessages();
-  renderChatMessages();
-
-  const formData = new FormData();
-  formData.append("file", file);
-
-  try {
-    const res = await fetch(`/api/send-file-upload?ip=${encodeURIComponent(peerIP || "")}`, {
-      method: "POST",
-      body: formData
-    });
-    if (res.ok) {
-      localMsg.status = "Delivered";
-      savePersistedMessages();
-      renderChatMessages();
-      showToast(`Transferred "${file.name}" to peer!`);
-    } else {
-      localMsg.status = "Failed";
-      renderChatMessages();
-      showToast(`Transfer failed for "${file.name}"`);
-    }
-  } catch (err) {
-    localMsg.status = "Failed";
-    renderChatMessages();
-    showToast(`Transfer error: ${err.message}`);
-  }
-}
 
 function renderChatMessages() {
   const container = document.getElementById("chatStream");
   if (!container) return;
 
-  const activeIP = appState.activePeer ? appState.activePeer.ip : "";
-  const activeID = appState.activePeer ? appState.activePeer.id : "";
-  const activeName = appState.activePeer ? appState.activePeer.name : "";
+  const activePeer = appState.activePeer;
+  const activeIP = activePeer ? activePeer.ip : "";
+  const activeID = activePeer ? activePeer.id : "";
+  const activeName = activePeer ? activePeer.name : "";
+  const isWanPeer = !!(activePeer && activePeer.is_wan);
 
   let html = `
     <div class="chat-drop-overlay" id="chatDropOverlay">
       <div class="drop-overlay-box">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
         <h3>Drop files to send directly</h3>
-        <p id="dropTargetLabel">50+ MB/s Socket Transfer to ${activeName || 'Active Peer'}</p>
+        <p id="dropTargetLabel">${isWanPeer ? 'WAN Mesh Encrypted Transfer to ' : '50+ MB/s Socket Transfer to '}${activeName || 'Active Peer'}</p>
       </div>
     </div>
-    <div class="chat-date-divider"><span>Today</span></div>
+    <div class="chat-date-divider"><span>${isWanPeer ? 'WAN Mesh Chat' : 'Today'}</span></div>
   `;
 
-  // Filter messages for ONLY the active selected peer
-  const targetMessages = appState.messages.filter(m => {
-    if (!activeIP && !activeID) return true;
-    if (!m.peer_ip && !m.peer_id) return true;
-    return m.peer_ip === activeIP || m.peer_id === activeID || m.sender === activeName;
+  // Filter messages for ONLY the active selected peer (strictly separating WAN from LAN)
+  const targetMessages = (appState.messages || []).filter(m => {
+    const isWanMsg = m.is_wan === true || (m.peer_ip && m.peer_ip.startsWith('wan://')) || (m.peer_id && m.peer_id.startsWith('wan://'));
+    if (isWanPeer) {
+      if (!isWanMsg) return false;
+      return m.peer_id === activeID || m.peer_ip === 'wan://' + activeID || m.peer_ip === activeIP;
+    } else {
+      if (isWanMsg) return false;
+      return (activeIP && m.peer_ip === activeIP) ||
+             (activeID && m.peer_id === activeID) ||
+             (activeIP && m.peer_id === 'manual_' + activeIP);
+    }
   });
 
   if (targetMessages.length === 0) {
     html += `
       <div style="text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 40px;">
         <p style="margin-bottom: 6px;">No message history with ${escapeHTML(activeName || 'this peer')}.</p>
-        <span style="font-size: 11px; opacity: 0.7;">End-to-end encrypted direct socket stream</span>
+        <span style="font-size: 11px; opacity: 0.7;">${isWanPeer ? 'End-to-end encrypted WAN Mesh chat' : 'End-to-end encrypted direct socket stream'}</span>
       </div>
     `;
   }
@@ -794,16 +1024,30 @@ function renderChatMessages() {
 
     let attachmentHTML = "";
     if (m.attachment) {
+      const isSending = m.attachment.status === "Sending" || m.status === "Sending" || (m.attachment.progress !== undefined && m.attachment.progress < 100 && m.attachment.status !== "Sent" && m.attachment.status !== "Delivered");
+      const isDownloading = m.attachment.status === "Downloading" || m.status === "Downloading";
+      const isProgressing = isSending || isDownloading;
+      const progress = m.attachment.progress !== undefined ? m.attachment.progress : (isProgressing ? 50 : 100);
+      const isFailed = m.attachment.status === "Failed" || m.status === "Failed";
+      const isMine = m.mine;
+
       attachmentHTML = `
-        <div class="msg-attachment-card" onclick="openSaveDirectory()">
+        <div class="msg-attachment-card" id="att_${m.id}" onclick="handleAttachmentClick('${m.id}')" title="Click to open or save">
           <div class="attachment-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
-          <div class="attachment-info">
-            <span class="attachment-name">${escapeHTML(m.attachment.name)}</span>
-            <span class="attachment-meta">${m.attachment.size} • Verified</span>
+          <div class="attachment-info" style="flex:1; min-width:0;">
+            <span class="attachment-name">${escapeHTML(m.attachment.name || 'File')}</span>
+            <span class="attachment-meta" id="att_meta_${m.id}">
+              ${m.attachment.size || ''} • ${isProgressing ? `${isSending ? 'Sending' : 'Downloading'} (${progress}%)` : (isFailed ? 'Failed ✕' : (isMine ? 'Sent ✓' : 'Received ✓'))}
+            </span>
+            ${isProgressing ? `
+              <div class="wan-progress-track" style="margin-top:6px; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; overflow:hidden;">
+                <div class="wan-progress-fill" id="att_prog_${m.id}" style="width:${progress}%; height:100%; background:var(--primary-emerald); transition:width 0.2s linear;"></div>
+              </div>
+            ` : ''}
           </div>
-          <button class="attachment-action-btn" title="Open File">
+          <button class="attachment-action-btn" title="Open or Save file">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></svg>
           </button>
         </div>
@@ -870,17 +1114,18 @@ function sendChatMessage() {
   const targetPeer = appState.activePeer;
   const targetIP = targetPeer ? targetPeer.ip : "";
   const targetID = targetPeer ? targetPeer.id : "";
-  const targetName = targetPeer ? targetPeer.name : "";
+  const isWanPeer = !!(targetPeer && targetPeer.is_wan);
 
   const msg = {
     id: "msg_" + Date.now(),
     peer_id: targetID,
-    peer_ip: targetIP,
+    peer_ip: isWanPeer ? ("wan://" + targetID) : targetIP,
     sender: "Windows Host",
     text: text,
     mine: true,
     at: new Date(),
     status: "Sent",
+    is_wan: isWanPeer,
     reactions: {}
   };
 
@@ -892,12 +1137,16 @@ function sendChatMessage() {
   // Hide user typing
   handleUserTyping(false);
 
-  // Exclusively send to target peer IP
-  fetch("/api/chat/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(msg)
-  });
+  if (isWanPeer) {
+    sendWanChatMessage(targetID, text, msg.id);
+  } else if (targetIP) {
+    // Exclusively send to target peer IP over local LAN
+    fetch("/api/chat/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(msg)
+    });
+  }
 }
 
 function sendPresetText(text) {
@@ -932,28 +1181,46 @@ function toggleMessageReaction(msgId, emoji) {
   renderChatMessages();
 }
 
-function clearActivePeerChat() {
+async function clearActivePeerChat() {
   const targetPeer = appState.activePeer;
   if (!targetPeer) return;
 
-  const activeIP = targetPeer.ip;
-  const activeID = targetPeer.id;
-  const activeName = targetPeer.name;
+  const activeIP = targetPeer.ip || "";
+  const activeID = targetPeer.id || "";
+  const activeName = targetPeer.name || "";
 
   if (!confirm(`Are you sure you want to clean chat history for ${activeName || 'this device'}?`)) {
     return;
   }
 
-  appState.messages = appState.messages.filter(m => {
-    if (activeIP && m.peer_ip === activeIP) return false;
-    if (activeID && m.peer_id === activeID) return false;
+  // 1. Filter local in-memory messages immediately
+  appState.messages = (appState.messages || []).filter(m => {
+    if (activeIP && (m.peer_ip === activeIP || m.peer_id === activeIP)) return false;
+    if (activeID && (m.peer_id === activeID || m.peer_ip === activeID)) return false;
     if (activeName && m.sender === activeName) return false;
     return true;
   });
 
+  // 2. Persist to localStorage and re-render UI
   savePersistedMessages();
   renderChatMessages();
-  showToast(`Chat history cleaned for ${activeName}`);
+
+  // 3. Notify backend server to permanently purge from chat_history.json
+  try {
+    await fetch("/api/chat/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peer_id: activeID,
+        peer_ip: activeIP,
+        sender: activeName
+      })
+    });
+  } catch (e) {
+    console.error("Failed to clear chat on server", e);
+  }
+
+  showToast(`Chat history cleaned for ${activeName || 'device'}`);
 }
 
 // -----------------------------------------------------------------------------
@@ -1084,7 +1351,7 @@ function renderRecentCalls() {
 }
 
 // -----------------------------------------------------------------------------
-// CHAT DRAG & DROP (Targeted to Selected Peer)
+// CHAT DRAG & DROP (Strictly routes to WAN WebRTC or LAN Socket)
 // -----------------------------------------------------------------------------
 function handleChatDragOver(e) {
   e.preventDefault();
@@ -1099,7 +1366,7 @@ function handleChatDragLeave(e) {
   }
 }
 
-function handleChatDrop(e) {
+async function handleChatDrop(e) {
   e.preventDefault();
   e.stopPropagation();
   const overlay = document.getElementById("chatDropOverlay");
@@ -1112,23 +1379,31 @@ function handleChatDrop(e) {
   }
 
   const targetPeer = appState.activePeer;
-  if (!targetPeer || !targetPeer.ip) {
-    showToast("[Warning] Select a peer first before sending files.");
+  if (!targetPeer) {
+    showToast("Please select a device first");
     return;
   }
 
+  // 1. WAN PEER: Stream directly over WebRTC Data Channel to remote mobile / peer
+  if (targetPeer.is_wan) {
+    for (let i = 0; i < files.length; i++) {
+      await streamFileOverWan(files[i], targetPeer.id, targetPeer.name);
+    }
+    return;
+  }
+
+  // 2. LOCAL LAN PEER: Upload over local HTTP/TCP socket
   const targetIP = targetPeer.ip;
   const targetID = targetPeer.id;
   const targetName = targetPeer.name || "Peer";
 
-  // Send each dropped file via multipart upload
   Array.from(files).forEach(file => {
     const formData = new FormData();
     formData.append("file", file, file.name);
 
     showToast(`[Send] Sending "${file.name}" to ${targetName}...`);
 
-    fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP)}`, {
+    fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP || "")}`, {
       method: "POST",
       body: formData
     })
@@ -1146,9 +1421,12 @@ function handleChatDrop(e) {
             attachment: {
               name: data.file,
               size: data.size ? formatFileSize(data.size) : "—",
-              type: "file"
+              type: "file",
+              status: "Delivered",
+              progress: 100
             },
-            status: "Sent",
+            status: "Delivered",
+            is_wan: false,
             reactions: {}
           };
           appState.messages.push(fileMsg);
@@ -1172,33 +1450,69 @@ function handleUserTyping(isTyping = true) {
   if (!targetPeer) return;
   const targetIP = targetPeer.ip || "";
   const targetID = targetPeer.id || "";
+  const isWanPeer = !!targetPeer.is_wan;
+
+  // Send over WAN DataChannel if WAN peer
+  if (isWanPeer && wanDataChannel && wanDataChannel.readyState === "open") {
+    try {
+      wanDataChannel.send(JSON.stringify({
+        id: "ctrl_" + Date.now(),
+        type: "control",
+        timestamp: Date.now(),
+        payload: {
+          action: "typing",
+          isTyping: isTyping,
+          senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
+        }
+      }));
+    } catch (_) {}
+  }
 
   if (isTyping) {
     if (!appState._userTypingSent) {
       appState._userTypingSent = true;
-      fetch("/api/chat/typing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: true })
-      }).catch(() => { });
+      if (!isWanPeer && targetIP) {
+        fetch("/api/chat/typing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: true })
+        }).catch(() => { });
+      }
     }
 
     typingTimeout = setTimeout(() => {
       appState._userTypingSent = false;
-      fetch("/api/chat/typing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
-      }).catch(() => { });
+      if (isWanPeer && wanDataChannel && wanDataChannel.readyState === "open") {
+        try {
+          wanDataChannel.send(JSON.stringify({
+            id: "ctrl_" + Date.now(),
+            type: "control",
+            timestamp: Date.now(),
+            payload: {
+              action: "typing",
+              isTyping: false,
+              senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
+            }
+          }));
+        } catch (_) {}
+      } else if (!isWanPeer && targetIP) {
+        fetch("/api/chat/typing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
+        }).catch(() => { });
+      }
     }, 2800);
   } else {
     if (appState._userTypingSent) {
       appState._userTypingSent = false;
-      fetch("/api/chat/typing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
-      }).catch(() => { });
+      if (!isWanPeer && targetIP) {
+        fetch("/api/chat/typing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
+        }).catch(() => { });
+      }
     }
   }
 }
@@ -1263,6 +1577,48 @@ function closeAttachModal() {
 
 function selectAttachCategory(category) {
   closeAttachModal();
+  const targetPeer = appState.activePeer;
+  if (!targetPeer) {
+    showToast("Please select a device first");
+    return;
+  }
+
+  // If WAN Peer: Use direct HTML file / folder picker to stream file over WebRTC DataChannel
+  if (targetPeer.is_wan) {
+    let fileInput = document.getElementById("wanFileInput");
+    if (!fileInput) {
+      fileInput = document.createElement("input");
+      fileInput.id = "wanFileInput";
+      fileInput.style.display = "none";
+      document.body.appendChild(fileInput);
+    }
+    if (category === "folder") {
+      fileInput.type = "file";
+      fileInput.setAttribute("webkitdirectory", "");
+      fileInput.setAttribute("directory", "");
+      fileInput.removeAttribute("accept");
+    } else {
+      fileInput.type = "file";
+      fileInput.removeAttribute("webkitdirectory");
+      fileInput.removeAttribute("directory");
+      if (category === "image") fileInput.accept = "image/*";
+      else if (category === "video") fileInput.accept = "video/*";
+      else if (category === "audio") fileInput.accept = "audio/*";
+      else fileInput.removeAttribute("accept");
+    }
+
+    fileInput.onchange = async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        for (let i = 0; i < e.target.files.length; i++) {
+          await streamFileOverWan(e.target.files[i], targetPeer.id, targetPeer.name);
+        }
+        fileInput.value = "";
+      }
+    };
+    fileInput.click();
+    return;
+  }
+
   if (category === 'folder') {
     triggerSendFolder();
   } else {
@@ -5577,6 +5933,200 @@ function submitManualPair() {
 }
 
 // -----------------------------------------------------------------------------
+// DEVICE PROFILE & AVATAR EMOJI CONTROLLER
+// -----------------------------------------------------------------------------
+const PRESET_PROFILE_EMOJIS = [
+  '💻', '📱', '🚀', '⚡', '🌾', '🤖',
+  '🦊', '🦁', '🐯', '🦅', '👑', '🛡️',
+  '🌟', '🔥', '🎮', '💎', '🍀', '🎯',
+  '🛸', '🛰️', '🦄', '🐉', '🧙', '🎧',
+  '👨‍🌾', '🦾', '🍎', '🍕', '⚽', '🏎️', '🚁', '🏆'
+];
+
+let _selectedProfileEmoji = '💻';
+
+function openDeviceProfileModal() {
+  const modal = document.getElementById("deviceProfileModal");
+  if (!modal) return;
+
+  const currentName = appState.localNodeName || "Windows-PC";
+  const currentID = appState.localNodeID || "local-pc-node";
+  _selectedProfileEmoji = appState.localNodeAvatarEmoji || "💻";
+
+  const heroNameEl = document.getElementById("profileHeroName");
+  if (heroNameEl) heroNameEl.innerText = currentName;
+
+  const heroIdEl = document.getElementById("profileHeroID");
+  if (heroIdEl) heroIdEl.innerText = currentID;
+
+  const heroAvatarEl = document.getElementById("profileHeroAvatar");
+  if (heroAvatarEl) heroAvatarEl.innerText = _selectedProfileEmoji;
+
+  const nameInput = document.getElementById("profileDeviceNameInput");
+  if (nameInput) nameInput.value = currentName;
+
+  const customEmojiInput = document.getElementById("profileCustomEmojiInput");
+  if (customEmojiInput) customEmojiInput.value = "";
+
+  renderProfileEmojiGrid();
+  modal.style.display = "flex";
+}
+
+function closeDeviceProfileModal() {
+  const modal = document.getElementById("deviceProfileModal");
+  if (modal) modal.style.display = "none";
+}
+
+// Global modal overlay backdrop click & escape dismiss
+window.addEventListener("click", (e) => {
+  if (e.target && e.target.classList && e.target.classList.contains("modal-overlay")) {
+    e.target.style.display = "none";
+  }
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".modal-overlay").forEach(m => {
+      m.style.display = "none";
+    });
+  }
+});
+
+function renderProfileEmojiGrid() {
+  const container = document.getElementById("profileEmojiGrid");
+  if (!container) return;
+
+  container.innerHTML = PRESET_PROFILE_EMOJIS.map(emoji => {
+    const isActive = emoji === _selectedProfileEmoji;
+    return `
+      <button type="button" class="emoji-btn ${isActive ? 'active' : ''}" onclick="selectProfileEmoji('${emoji}')" title="${emoji}">
+        ${emoji}
+      </button>
+    `;
+  }).join("");
+}
+
+function selectProfileEmoji(emoji) {
+  _selectedProfileEmoji = emoji;
+  renderProfileEmojiGrid();
+
+  const heroAvatarEl = document.getElementById("profileHeroAvatar");
+  if (heroAvatarEl) {
+    heroAvatarEl.innerText = emoji;
+    heroAvatarEl.classList.remove("bounce");
+    void heroAvatarEl.offsetWidth; // trigger reflow
+    heroAvatarEl.classList.add("bounce");
+  }
+
+  const customInput = document.getElementById("profileCustomEmojiInput");
+  if (customInput && !PRESET_PROFILE_EMOJIS.includes(emoji)) {
+    customInput.value = emoji;
+  } else if (customInput) {
+    customInput.value = "";
+  }
+}
+
+function onProfileNameChange(val) {
+  const heroNameEl = document.getElementById("profileHeroName");
+  if (heroNameEl) {
+    heroNameEl.innerText = (val || "").trim() || "Windows PC";
+  }
+}
+
+function onCustomEmojiInput(val) {
+  const clean = (val || "").trim();
+  if (clean) {
+    _selectedProfileEmoji = clean;
+    const heroAvatarEl = document.getElementById("profileHeroAvatar");
+    if (heroAvatarEl) {
+      heroAvatarEl.innerText = clean;
+    }
+    document.querySelectorAll(".emoji-btn").forEach(btn => btn.classList.remove("active"));
+  }
+}
+
+function copyProfileID() {
+  const id = appState.localNodeID || document.getElementById("profileHeroID")?.innerText || "";
+  if (id) {
+    navigator.clipboard.writeText(id).then(() => {
+      showToast("📋 Device ID copied to clipboard!");
+    }).catch(() => {
+      showToast("Device ID: " + id);
+    });
+  }
+}
+
+function resetProfileNameToPC() {
+  const defaultName = "Windows-PC";
+  const nameInput = document.getElementById("profileDeviceNameInput");
+  if (nameInput) {
+    nameInput.value = defaultName;
+    onProfileNameChange(defaultName);
+  }
+  showToast("Reset display name to default");
+}
+
+async function resetProfileToHardwareDefaults() {
+  try {
+    const res = await fetch("/api/profile/reset", { method: "POST" });
+    if (res.ok) {
+      const data = await res.json();
+      appState.localNodeName = data.device_name;
+      appState.localNodeAvatarEmoji = data.avatar_emoji || "💻";
+
+      const nameInput = document.getElementById("profileDeviceNameInput");
+      if (nameInput) nameInput.value = data.device_name;
+      onProfileNameChange(data.device_name);
+
+      selectProfileEmoji(appState.localNodeAvatarEmoji);
+
+      const userAvatarEl = document.getElementById("userAvatarNodeDisplay");
+      if (userAvatarEl) userAvatarEl.innerText = appState.localNodeAvatarEmoji;
+
+      showToast("Reset to default hardware profile & avatar");
+    }
+  } catch (e) {
+    showToast("Error resetting profile");
+  }
+}
+
+async function saveDeviceProfile() {
+  const nameInput = document.getElementById("profileDeviceNameInput");
+  const cleanName = (nameInput ? nameInput.value : "").trim();
+  if (!cleanName) {
+    showToast("Please enter a valid device name");
+    return;
+  }
+
+  const cleanEmoji = _selectedProfileEmoji || "💻";
+
+  try {
+    const res = await fetch("/api/profile/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: cleanName,
+        emoji: cleanEmoji
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      appState.localNodeName = data.device_name || cleanName;
+      appState.localNodeAvatarEmoji = data.avatar_emoji || cleanEmoji;
+
+      const userAvatarEl = document.getElementById("userAvatarNodeDisplay");
+      if (userAvatarEl) userAvatarEl.innerText = appState.localNodeAvatarEmoji;
+
+      closeDeviceProfileModal();
+      showToast("Device profile & avatar updated & broadcasted! 🎉");
+    }
+  } catch (e) {
+    showToast("Failed to save device profile.");
+  }
+}
+
+// -----------------------------------------------------------------------------
 // UTILITIES
 // -----------------------------------------------------------------------------
 function showToast(msg) {
@@ -6114,4 +6664,1371 @@ function exportTargetRegistryJson() {
   URL.revokeObjectURL(url);
   showToast(`[Export] Saved ${customTargetRegistry.length} target labels registry JSON`);
 }
+
+// =============================================================================
+// INTERNET / WAN CLOUD MESH & DISCOVERY CONTROLLER
+// =============================================================================
+let _handledWanRequests = new Set();
+let _currentIncomingWanRequest = null;
+
+async function fetchWanState() {
+  try {
+    const res = await fetch("/api/wan/state");
+    if (res.ok) {
+      const data = await res.json();
+      appState.wanState = data;
+      checkIncomingPairRequests(data.pending_requests);
+
+      if (appState.activePeer && appState.activePeer.is_wan) {
+        const currentlyOnline = isWanPeerOnline(appState.activePeer.id);
+        appState.activePeer.is_online = currentlyOnline;
+        if (!currentlyOnline && (!wanDataChannel || wanDataChannel.readyState !== "open")) {
+          updateWanChatStatus("● Offline", "#94A3B8");
+        } else if (currentlyOnline && wanDataChannel && wanDataChannel.readyState === "open") {
+          updateWanChatStatus("● Connected", "#10B981");
+        }
+      }
+
+      if (appState.connectionMode === "wan") {
+        renderMasterList();
+      }
+    }
+  } catch (e) {}
+}
+
+function checkIncomingPairRequests(reqs) {
+  if (!reqs || reqs.length === 0) {
+    const modal = document.getElementById("incomingPairRequestModal");
+    if (modal && modal.style.display === "flex") {
+      modal.style.display = "none";
+    }
+    return;
+  }
+  const pending = reqs.find(r => !_handledWanRequests.has(r.request_id));
+  if (pending) {
+    _currentIncomingWanRequest = pending;
+    const modal = document.getElementById("incomingPairRequestModal");
+    if (modal && modal.style.display !== "flex") {
+      const nameEl = document.getElementById("incomingReqName");
+      if (nameEl) nameEl.innerText = pending.from_device_name || "Remote Device";
+      const platEl = document.getElementById("incomingReqPlatform");
+      if (platEl) platEl.innerText = pending.from_platform || "Remote";
+      const avEl = document.getElementById("incomingReqAvatar");
+      if (avEl) avEl.innerText = pending.from_avatar_emoji || "📱";
+      const typeEl = document.getElementById("incomingReqType");
+      if (typeEl) typeEl.innerText = pending.is_direct_radar ? "Direct 1-Tap Connect" : "PIN Code Authenticated";
+      modal.style.display = "flex";
+      showToast(`🔗 Incoming connection request from ${pending.from_device_name}`);
+    }
+  }
+}
+
+function renderWANView() {
+  const container = document.getElementById("masterItemsList");
+  if (!container) return;
+
+  const wan = appState.wanState || {
+    internet_mode_enabled: false,
+    discovery_mode: "publicRadar",
+    is_firebase_connected: false,
+    is_presence_online: false,
+    public_devices: [],
+    trusted_devices: [],
+    pending_requests: []
+  };
+
+  const isEnabled = !!wan.internet_mode_enabled;
+  const isOnline = !!wan.is_presence_online && !!wan.is_firebase_connected;
+  const mode = wan.discovery_mode || "publicRadar";
+  const trusted = wan.trusted_devices || [];
+  const publicDevs = wan.public_devices || [];
+  const activeCode = wan.active_pair_code;
+
+  let html = `
+    <div class="wan-dashboard-wrap">
+      <!-- 3 Connection Discovery Modes (Theme-friendly Segmented Tabs) -->
+      <div class="wan-mode-selector-bar">
+        <button class="wan-mode-pill ${mode === 'publicRadar' ? 'active' : ''}" onclick="setWanDiscoveryMode('publicRadar')" title="Public Radar: Visible to all Nearby users on the internet">
+          <span style="font-size:13px;">🌐</span>
+          <span>Public</span>
+        </button>
+        <button class="wan-mode-pill ${mode === 'privateGhost' ? 'active' : ''}" onclick="setWanDiscoveryMode('privateGhost')" title="Ghost Mode: Visible strictly to paired Trusted Devices">
+          <span style="font-size:13px;">👻</span>
+          <span>Ghost</span>
+        </button>
+        <button class="wan-mode-pill ${mode === 'pinOnly' ? 'active' : ''}" onclick="setWanDiscoveryMode('pinOnly')" title="PIN Code Only: Hidden, connects only with temporary 6-digit PIN">
+          <span style="font-size:13px;">🔢</span>
+          <span>PIN Only</span>
+        </button>
+      </div>
+  `;
+
+  // 2. PIN Section ONLY shown when PIN Only mode is selected
+  if (mode === "pinOnly") {
+    html += `
+      <div class="list-group-header" style="margin-top:10px;">
+        <span>PIN PAIRING DISCOVERY</span>
+      </div>
+    `;
+    if (activeCode) {
+      const remainingSec = Math.max(0, Math.floor((activeCode.expires_at - Date.now()) / 1000));
+      const mins = Math.floor(remainingSec / 60);
+      const secs = remainingSec % 60;
+      const timeStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      const codeFormatted = activeCode.code.slice(0, 3) + " " + activeCode.code.slice(3);
+
+      html += `
+        <div class="wan-pin-card" style="margin-bottom:12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-size:11.5px; font-weight:700; color:#818CF8; display:flex; align-items:center; gap:6px;">
+              <span>🔢 Active Pairing PIN</span>
+            </div>
+            <span style="font-size:11px; color:#F59E0B; font-weight:600;">⏱️ ${timeStr}</span>
+          </div>
+          <div class="wan-pin-digits" onclick="copyActiveWanPin('${activeCode.code}')" title="Click to copy">${codeFormatted}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-sm btn-secondary" onclick="cancelWanPinCode()" style="flex:1;">Cancel Code</button>
+            <button class="btn btn-sm btn-primary" onclick="copyActiveWanPin('${activeCode.code}')" style="background:#6366F1; flex:1;">Copy PIN 📋</button>
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="wan-pin-card-box" style="padding:14px; background:linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.05)); border-radius:12px; border:1px solid rgba(99, 102, 241, 0.25); margin-bottom:12px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+            <span style="font-size:22px;">🔢</span>
+            <div>
+              <div style="font-size:12.5px; font-weight:700; color:#818CF8;">PIN Code Pairing</div>
+              <div style="font-size:11px; color:var(--text-muted);">Pair with specific devices using a temporary 6-digit code</div>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+            <button class="btn-wan-action" onclick="generateWanPinCode()">
+              <span style="font-size:14px;">🔢</span>
+              <span>Generate PIN</span>
+            </button>
+            <button class="btn-wan-action" onclick="openWanPinCodeModal()">
+              <span style="font-size:14px;">🔗</span>
+              <span>Enter PIN</span>
+            </button>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  // 3. GHOST MODE BANNER
+  if (mode === "privateGhost") {
+    html += `
+      <div class="list-group-header" style="margin-top:10px;">
+        <span>GHOST PRIVACY MODE</span>
+      </div>
+      <div class="wan-ghost-card" style="padding:16px 14px; text-align:center; background:linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(99, 102, 241, 0.06)); border-radius:12px; border:1px solid rgba(139, 92, 246, 0.3); margin-bottom:12px;">
+        <div style="font-size:28px; margin-bottom:6px;">👻</div>
+        <div style="font-weight:700; color:#A78BFA; font-size:13px; margin-bottom:4px;">Ghost Mode Active</div>
+        <div style="color:var(--text-muted); font-size:11.5px; line-height:1.4;">Your device is hidden from public discovery radar. Only your paired trusted peers below can initiate direct P2P connections.</div>
+      </div>
+    `;
+  }
+
+  // 3. PUBLIC INTERNET RADAR (Discovered Devices FIRST on top)
+  if (mode === "publicRadar") {
+    html += `
+      <div class="list-group-header" style="margin-top:10px;">
+        <span>PUBLIC INTERNET RADAR (${publicDevs.length})</span>
+      </div>
+    `;
+
+    if (publicDevs.length === 0) {
+      html += `
+        <div style="padding:18px 12px; text-align:center; color:var(--text-muted); font-size:11.5px; background:rgba(255,255,255,0.02); border-radius:10px; border:1px dashed var(--border-color);">
+          <div class="wan-radar-pulse" style="display:inline-flex; align-items:center; justify-content:center; width:40px; height:40px; border-radius:50%; background:rgba(16, 185, 129, 0.12); margin-bottom:8px;">
+            <span style="font-size:22px; display:inline-block; animation: spinGlobe 4s linear infinite;">🌐</span>
+          </div>
+          <div style="font-weight:700; color:#10B981; font-size:12px; margin-bottom:3px;">Online Radar Searching</div>
+          <span style="color:var(--text-muted);">Searching for online peers nearby on Internet…</span>
+        </div>
+      `;
+    } else {
+      publicDevs.forEach(p => {
+        const avatarHTML = renderAvatarCircle(p.name, p.avatar_emoji, false, false, p.platform || "phone");
+        const safeId = escapeHTML(p.id);
+        const isConnecting = (window._connectingWanDeviceId === p.id);
+
+        html += `
+          <div class="master-item-card">
+            ${avatarHTML}
+            <div class="card-content">
+              <div class="card-top-row">
+                <span class="card-title">${escapeHTML(p.name)}</span>
+                <button class="btn btn-sm btn-primary" onclick="sendDirectWanPairRequest('${safeId}', '${escapeHTML(p.name)}', '${escapeHTML(p.platform || '')}', '${escapeHTML(p.avatar_emoji || '')}')" ${isConnecting ? 'disabled' : ''} style="background:#6366F1; padding:3px 10px; font-size:11px; font-weight:700;">
+                  ${isConnecting ? '⏳ Connecting…' : 'Connect ↗'}
+                </button>
+              </div>
+              <div class="card-sub-row">
+                <span class="card-snippet">${escapeHTML(p.platform || 'Remote')} • Discovered Peer</span>
+                <span class="card-badge-pill" style="background:rgba(99, 102, 241, 0.15); color:#818CF8;">WAN Radar</span>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+  }
+
+  // 4. PAIRED TRUSTED PEERS (Displayed BELOW Public Radar with Unpair Option)
+  html += `
+    <div class="list-group-header" style="margin-top:12px;">
+      <span>PAIRED TRUSTED PEERS (${trusted.length})</span>
+    </div>
+  `;
+
+  if (trusted.length === 0) {
+    html += `
+      <div style="padding:14px 8px; text-align:center; color:var(--text-muted); font-size:11.5px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px dashed var(--border-color);">
+        <p style="margin:0;">No paired friends yet.</p>
+        <p style="font-size:10.5px; margin:4px 0 0 0; color:var(--text-muted);">Tap "Connect ↗" on any radar peer above or switch to "PIN Only" to pair.</p>
+      </div>
+    `;
+  } else {
+    trusted.forEach(t => {
+      const isPeerOnline = isWanPeerOnline(t.id);
+      const avatarHTML = renderAvatarCircle(t.name, t.avatar_emoji, true, false, t.platform || "phone");
+      const safeId = escapeHTML(t.id);
+      const isActive = appState.activePeer && appState.activePeer.id === t.id && appState.activePeer.is_wan;
+
+      html += `
+        <div class="master-item-card ${isActive ? 'active' : ''}" onclick="selectWanPeerForChat('${safeId}', '${escapeHTML(t.name)}', '${escapeHTML(t.avatar_emoji || '')}', '${escapeHTML(t.platform || 'phone')}')" style="cursor:pointer;" title="Click to chat">
+          ${avatarHTML}
+          <div class="card-content">
+            <div class="card-top-row">
+              <span class="card-title">${escapeHTML(t.name)}</span>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span class="card-time" style="color:${isPeerOnline ? 'var(--primary-emerald)' : 'var(--text-muted)'}; font-weight:600;">${isPeerOnline ? 'Online' : 'Offline'}</span>
+                <button class="btn-card-unpair" onclick="unpairWanPeer('${safeId}', '${escapeHTML(t.name)}', event)" title="Unpair / Remove peer" style="font-size:12px; font-weight:700; color:#EF4444; background:transparent; border:none; padding:2px 4px;">
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div class="card-sub-row">
+              <span class="card-snippet">${escapeHTML(t.platform || 'Remote')} • End-to-End Encrypted</span>
+              <span class="card-badge-pill bg-emerald-dim">Paired</span>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  }
+
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
+async function unpairWanPeer(id, name, event) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  if (!confirm(`Are you sure you want to unpair from ${name || 'this peer'}?`)) {
+    return;
+  }
+  try {
+    const res = await fetch("/api/wan/trusted/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_id: id })
+    });
+    if (res.ok) {
+      showToast(`Unpaired from ${name || 'peer'} ✕`);
+      closeWanWebRTC();
+      if (appState.activePeer && appState.activePeer.id === id) {
+        appState.activePeer = null;
+        renderChatMessages();
+      }
+      fetchWanState();
+    }
+  } catch (e) {
+    showToast("Error unpairing peer");
+  }
+}
+
+async function toggleInternetMode(enable) {
+  try {
+    const res = await fetch("/api/wan/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enable: enable })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      appState.wanState = data;
+      showToast(enable ? "Internet WAN Mesh Activated 🌐" : "Internet WAN Mesh Disabled");
+      renderMasterList();
+    }
+  } catch (e) {
+    showToast("Error updating Internet mode");
+  }
+}
+
+async function setWanDiscoveryMode(mode) {
+  try {
+    const res = await fetch("/api/wan/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      appState.wanState = data;
+      const modeNames = {
+        publicRadar: "Public Radar Active 🌐",
+        privateGhost: "Ghost / Private Mode Active 👻",
+        pinOnly: "PIN Code Only Active 🔢"
+      };
+      showToast(modeNames[mode] || "Privacy mode updated");
+      renderMasterList();
+    }
+  } catch (e) {
+    showToast("Error updating privacy mode");
+  }
+}
+
+async function generateWanPinCode() {
+  try {
+    showToast("Generating 6-digit PIN code…");
+    const res = await fetch("/api/wan/pair-code/generate", { method: "POST" });
+    if (res.ok) {
+      const codeData = await res.json();
+      if (appState.wanState) {
+        appState.wanState.active_pair_code = codeData;
+      }
+      showToast(`Pairing code generated: ${codeData.code} 🔢`);
+      renderMasterList();
+    } else {
+      const errData = await res.json();
+      showToast(`Failed: ${errData.error || 'Server error'}`);
+    }
+  } catch (e) {
+    showToast("Error generating pair code");
+  }
+}
+
+async function cancelWanPinCode() {
+  try {
+    await fetch("/api/wan/pair-code/cancel", { method: "POST" });
+    if (appState.wanState) {
+      appState.wanState.active_pair_code = null;
+    }
+    showToast("Pairing code cancelled");
+    renderMasterList();
+  } catch (e) {}
+}
+
+function copyActiveWanPin(code) {
+  if (code) {
+    navigator.clipboard.writeText(code).then(() => {
+      showToast("📋 PIN code copied to clipboard!");
+    }).catch(() => {
+      showToast("PIN Code: " + code);
+    });
+  }
+}
+
+function openWanPinCodeModal() {
+  const modal = document.getElementById("wanPinCodeModal");
+  if (!modal) return;
+  const input = document.getElementById("wanPinCodeInput");
+  if (input) {
+    input.value = "";
+    setTimeout(() => input.focus(), 100);
+  }
+  const msg = document.getElementById("wanPinCodeStatusMsg");
+  if (msg) {
+    msg.innerText = "";
+    msg.style.color = "var(--text-muted)";
+  }
+  modal.style.display = "flex";
+}
+
+function closeWanPinCodeModal() {
+  const modal = document.getElementById("wanPinCodeModal");
+  if (modal) modal.style.display = "none";
+}
+
+async function submitWanPinCode() {
+  const input = document.getElementById("wanPinCodeInput");
+  const code = (input ? input.value : "").trim();
+  const statusMsg = document.getElementById("wanPinCodeStatusMsg");
+  const btn = document.getElementById("btnSubmitWanPin");
+
+  if (code.length !== 6 || !/^\d+$/.test(code)) {
+    if (statusMsg) {
+      statusMsg.innerText = "Please enter a valid 6-digit numeric PIN code";
+      statusMsg.style.color = "#EF4444";
+    }
+    return;
+  }
+
+  if (statusMsg) {
+    statusMsg.innerText = "Connecting to peer over cloud mesh…";
+    statusMsg.style.color = "#818CF8";
+  }
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch("/api/wan/pair-code/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code })
+    });
+
+    if (res.ok) {
+      const dev = await res.json();
+      if (statusMsg) {
+        statusMsg.innerText = `Paired successfully with ${dev.name}! 🎉`;
+        statusMsg.style.color = "var(--primary-emerald)";
+      }
+      showToast(`Paired with ${dev.name}! 🎉`);
+      setTimeout(() => {
+        closeWanPinCodeModal();
+        fetchWanState();
+        selectWanPeerForChat(dev.id, dev.name, dev.avatar_emoji, dev.platform);
+      }, 500);
+    } else {
+      const errData = await res.json();
+      if (statusMsg) {
+        statusMsg.innerText = errData.error || "Failed to pair with remote device";
+        statusMsg.style.color = "#EF4444";
+      }
+    }
+  } catch (e) {
+    if (statusMsg) {
+      statusMsg.innerText = "Network connection error. Please try again.";
+      statusMsg.style.color = "#EF4444";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function sendDirectWanPairRequest(targetId, name, platform, avatar) {
+  try {
+    window._connectingWanDeviceId = targetId;
+    renderMasterList();
+    showToast(`Connecting with ${name}… Please accept on device`);
+
+    const res = await fetch("/api/wan/request/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target_device_id: targetId,
+        target_name: name,
+        target_platform: platform,
+        target_avatar: avatar
+      })
+    });
+
+    if (res.ok) {
+      const dev = await res.json();
+      showToast(`Connected & paired with ${dev.name || name}! 🎉`);
+      fetchWanState();
+      selectWanPeerForChat(dev.id || targetId, dev.name || name, dev.avatar_emoji || avatar, dev.platform || platform);
+    } else {
+      const errData = await res.json();
+      showToast(`Failed: ${errData.error || 'Connection declined'}`);
+    }
+  } catch (e) {
+    showToast("Connection failed or timed out");
+  } finally {
+    window._connectingWanDeviceId = null;
+    renderMasterList();
+  }
+}
+
+async function respondIncomingPairRequest(accept) {
+  if (!_currentIncomingWanRequest) return;
+  const req = _currentIncomingWanRequest;
+  _handledWanRequests.add(req.request_id);
+
+  const modal = document.getElementById("incomingPairRequestModal");
+  if (modal) modal.style.display = "none";
+
+  try {
+    const res = await fetch("/api/wan/request/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        request_id: req.request_id,
+        from_device_id: req.from_device_id,
+        from_device_name: req.from_device_name,
+        from_platform: req.from_platform,
+        from_avatar: req.from_avatar_emoji,
+        accept: accept
+      })
+    });
+    if (res.ok) {
+      showToast(accept ? `Accepted pairing with ${req.from_device_name}! 🎉` : `Declined request from ${req.from_device_name}`);
+      fetchWanState();
+      if (accept) {
+        selectWanPeerForChat(req.from_device_id, req.from_device_name, req.from_avatar_emoji, req.from_platform);
+      }
+    }
+  } catch (e) {
+    showToast("Error responding to request");
+  }
+}
+
+function isWanPeerOnline(peerId) {
+  if (!peerId) return false;
+  if (wanConnectedPeerId === peerId && wanDataChannel && wanDataChannel.readyState === "open") {
+    return true;
+  }
+  const wan = appState.wanState;
+  if (!wan) return false;
+  const trusted = wan.trusted_devices || [];
+  const found = trusted.find(t => t.id === peerId);
+  if (found) return !!found.is_online;
+  const pub = wan.public_devices || [];
+  const pFound = pub.find(p => p.id === peerId);
+  if (pFound) return !!pFound.is_online;
+  return false;
+}
+
+function selectWanPeerForChat(id, name, avatar, platform) {
+  const isOnline = isWanPeerOnline(id);
+  const wanPeer = {
+    id: id,
+    name: name,
+    ip: "wan://" + id,
+    avatar_emoji: avatar || "📱",
+    is_online: isOnline,
+    is_wan: true,
+    platform: platform || "Remote"
+  };
+
+  appState.activePeer = wanPeer;
+  updateDetailViewForPeer(wanPeer);
+  renderMasterList();
+  renderChatMessages();
+  switchTab('chat', true);
+
+  if (isOnline) {
+    updateWanChatStatus("Connecting…", "#F59E0B");
+    connectWanWebRTC(id, name);
+  } else {
+    updateWanChatStatus("● Offline", "#94A3B8");
+  }
+}
+
+// ==========================================================
+// WAN WEBRTC STUN/TURN DATA CHANNEL & SIGNALING CONTROLLER
+// ==========================================================
+const WAN_ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:stun.services.mozilla.com:3478" },
+  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:3478", username: "openrelayproject", credential: "openrelayproject" }
+];
+
+let wanPeerConnection = null;
+let wanDataChannel = null;
+let wanActiveSessionId = null;
+let wanConnectedPeerId = null;
+let wanSessionPollInterval = null;
+let wanIncomingPollInterval = null;
+let wanReconnectTimer = null;
+
+let currentWanReceivingFile = null;
+let wanReceivedBlobs = new Map(); // fileId -> { url, name }
+
+function initWanWebRTC() {
+  if (wanIncomingPollInterval) clearInterval(wanIncomingPollInterval);
+  wanIncomingPollInterval = setInterval(pollWanIncomingSessions, 3000);
+}
+
+function scheduleWanWebRTCReconnect(peerId, peerName) {
+  if (wanReconnectTimer) clearTimeout(wanReconnectTimer);
+  wanReconnectTimer = setTimeout(() => {
+    if (appState.activePeer && appState.activePeer.id === peerId && appState.activePeer.is_wan) {
+      if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+        updateWanChatStatus("Reconnecting…", "#F59E0B");
+        connectWanWebRTC(peerId, peerName);
+      }
+    }
+  }, 2500);
+}
+
+async function connectWanWebRTC(peerId, peerName) {
+  if (wanConnectedPeerId === peerId && wanDataChannel && wanDataChannel.readyState === "open") {
+    return;
+  }
+  closeWanWebRTC();
+
+  try {
+    wanConnectedPeerId = peerId;
+    updateWanChatStatus("Connecting…", "#F59E0B");
+
+    wanPeerConnection = new RTCPeerConnection({ iceServers: WAN_ICE_SERVERS });
+    const pc = wanPeerConnection;
+
+    // Create Data Channel with label 'nearmitra_wan_dc' matching Flutter app
+    const dc = pc.createDataChannel("nearmitra_wan_dc", { ordered: true });
+    wanDataChannel = dc;
+    setupWanDataChannel(dc, peerId, peerName);
+
+    // Local ICE Candidate handler
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wanActiveSessionId) {
+        fetch("/api/wan/session/candidate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: wanActiveSessionId,
+            role: "caller",
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid || "0",
+              sdpMLineIndex: event.candidate.sdpMLineIndex || 0
+            }
+          })
+        }).catch(() => {});
+      }
+    };
+
+    // Create Offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Create signaling session in Firebase
+    const sId = "s_" + Date.now();
+    wanActiveSessionId = sId;
+
+    const res = await fetch("/api/wan/session/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sId,
+        receiver_id: peerId,
+        offer: { type: offer.type, sdp: offer.sdp }
+      })
+    });
+
+    if (!res.ok) {
+      if (isWanPeerOnline(peerId)) {
+        updateWanChatStatus("Reconnecting…", "#F59E0B");
+        scheduleWanWebRTCReconnect(peerId, peerName);
+      } else {
+        updateWanChatStatus("● Offline", "#94A3B8");
+      }
+      return;
+    }
+
+    // Start polling for Answer SDP and Receiver Candidates
+    let pollCount = 0;
+    let answerSet = false;
+    if (wanSessionPollInterval) clearInterval(wanSessionPollInterval);
+
+    wanSessionPollInterval = setInterval(async () => {
+      pollCount++;
+      if (pollCount > 35) {
+        clearInterval(wanSessionPollInterval);
+        if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+          if (isWanPeerOnline(peerId)) {
+            updateWanChatStatus("Reconnecting…", "#F59E0B");
+            scheduleWanWebRTCReconnect(peerId, peerName);
+          } else {
+            updateWanChatStatus("● Offline", "#94A3B8");
+          }
+        }
+        return;
+      }
+
+      try {
+        const sRes = await fetch(`/api/wan/session/get?id=${encodeURIComponent(sId)}`);
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (sData && sData.answer && !answerSet && pc.signalingState !== "closed") {
+            answerSet = true;
+            await pc.setRemoteDescription(new RTCSessionDescription(sData.answer));
+            updateWanChatStatus("Connecting…", "#F59E0B");
+          }
+
+          // Add receiver candidates
+          if (sData && sData.candidates && sData.candidates.receiver && pc.remoteDescription) {
+            const cands = sData.candidates.receiver;
+            for (const k in cands) {
+              const c = cands[k];
+              if (c && c.candidate) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(c));
+                } catch (_) {}
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }, 1200);
+
+  } catch (err) {
+    if (isWanPeerOnline(peerId)) {
+      updateWanChatStatus("Reconnecting…", "#F59E0B");
+      scheduleWanWebRTCReconnect(peerId, peerName);
+    } else {
+      updateWanChatStatus("● Offline", "#94A3B8");
+    }
+  }
+}
+
+async function pollWanIncomingSessions() {
+  try {
+    const res = await fetch("/api/wan/session/incoming");
+    if (!res.ok) return;
+    const sessions = await res.json();
+    if (!sessions || sessions.length === 0) return;
+
+    for (const s of sessions) {
+      if (wanActiveSessionId === s.sessionId || (wanDataChannel && wanDataChannel.readyState === "open")) {
+        continue;
+      }
+      await acceptWanIncomingSession(s);
+      break;
+    }
+  } catch (_) {}
+}
+
+async function acceptWanIncomingSession(session) {
+  closeWanWebRTC();
+  try {
+    wanActiveSessionId = session.sessionId;
+    wanConnectedPeerId = session.callerId;
+
+    wanPeerConnection = new RTCPeerConnection({ iceServers: WAN_ICE_SERVERS });
+    const pc = wanPeerConnection;
+
+    pc.ondatachannel = (e) => {
+      wanDataChannel = e.channel;
+      setupWanDataChannel(e.channel, session.callerId, session.callerName);
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wanActiveSessionId) {
+        fetch("/api/wan/session/candidate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: wanActiveSessionId,
+            role: "receiver",
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid || "0",
+              sdpMLineIndex: event.candidate.sdpMLineIndex || 0
+            }
+          })
+        }).catch(() => {});
+      }
+    };
+
+    // Set Remote Offer
+    await pc.setRemoteDescription(new RTCSessionDescription(session.offer));
+
+    // Create Answer
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    // Accept session
+    await fetch("/api/wan/session/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: session.sessionId,
+        answer: { type: answer.type, sdp: answer.sdp }
+      })
+    });
+
+    // Poll caller candidates
+    let cPollCount = 0;
+    const candInterval = setInterval(async () => {
+      cPollCount++;
+      if (cPollCount > 30 || pc.signalingState === "closed") {
+        clearInterval(candInterval);
+        return;
+      }
+      try {
+        const sRes = await fetch(`/api/wan/session/get?id=${encodeURIComponent(session.sessionId)}`);
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (sData && sData.candidates && sData.candidates.caller && pc.remoteDescription) {
+            const cands = sData.candidates.caller;
+            for (const k in cands) {
+              const c = cands[k];
+              if (c && c.candidate) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(c));
+                } catch (_) {}
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }, 1200);
+
+  } catch (err) {
+    console.error("Accept session error:", err);
+  }
+}
+
+function setupWanDataChannel(dc, peerId, peerName) {
+  try {
+    dc.binaryType = "arraybuffer";
+  } catch (_) {}
+
+  dc.onopen = () => {
+    updateWanChatStatus("● Connected", "#10B981");
+    try {
+      dc.send(JSON.stringify({
+        type: "handshake_syn",
+        senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
+      }));
+    } catch (_) {}
+  };
+
+  dc.onclose = () => {
+    if (isWanPeerOnline(peerId)) {
+      updateWanChatStatus("Reconnecting…", "#F59E0B");
+      scheduleWanWebRTCReconnect(peerId, peerName);
+    } else {
+      updateWanChatStatus("● Offline", "#94A3B8");
+    }
+  };
+
+  dc.onmessage = async (event) => {
+    // 1. Binary chunk received for file transfer
+    if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+      let arrayBuffer = event.data;
+      if (event.data instanceof Blob) {
+        arrayBuffer = await event.data.arrayBuffer();
+      }
+
+      if (currentWanReceivingFile) {
+        currentWanReceivingFile.chunks.push(arrayBuffer);
+        currentWanReceivingFile.bytesReceived += arrayBuffer.byteLength;
+
+        const total = currentWanReceivingFile.fileSize || 1;
+        const progress = Math.min(100, Math.round((currentWanReceivingFile.bytesReceived / total) * 100));
+        updateFileProgressInUI(currentWanReceivingFile.fileId, progress);
+      }
+      return;
+    }
+
+    // 2. JSON control or text messages
+    try {
+      const data = typeof event.data === 'string' ? JSON.parse(event.data) : null;
+      if (!data) return;
+
+      const rawType = (data.type || '').toString();
+      const msgType = rawType.toUpperCase().replace(/_/g, '');
+
+      // Handle ping
+      if (msgType === 'PING') {
+        try { dc.send(JSON.stringify({ protocolVersion: 1, type: 'PONG', timestamp: Date.now() })); } catch (_) {}
+        return;
+      }
+
+      // Handle typing control from Flutter (WanDataMessage.control('typing', ...))
+      if (msgType === 'CONTROL') {
+        const payload = data.payload || {};
+        if (payload.action === 'typing') {
+          const isTyping = payload.isTyping !== false;
+          if (isTyping) {
+            showPeerTyping(peerName || "Peer", 3000);
+          } else {
+            const bar = document.getElementById("chatTypingBar");
+            if (bar) bar.style.display = "none";
+          }
+          return;
+        }
+      }
+      if (msgType === 'TYPING') {
+        const isTyping = (data.payload && data.payload.isTyping !== false) || (data.isTyping !== false);
+        if (isTyping) {
+          showPeerTyping(peerName || "Peer", 3000);
+        } else {
+          const bar = document.getElementById("chatTypingBar");
+          if (bar) bar.style.display = "none";
+        }
+        return;
+      }
+
+      // Handle File Meta (Start of incoming file / photo transfer from Flutter mobile)
+      if (msgType === 'FILEMETA') {
+        const payload = data.payload || {};
+        const fileId = payload.transferId || payload.fileId || ("f_" + Date.now());
+        const fileName = payload.fileName || payload.name || "received_file";
+        const fileSize = payload.fileSize || payload.size || 0;
+
+        currentWanReceivingFile = {
+          fileId: fileId,
+          fileName: fileName,
+          fileSize: fileSize,
+          bytesReceived: 0,
+          chunks: []
+        };
+
+        const incomingFileMsg = {
+          id: fileId,
+          peer_id: peerId,
+          peer_ip: "wan://" + peerId,
+          sender: peerName || "Peer",
+          text: "",
+          mine: false,
+          at: new Date(),
+          attachment: {
+            name: fileName,
+            size: formatBytes(fileSize),
+            type: getFileType(fileName),
+            progress: 0,
+            status: "Downloading"
+          },
+          status: "Downloading",
+          is_wan: true,
+          reactions: {}
+        };
+        appState.messages.push(incomingFileMsg);
+        savePersistedMessages();
+        renderChatMessages();
+        showToast(`📥 Receiving ${fileName} (${formatBytes(fileSize)}) from ${peerName || 'Phone'}…`);
+        return;
+      }
+
+      // Handle File End (Completed incoming file transfer)
+      if (msgType === 'FILEEND') {
+        if (currentWanReceivingFile) {
+          const fileId = currentWanReceivingFile.fileId;
+          const fileName = currentWanReceivingFile.fileName;
+          const fileSize = currentWanReceivingFile.fileSize;
+          const blob = new Blob(currentWanReceivingFile.chunks);
+          const blobUrl = URL.createObjectURL(blob);
+          wanReceivedBlobs.set(fileId, { url: blobUrl, name: fileName });
+
+          const msg = appState.messages.find(m => m.id === fileId);
+          if (msg && msg.attachment) {
+            msg.attachment.status = "Delivered";
+            msg.attachment.progress = 100;
+            msg.status = "Delivered";
+          }
+          savePersistedMessages();
+          renderChatMessages();
+          showToast(`✅ Received ${fileName}! Click to download/open`);
+
+          // Also save to Go backend
+          fetch("/api/chat/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: fileId,
+              peer_id: peerId,
+              peer_ip: "wan://" + peerId,
+              sender: peerName || "Peer",
+              text: `[File Attachment: ${fileName}]`,
+              mine: false,
+              at: new Date().toISOString(),
+              status: "Delivered",
+              is_wan: true,
+              attachment: {
+                name: fileName,
+                size: formatBytes(fileSize),
+                type: getFileType(fileName),
+                status: "Delivered",
+                progress: 100
+              }
+            })
+          }).catch(() => {});
+
+          currentWanReceivingFile = null;
+        }
+        return;
+      }
+
+      // Handle Text message
+      if (msgType === "TEXT") {
+        const text = (data.payload && data.payload.text) || data.text || "";
+        if (text) {
+          const msgId = data.id || ("msg_" + Date.now());
+          const incomingMsg = {
+            id: msgId,
+            peer_id: peerId,
+            peer_ip: "wan://" + peerId,
+            sender: peerName || "Peer",
+            text: text,
+            mine: false,
+            at: new Date(data.timestamp || Date.now()),
+            status: "Delivered",
+            is_wan: true,
+            reactions: {}
+          };
+          appState.messages.push(incomingMsg);
+          savePersistedMessages();
+          renderChatMessages();
+          showToast(`💬 ${peerName || 'WAN Peer'}: ${text.slice(0, 30)}`);
+
+          // Sync to Go backend persistence
+          fetch("/api/chat/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: msgId,
+              peer_id: peerId,
+              peer_ip: "wan://" + peerId,
+              sender: peerName || "Peer",
+              text: text,
+              mine: false,
+              at: new Date(data.timestamp || Date.now()).toISOString(),
+              status: "Delivered",
+              is_wan: true
+            })
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {}
+  };
+}
+
+function updateWanChatStatus(text, color) {
+  const el = document.getElementById("chatHeaderStatus");
+  if (el && appState.activePeer && appState.activePeer.is_wan) {
+    el.innerHTML = `<span style="color:${color || '#818CF8'}; font-weight:600;">${escapeHTML(text)}</span>`;
+  }
+}
+
+function closeWanWebRTC() {
+  if (wanSessionPollInterval) {
+    clearInterval(wanSessionPollInterval);
+    wanSessionPollInterval = null;
+  }
+  if (wanDataChannel) {
+    try { wanDataChannel.close(); } catch (_) {}
+    wanDataChannel = null;
+  }
+  if (wanPeerConnection) {
+    try { wanPeerConnection.close(); } catch (_) {}
+    wanPeerConnection = null;
+  }
+  if (wanActiveSessionId) {
+    fetch("/api/wan/session/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: wanActiveSessionId })
+    }).catch(() => {});
+    wanActiveSessionId = null;
+  }
+}
+
+function sendWanChatMessage(targetId, text, msgId) {
+  const payload = {
+    id: msgId || ("msg_" + Date.now()),
+    type: "text",
+    timestamp: Date.now(),
+    payload: { text: text }
+  };
+
+  if (wanDataChannel && wanDataChannel.readyState === "open") {
+    wanDataChannel.send(JSON.stringify(payload));
+  } else {
+    // Attempt auto-connect and send
+    connectWanWebRTC(targetId, appState.activePeer ? appState.activePeer.name : "Peer");
+    showToast("Connecting WebRTC P2P DataChannel…");
+    setTimeout(() => {
+      if (wanDataChannel && wanDataChannel.readyState === "open") {
+        wanDataChannel.send(JSON.stringify(payload));
+      }
+    }, 2500);
+  }
+
+  // Sync to Go backend persistence
+  fetch("/api/chat/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: msgId || ("msg_" + Date.now()),
+      peer_id: targetId,
+      peer_ip: "wan://" + targetId,
+      sender: "Windows Host",
+      text: text,
+      mine: true,
+      at: new Date().toISOString(),
+      status: "Sent",
+      is_wan: true
+    })
+  }).catch(() => {});
+}
+
+// -----------------------------------------------------------------------------
+// WAN WEBRTC FILE STREAMING SENDER & PROGRESS CONTROLLER
+// -----------------------------------------------------------------------------
+async function streamFileOverWan(file, peerId, peerName) {
+  if (!file) return;
+
+  if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+    connectWanWebRTC(peerId, peerName);
+    showToast("Connecting WebRTC P2P DataChannel before file transfer…");
+    await new Promise(r => setTimeout(r, 2000));
+    if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+      showToast("DataChannel connecting, please retry in a moment");
+      return;
+    }
+  }
+
+  const fileId = "f_" + Date.now();
+  const chunkSize = 64 * 1024; // 64 KB chunk matching Flutter
+  const totalChunks = Math.ceil(file.size / chunkSize);
+
+  // 1. Create file message with initial sending progress
+  const fileMsg = {
+    id: fileId,
+    peer_id: peerId,
+    peer_ip: "wan://" + peerId,
+    sender: "Windows Host",
+    text: "",
+    mine: true,
+    at: new Date(),
+    attachment: {
+      name: file.name,
+      size: formatBytes(file.size),
+      type: getFileType(file.name),
+      bytesTransferred: 0,
+      totalBytes: file.size,
+      progress: 0,
+      status: "Sending"
+    },
+    status: "Sending",
+    is_wan: true,
+    reactions: {}
+  };
+  appState.messages.push(fileMsg);
+  savePersistedMessages();
+  renderChatMessages();
+  showToast(`📤 Sending ${file.name} (${formatBytes(file.size)})…`);
+
+  // 2. Send File Meta
+  try {
+    wanDataChannel.send(JSON.stringify({
+      id: "meta_" + fileId,
+      type: "fileMeta",
+      timestamp: Date.now(),
+      payload: {
+        transferId: fileId,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || "application/octet-stream",
+        chunkSize: chunkSize,
+        totalChunks: totalChunks,
+        checksum: ""
+      }
+    }));
+  } catch (err) {
+    fileMsg.attachment.status = "Failed";
+    fileMsg.status = "Failed";
+    renderChatMessages();
+    showToast("Failed to send file meta");
+    return;
+  }
+
+  // 3. Stream binary chunks with backpressure
+  let offset = 0;
+  while (offset < file.size) {
+    if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+      fileMsg.attachment.status = "Failed";
+      fileMsg.status = "Failed";
+      renderChatMessages();
+      showToast("WebRTC disconnected during file transfer");
+      return;
+    }
+
+    while (wanDataChannel.bufferedAmount > 1024 * 1024) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    const chunkBlob = file.slice(offset, offset + chunkSize);
+    const buffer = await chunkBlob.arrayBuffer();
+    try {
+      wanDataChannel.send(buffer);
+    } catch (err) {
+      fileMsg.attachment.status = "Failed";
+      fileMsg.status = "Failed";
+      renderChatMessages();
+      return;
+    }
+
+    offset += buffer.byteLength;
+    const progress = Math.min(100, Math.round((offset / file.size) * 100));
+    fileMsg.attachment.progress = progress;
+    fileMsg.attachment.bytesTransferred = offset;
+    updateFileProgressInUI(fileId, progress);
+
+    if (offset % (chunkSize * 4) === 0) {
+      await new Promise(r => setTimeout(r, 4));
+    }
+  }
+
+  // 4. Send File End
+  try {
+    wanDataChannel.send(JSON.stringify({
+      id: "end_" + fileId,
+      type: "fileEnd",
+      timestamp: Date.now(),
+      payload: {
+        transferId: fileId
+      }
+    }));
+  } catch (_) {}
+
+  fileMsg.attachment.status = "Sent";
+  fileMsg.attachment.progress = 100;
+  fileMsg.status = "Sent";
+  savePersistedMessages();
+  renderChatMessages();
+  showToast(`✅ Sent ${file.name} successfully!`);
+
+  // Persist to Go backend
+  fetch("/api/chat/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: fileId,
+      peer_id: peerId,
+      peer_ip: "wan://" + peerId,
+      sender: "Windows Host",
+      text: `[File Attachment: ${file.name}]`,
+      mine: true,
+      at: new Date().toISOString(),
+      status: "Sent",
+      is_wan: true
+    })
+  }).catch(() => {});
+}
+
+// -----------------------------------------------------------------------------
+// HELPER UTILITIES FOR ATTACHMENTS, FORMATTING & PROGRESS
+// -----------------------------------------------------------------------------
+function formatBytes(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getFileType(fileName) {
+  const ext = (fileName || '').split('.').pop().toLowerCase();
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext)) return 'video';
+  if (['mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg'].includes(ext)) return 'audio';
+  if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv'].includes(ext)) return 'doc';
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'apk', 'exe'].includes(ext)) return 'archive';
+  return 'file';
+}
+
+function updateFileProgressInUI(fileId, progress) {
+  const metaEl = document.getElementById(`att_meta_${fileId}`);
+  const progEl = document.getElementById(`att_prog_${fileId}`);
+  if (metaEl) {
+    const msg = appState.messages.find(m => m.id === fileId);
+    const sizeStr = (msg && msg.attachment && msg.attachment.size) || '';
+    const isMine = msg ? msg.mine : true;
+    metaEl.innerText = `${sizeStr} • ${isMine ? 'Sending' : 'Downloading'} (${progress}%)`;
+  }
+  if (progEl) {
+    progEl.style.width = `${progress}%`;
+  }
+}
+
+function handleAttachmentClick(msgId) {
+  const received = wanReceivedBlobs.get(msgId);
+  if (received) {
+    const a = document.createElement('a');
+    a.href = received.url;
+    a.download = received.name || 'download';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast(`Saving ${received.name}…`);
+    return;
+  }
+  openSaveDirectory();
+}
+
+function handleChatDragOver(e) {
+  e.preventDefault();
+  const overlay = document.getElementById("chatDropOverlay");
+  if (overlay) overlay.style.display = "flex";
+}
+
+function handleChatDragLeave(e) {
+  e.preventDefault();
+  const overlay = document.getElementById("chatDropOverlay");
+  if (overlay) overlay.style.display = "none";
+}
+
+async function handleChatDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const overlay = document.getElementById("chatDropOverlay");
+  if (overlay) overlay.style.display = "none";
+
+  const targetPeer = appState.activePeer;
+  if (!targetPeer) {
+    showToast("Please select a device first");
+    return;
+  }
+
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    const file = e.dataTransfer.files[0];
+    if (targetPeer.is_wan) {
+      streamFileOverWan(file, targetPeer.id, targetPeer.name);
+    } else {
+      uploadDroppedFileToPeer(file, targetPeer.ip, targetPeer.id);
+    }
+  }
+}
+
+function uploadDroppedFileToPeer(file, targetIP, targetID) {
+  const formData = new FormData();
+  formData.append("file", file);
+  showToast(`Uploading ${file.name} to peer...`);
+
+  fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP || "")}`, {
+    method: "POST",
+    body: formData
+  }).then(r => r.json()).then(data => {
+    const fileMsg = {
+      id: "msg_" + Date.now(),
+      peer_id: targetID,
+      peer_ip: targetIP,
+      sender: "Windows Host",
+      mine: true,
+      at: new Date(),
+      attachment: {
+        name: file.name,
+        size: formatBytes(file.size),
+        type: getFileType(file.name),
+        status: "Sent"
+      },
+      status: "Sent",
+      reactions: {}
+    };
+    appState.messages.push(fileMsg);
+    savePersistedMessages();
+    renderChatMessages();
+    showToast(`✅ File ${file.name} sent successfully!`);
+  }).catch(() => {
+    showToast("Error uploading file");
+  });
+}
+
+
 

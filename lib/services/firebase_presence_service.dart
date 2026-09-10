@@ -28,7 +28,30 @@ class FirebasePresenceService extends ChangeNotifier {
 
   String get deviceId => _identityService.deviceId;
   String get deviceName => _identityService.deviceName;
+  String get avatarEmoji => _identityService.avatarEmoji;
   String get platform => _identityService.platform;
+
+  /// Update custom device name & avatar emoji in Firebase presence
+  Future<void> updateDeviceIdentity({required String newName, required String newEmoji}) async {
+    await _identityService.updateDeviceIdentity(newName: newName, newEmoji: newEmoji);
+    if (_isInternetModeEnabled && _isFirebaseConnected && _isPresenceOnline) {
+      try {
+        await database.ref('presence/$deviceId').update({
+          'deviceName': deviceName,
+          'avatarEmoji': avatarEmoji,
+        });
+        if (_isPublicPresence) {
+          await database.ref('public_presence/$deviceId').update({
+            'deviceName': deviceName,
+            'avatarEmoji': avatarEmoji,
+          });
+        }
+      } catch (e) {
+        debugPrint('[FirebasePresence] Error updating presence identity: $e');
+      }
+    }
+    notifyListeners();
+  }
 
   /// Reusable FirebaseDatabase instance with the project RTDB URL
   FirebaseDatabase get database {
@@ -94,6 +117,41 @@ class FirebasePresenceService extends ChangeNotifier {
     });
   }
 
+  bool _isPublicPresence = true;
+  bool get isPublicPresence => _isPublicPresence;
+
+  /// Set whether device is publicly visible on WAN Radar
+  Future<void> setPublicRadarPresence(bool isPublic) async {
+    _isPublicPresence = isPublic;
+    if (!_isInternetModeEnabled || !_isFirebaseConnected) {
+      notifyListeners();
+      return;
+    }
+
+    final publicPresenceRef = database.ref('public_presence/$deviceId');
+    try {
+      if (isPublic && _isPresenceOnline) {
+        await publicPresenceRef.onDisconnect().remove();
+        await publicPresenceRef.set({
+          'deviceId': deviceId,
+          'deviceName': deviceName,
+          'avatarEmoji': avatarEmoji,
+          'platform': platform,
+          'online': true,
+          'lastSeen': ServerValue.timestamp,
+        });
+        debugPrint('[FirebasePresence] Public presence registered at public_presence/$deviceId');
+      } else {
+        await publicPresenceRef.onDisconnect().cancel();
+        await publicPresenceRef.remove();
+        debugPrint('[FirebasePresence] Public presence removed (Private/Ghost mode)');
+      }
+    } catch (e) {
+      debugPrint('[FirebasePresence] Error setting public presence: $e');
+    }
+    notifyListeners();
+  }
+
   Future<void> _registerPresence() async {
     if (!_isInternetModeEnabled) return;
 
@@ -111,6 +169,7 @@ class FirebasePresenceService extends ChangeNotifier {
       await presenceRef.update({
         'deviceId': deviceId,
         'deviceName': deviceName,
+        'avatarEmoji': avatarEmoji,
         'platform': platform,
         'online': true,
         'lastSeen': ServerValue.timestamp,
@@ -118,6 +177,11 @@ class FirebasePresenceService extends ChangeNotifier {
 
       _isPresenceOnline = true;
       debugPrint('[FirebasePresence] Device online registered in Firebase at presence/$deviceId');
+
+      // Also register public presence if enabled
+      if (_isPublicPresence) {
+        await setPublicRadarPresence(true);
+      }
     } catch (e) {
       debugPrint('[FirebasePresence] Failed to register presence: $e');
       _isPresenceOnline = false;
@@ -132,7 +196,14 @@ class FirebasePresenceService extends ChangeNotifier {
     _connectedSub = null;
     _isFirebaseConnected = false;
 
-    // 2. Mark device offline in Firebase RTDB
+    // 2. Remove public presence
+    try {
+      final publicRef = database.ref('public_presence/$deviceId');
+      await publicRef.onDisconnect().cancel();
+      await publicRef.remove();
+    } catch (_) {}
+
+    // 3. Mark device offline in Firebase RTDB
     try {
       final presenceRef = database.ref('presence/$deviceId');
       await presenceRef.onDisconnect().cancel();

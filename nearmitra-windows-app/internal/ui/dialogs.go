@@ -126,9 +126,8 @@ func CopyToClipboard(hwnd uintptr, text string) bool {
 
 	ptr, _, _ := pGlobalLock.Call(hMem)
 	if ptr != 0 {
-		src := unsafe.Pointer(&u16[0])
-		dst := unsafe.Pointer(ptr)
-		copy((*[1 << 30]byte)(dst)[:bytesLen], (*[1 << 30]byte)(src)[:bytesLen])
+		pRtlMoveMemory := kernel32.NewProc("RtlMoveMemory")
+		pRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&u16[0])), bytesLen)
 		pGlobalUnlock.Call(hMem)
 		pSetClipboardData.Call(CF_UNICODETEXT, hMem)
 		return true

@@ -259,8 +259,14 @@ class _ActivityLogsScreenState extends ConsumerState<ActivityLogsScreen>
     final scheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
 
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF090E17) : const Color(0xFFF8FAFC),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: isDark ? const Color(0xFF090E17) : const Color(0xFFF8FAFC),
       appBar: AppBar(
         title: const Text(
           'Activity & History Hub',
@@ -302,6 +308,7 @@ class _ActivityLogsScreenState extends ConsumerState<ActivityLogsScreen>
           ),
         ],
       ),
+    ),
     );
   }
 

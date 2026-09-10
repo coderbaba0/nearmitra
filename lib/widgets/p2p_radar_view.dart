@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../models/p2p_peer.dart';
 import '../services/wifi_direct_service.dart';
+import '../services/nearby_service.dart';
+import '../services/wan_service.dart';
 
 class P2pRadarView extends StatefulWidget {
   const P2pRadarView({
@@ -272,35 +274,49 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
                     ),
                   ),
 
-                  // Center Breathing Point (This Device)
+                  // Center Breathing Point (This Device) - 100% Mathematically Dead Center
                   Positioned(
-                    left: centerOffset.dx - 26,
-                    top: centerOffset.dy - 26,
+                    left: centerOffset.dx - 45,
+                    width: 90,
+                    top: centerOffset.dy - 19,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          width: 42,
-                          height: 42,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: isDark ? const Color(0xFF10B981) : const Color(0xFF059669),
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFF10B981).withValues(alpha: 0.4),
-                                blurRadius: 10,
-                                spreadRadius: 2,
+                        Builder(
+                          builder: (context) {
+                            final myAvatar = NearbyService.instance.avatarEmoji;
+                            return Container(
+                              width: 38,
+                              height: 38,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: isDark ? const Color(0xFF10B981) : const Color(0xFF059669),
+                                border: Border.all(color: Colors.white, width: 2),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF10B981).withValues(alpha: 0.45),
+                                    blurRadius: 10,
+                                    spreadRadius: 2,
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                          child: const Icon(Icons.phone_android_rounded, color: Colors.white, size: 22),
+                              child: (myAvatar.isNotEmpty)
+                                  ? Center(
+                                      child: Text(
+                                        myAvatar,
+                                        style: const TextStyle(fontSize: 18),
+                                      ),
+                                    )
+                                  : const Icon(Icons.phone_android_rounded, color: Colors.white, size: 18),
+                            );
+                          },
                         ),
                         const SizedBox(height: 3),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: isDark ? Colors.black87 : Colors.white.withValues(alpha: 0.9),
-                            borderRadius: BorderRadius.circular(7),
+                            borderRadius: BorderRadius.circular(6),
                             border: Border.all(color: isDark ? Colors.white24 : Colors.black12),
                           ),
                           child: Column(
@@ -308,11 +324,11 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
                             children: [
                               const Text(
                                 'This Device',
-                                style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold),
+                                style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold),
                               ),
                               Text(
                                 widget.p2pService.localP2pIp ?? 'IP: Ready',
-                                style: const TextStyle(fontSize: 8.5, color: Color(0xFF10B981), fontWeight: FontWeight.w700),
+                                style: const TextStyle(fontSize: 8, color: Color(0xFF10B981), fontWeight: FontWeight.w700),
                               ),
                             ],
                           ),
@@ -326,11 +342,12 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
                     final p = wifiDirectPeers[index];
                     final totalNodes = totalPeerCount;
                     final nodeOffset = _getNodeOffset(index, totalNodes, radarRadius);
-                    final posX = centerOffset.dx + nodeOffset.dx - 28;
-                    final posY = centerOffset.dy + nodeOffset.dy - 28;
+                    final posX = centerOffset.dx + nodeOffset.dx - 35;
+                    final posY = centerOffset.dy + nodeOffset.dy - 17;
 
                     return Positioned(
                       left: posX,
+                      width: 70,
                       top: posY,
                       child: TweenAnimationBuilder<double>(
                         tween: Tween(begin: 0.0, end: 1.0),
@@ -378,6 +395,58 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
     );
   }
 
+  String? _extractAvatarEmoji(P2pPeer p) {
+    // 1. Check if p.name starts with an emoji or contains an emoji prefix
+    final trimmed = p.name.trim();
+    if (trimmed.isNotEmpty) {
+      final firstChar = trimmed.characters.first;
+      if (firstChar.runes.any((r) => r > 0x1F000 || (r >= 0x2600 && r <= 0x27BF))) {
+        return firstChar;
+      }
+    }
+
+    // 2. Check NearbyService discovered peers with matching name, ID, or IP
+    final pNameClean = p.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    for (final peer in NearbyService.instance.peers) {
+      if (peer.avatarEmoji != null && peer.avatarEmoji!.trim().isNotEmpty) {
+        final peerNameClean = peer.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+        if (peer.name == p.name ||
+            peer.id == p.deviceAddress ||
+            peer.ip == p.deviceAddress ||
+            (pNameClean.isNotEmpty && peerNameClean.isNotEmpty &&
+                (peerNameClean.contains(pNameClean) || pNameClean.contains(peerNameClean)))) {
+          return peer.avatarEmoji!.trim();
+        }
+      }
+    }
+
+    // 3. Check WanService paired/trusted and public devices
+    try {
+      for (final wd in WanService.instance.trustedDevicesList) {
+        if (wd.avatarEmoji != null && wd.avatarEmoji!.trim().isNotEmpty) {
+          final wdNameClean = wd.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+          if (wd.name == p.name ||
+              (pNameClean.isNotEmpty && wdNameClean.isNotEmpty &&
+                  (wdNameClean.contains(pNameClean) || pNameClean.contains(wdNameClean)))) {
+            return wd.avatarEmoji!.trim();
+          }
+        }
+      }
+      for (final pd in WanService.instance.publicDevices) {
+        if (pd.avatarEmoji != null && pd.avatarEmoji!.trim().isNotEmpty) {
+          final pdNameClean = pd.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+          if (pd.name == p.name ||
+              (pNameClean.isNotEmpty && pdNameClean.isNotEmpty &&
+                  (pdNameClean.contains(pNameClean) || pNameClean.contains(pdNameClean)))) {
+            return pd.avatarEmoji!.trim();
+          }
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
   IconData _getRadarDeviceIcon(String name, [String? id]) {
     final lowerName = name.toLowerCase();
     final lowerId = (id ?? '').toLowerCase();
@@ -400,12 +469,14 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
   }
 
   Widget _buildWifiDirectNode(P2pPeer p, bool isDark) {
+    final avatarEmoji = _extractAvatarEmoji(p);
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 44,
-          height: 44,
+          width: 34,
+          height: 34,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: p.isConnected
@@ -418,53 +489,67 @@ class _P2pRadarViewState extends State<P2pRadarView> with SingleTickerProviderSt
                   ? Colors.white
                   : (p.isConnecting
                       ? const Color(0xFFFBFB04)
-                      : const Color(0xFF10B981).withValues(alpha: 0.6)),
-              width: 2.0,
+                      : const Color(0xFF10B981).withValues(alpha: 0.7)),
+              width: 1.6,
             ),
             boxShadow: [
               BoxShadow(
                 color: (p.isConnected ? const Color(0xFF10B981) : Colors.black12).withValues(alpha: 0.3),
-                blurRadius: 6,
-                spreadRadius: 1.5,
+                blurRadius: 5,
+                spreadRadius: 1.0,
               ),
             ],
           ),
           child: Stack(
             alignment: Alignment.center,
             children: [
-              Icon(
-                _getRadarDeviceIcon(p.name, p.deviceAddress),
-                color: p.isConnected ? Colors.white : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
-                size: 21,
-              ),
+              if (avatarEmoji != null && avatarEmoji.isNotEmpty)
+                Center(
+                  child: Text(
+                    avatarEmoji,
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                )
+              else
+                Icon(
+                  _getRadarDeviceIcon(p.name, p.deviceAddress),
+                  color: p.isConnected ? Colors.white : (isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
+                  size: 16,
+                ),
               if (p.isConnecting)
                 const SizedBox(
-                  width: 40, height: 40,
-                  child: CircularProgressIndicator(strokeWidth: 2.0, color: Color(0xFFF59E0B)),
+                  width: 30, height: 30,
+                  child: CircularProgressIndicator(strokeWidth: 1.8, color: Color(0xFFF59E0B)),
                 ),
             ],
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 3),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          constraints: const BoxConstraints(maxWidth: 70),
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
           decoration: BoxDecoration(
             color: isDark ? const Color(0xFF0F172A).withValues(alpha: 0.85) : Colors.white.withValues(alpha: 0.9),
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
+            borderRadius: BorderRadius.circular(6),
+            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 3)],
           ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 p.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold),
               ),
               Text(
                 p.statusLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 9.5,
+                  fontSize: 8.0,
                   color: p.isConnected
                       ? const Color(0xFF10B981)
                       : (p.isConnecting ? const Color(0xFFF59E0B) : Colors.grey),

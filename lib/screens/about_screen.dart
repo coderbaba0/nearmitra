@@ -8,7 +8,13 @@ class AboutScreen extends StatelessWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text(
           'About NearMitra',
@@ -195,7 +201,6 @@ class AboutScreen extends StatelessWidget {
                     '• Auto Multi-Hop Mesh Relay: Messages automatically hop through intermediary phones to reach distant devices beyond direct range.\n'
                     '• High-Speed Sockets: Share multiple gigabytes of photos, videos, documents, and APKs at maximum local Wi-Fi speeds with chunked verification and zero compression.',
               ),
-
               const SizedBox(height: 28),
 
               // Professional Footer Branding
@@ -262,6 +267,7 @@ class AboutScreen extends StatelessWidget {
           ),
         ),
       ),
+    ),
     );
   }
 

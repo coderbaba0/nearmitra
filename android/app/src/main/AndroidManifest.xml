@@ -46,7 +46,7 @@
             android:name=".FarmitraForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|phoneCall|microphone" />
+            android:foregroundServiceType="connectedDevice|mediaProjection|microphone" />
 
         <receiver
             android:name=".CallActionReceiver"

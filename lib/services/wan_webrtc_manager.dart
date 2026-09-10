@@ -11,6 +11,7 @@ import '../models/wan_models.dart';
 import 'history_service.dart';
 import 'ice_config.dart';
 import 'nearby_service.dart';
+import 'notification_service.dart';
 import 'wan_service.dart';
 
 class WanWebRtcManager extends ChangeNotifier {
@@ -647,11 +648,12 @@ class WanWebRtcManager extends ChangeNotifier {
 
           for (final item in _directChatItems) {
             if (item.id == q.id) {
-              item.status = 'sent';
+              item.status = 'Sent';
+              await HistoryService().addItem(item);
               break;
             }
           }
-          saveChatHistory();
+          await saveChatHistory(peerId);
           notifyListeners();
           debugPrint('[WanWebRtc] Successfully flushed queued text message ${q.id}');
         } catch (e) {
@@ -703,6 +705,7 @@ class WanWebRtcManager extends ChangeNotifier {
 
   /// Load persistent chat history for a specific peer
   Future<void> loadChatHistory(String peerId) async {
+    _activePeerId = peerId;
     _directChatItems.clear();
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -749,52 +752,142 @@ class WanWebRtcManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Helper to append a single item to a specific peer's persistent history
+  Future<void> _appendItemToPeerHistory(String peerId, ChatItem item) async {
+    if (peerId.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'nearmitra_wan_chat_history_$peerId';
+      final raw = prefs.getString(key);
+      List<ChatItem> items = [];
+      if (raw != null && raw.isNotEmpty) {
+        final list = jsonDecode(raw) as List<dynamic>;
+        items = list.map((e) => ChatItem.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+      }
+      final idx = items.indexWhere((e) => e.id == item.id);
+      if (idx != -1) {
+        items[idx] = item;
+      } else {
+        items.add(item);
+      }
+      final trimmed = items.length > 500 ? items.sublist(items.length - 500) : items;
+      await prefs.setString(key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+    } catch (e) {
+      debugPrint('[WanWebRtc] _appendItemToPeerHistory error: $e');
+    }
+  }
+
   /// Send a direct text message via RTCDataChannel (or queue to Outbox if offline)
-  Future<void> sendDirectMessage(String text) async {
-    final isChannelOpen = _dataChannel != null && _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+  Future<void> sendDirectMessage(
+    String text, [
+    String? overridePeerId,
+    String? replyToId,
+    String? replyToSender,
+    String? replyToText,
+    bool isForwarded = false,
+  ]) async {
+    final effectivePeerId = (overridePeerId != null && overridePeerId.isNotEmpty)
+        ? overridePeerId
+        : (_activePeerId ?? WanService().activeChatPeerId ?? '');
+    if (effectivePeerId.isEmpty) {
+      debugPrint('[WanWebRtc] sendDirectMessage: effectivePeerId is empty!');
+      return;
+    }
+
+    // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+        (_state == WanConnectionState.connecting ||
+         _state == WanConnectionState.signaling ||
+         _state == WanConnectionState.negotiating)) {
+      final watch = Stopwatch()..start();
+      while (watch.elapsedMilliseconds < 1500 &&
+             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+             _state != WanConnectionState.failed &&
+             _state != WanConnectionState.disconnected) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
+    final isChannelOpen = _dataChannel != null &&
+        _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
+        (overridePeerId == null ||
+            overridePeerId == _activePeerId ||
+            overridePeerId == _activePeer?.id ||
+            _activePeerId == null);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing
       final itemId = const Uuid().v4();
       final item = ChatItem(
         id: itemId,
-        peerId: _activePeerId ?? '',
+        peerId: effectivePeerId,
         sender: 'Me',
         mine: true,
         createdAt: DateTime.now(),
         kind: ChatKind.text,
         text: text,
         status: 'Queued',
+        replyToId: replyToId,
+        replyToSender: replyToSender,
+        replyToText: replyToText,
+        isForwarded: isForwarded,
       );
-      _directChatItems.add(item);
-      saveChatHistory();
+      if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+        _directChatItems.removeWhere((e) => e.id == item.id);
+        _directChatItems.add(item);
+        await saveChatHistory(effectivePeerId);
+      } else {
+        await _appendItemToPeerHistory(effectivePeerId, item);
+      }
+      await HistoryService().addItem(item);
+
+      final peerName = _activePeerId == effectivePeerId
+          ? (_activePeer?.name ?? 'Peer')
+          : (WanService().trustedDevicesList.firstWhere((d) => d.id == effectivePeerId, orElse: () => WanDevice(id: effectivePeerId, name: 'Peer', platform: '', isOnline: false, isTrusted: true)).name);
 
       await queueOutboxItem(QueuedOutboxItem(
         id: itemId,
-        peerId: _activePeerId ?? '',
-        peerName: _activePeer?.name ?? 'Peer',
+        peerId: effectivePeerId,
+        peerName: peerName,
         kind: ChatKind.text,
         text: text,
         createdAt: DateTime.now(),
       ));
+      notifyListeners();
       return;
     }
 
-    final msg = WanDataMessage.text(text);
+    final msg = WanDataMessage.text(
+      text,
+      replyToId: replyToId,
+      replyToSender: replyToSender,
+      replyToText: replyToText,
+      isForwarded: isForwarded,
+    );
     await _dataChannel!.send(RTCDataChannelMessage(msg.toJsonString()));
 
     final item = ChatItem(
       id: msg.id,
-      peerId: _activePeerId ?? '',
+      peerId: effectivePeerId,
       sender: 'Me',
       mine: true,
       createdAt: DateTime.now(),
       kind: ChatKind.text,
       text: text,
-      status: 'sent',
+      status: 'Sent',
+      replyToId: replyToId,
+      replyToSender: replyToSender,
+      replyToText: replyToText,
+      isForwarded: isForwarded,
     );
-    _directChatItems.add(item);
-    saveChatHistory();
+    if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+      _directChatItems.removeWhere((e) => e.id == item.id);
+      _directChatItems.add(item);
+      await saveChatHistory(effectivePeerId);
+    } else {
+      await _appendItemToPeerHistory(effectivePeerId, item);
+    }
+    await HistoryService().addItem(item);
     notifyListeners();
   }
 
@@ -833,18 +926,41 @@ class WanWebRtcManager extends ChangeNotifier {
   }
 
   /// Send a file directly (or queue to Outbox if offline)
-  Future<void> sendDirectFile(File file) async {
+  Future<void> sendDirectFile(File file, [String? overridePeerId, bool isForwarded = false]) async {
     final fileName = file.uri.pathSegments.last;
     final fileSize = await file.length();
     final fileId = const Uuid().v4();
+    final effectivePeerId = (overridePeerId != null && overridePeerId.isNotEmpty)
+        ? overridePeerId
+        : (_activePeerId ?? WanService().activeChatPeerId ?? '');
+    if (effectivePeerId.isEmpty) return;
 
-    final isChannelOpen = _dataChannel != null && _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+    // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
+    if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+        (_state == WanConnectionState.connecting ||
+         _state == WanConnectionState.signaling ||
+         _state == WanConnectionState.negotiating)) {
+      final watch = Stopwatch()..start();
+      while (watch.elapsedMilliseconds < 1500 &&
+             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+             _state != WanConnectionState.failed &&
+             _state != WanConnectionState.disconnected) {
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+    }
+
+    final isChannelOpen = _dataChannel != null &&
+        _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
+        (overridePeerId == null ||
+            overridePeerId == _activePeerId ||
+            overridePeerId == _activePeer?.id ||
+            _activePeerId == null);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing for File
       final fileChatItem = ChatItem(
         id: fileId,
-        peerId: _activePeerId ?? '',
+        peerId: effectivePeerId,
         sender: 'Me',
         mine: true,
         createdAt: DateTime.now(),
@@ -853,26 +969,38 @@ class WanWebRtcManager extends ChangeNotifier {
         filePath: file.path,
         fileSize: fileSize,
         status: 'Queued',
+        isForwarded: isForwarded,
       );
-      _directChatItems.add(fileChatItem);
-      saveChatHistory();
+      if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+        _directChatItems.removeWhere((e) => e.id == fileChatItem.id);
+        _directChatItems.add(fileChatItem);
+        await saveChatHistory(effectivePeerId);
+      } else {
+        await _appendItemToPeerHistory(effectivePeerId, fileChatItem);
+      }
+      await HistoryService().addItem(fileChatItem);
+
+      final peerName = _activePeerId == effectivePeerId
+          ? (_activePeer?.name ?? 'Peer')
+          : (WanService().trustedDevicesList.firstWhere((d) => d.id == effectivePeerId, orElse: () => WanDevice(id: effectivePeerId, name: 'Peer', platform: '', isOnline: false, isTrusted: true)).name);
 
       await queueOutboxItem(QueuedOutboxItem(
         id: fileId,
-        peerId: _activePeerId ?? '',
-        peerName: _activePeer?.name ?? 'Peer',
+        peerId: effectivePeerId,
+        peerName: peerName,
         kind: ChatKind.file,
         fileName: fileName,
         filePath: file.path,
         fileSize: fileSize,
         createdAt: DateTime.now(),
       ));
+      notifyListeners();
       return;
     }
 
     final fileChatItem = ChatItem(
       id: fileId,
-      peerId: _activePeerId ?? '',
+      peerId: effectivePeerId,
       sender: 'Me',
       mine: true,
       createdAt: DateTime.now(),
@@ -881,9 +1009,17 @@ class WanWebRtcManager extends ChangeNotifier {
       filePath: file.path,
       fileSize: fileSize,
       status: 'sending',
+      isForwarded: isForwarded,
     );
-    _directChatItems.add(fileChatItem);
-    saveChatHistory();
+    if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+      _directChatItems.removeWhere((e) => e.id == fileChatItem.id);
+      _directChatItems.add(fileChatItem);
+      await saveChatHistory(effectivePeerId);
+    } else {
+      await _appendItemToPeerHistory(effectivePeerId, fileChatItem);
+    }
+    await HistoryService().addItem(fileChatItem);
+    notifyListeners();
 
     await _streamFileInternal(file, fileId: fileId, fileName: fileName, existingItem: fileChatItem);
   }
@@ -1057,6 +1193,11 @@ class WanWebRtcManager extends ChangeNotifier {
     switch (msg.type) {
       case WanDataMessageType.text:
         final text = msg.payload?['text'] as String? ?? '';
+        final replyToId = msg.payload?['replyToId'] as String?;
+        final replyToSender = msg.payload?['replyToSender'] as String?;
+        final replyToText = msg.payload?['replyToText'] as String?;
+        final isForwarded = msg.payload?['isForwarded'] == true;
+
         final item = ChatItem(
           id: msg.id,
           peerId: _activePeerId ?? '',
@@ -1066,12 +1207,26 @@ class WanWebRtcManager extends ChangeNotifier {
           kind: ChatKind.text,
           text: text,
           status: 'received',
+          replyToId: replyToId,
+          replyToSender: replyToSender,
+          replyToText: replyToText,
+          isForwarded: isForwarded,
         );
         _directChatItems.add(item);
         saveChatHistory();
+        HistoryService().addItem(item);
 
-        if (_activePeerId != null && _wanService.activeChatPeerId != _activePeerId) {
+        final isChatOpen = _wanService.isAppInForeground &&
+            _activePeerId != null &&
+            _wanService.activeChatPeerId == _activePeerId;
+
+        if (!isChatOpen && _activePeerId != null) {
           _wanService.incrementUnreadCount(_activePeerId!);
+          NotificationService().showIncomingMessageNotification(
+            peerId: 'wan:$_activePeerId',
+            senderName: _activePeer?.name ?? 'Internet Peer',
+            message: text,
+          );
         }
 
         notifyListeners();
@@ -1310,8 +1465,18 @@ class WanWebRtcManager extends ChangeNotifier {
         );
         HistoryService().addItem(itemToSave);
 
-        if (_activePeerId != null && _wanService.activeChatPeerId != _activePeerId) {
+        final isChatOpen = _wanService.isAppInForeground &&
+            _activePeerId != null &&
+            _wanService.activeChatPeerId == _activePeerId;
+
+        if (!isChatOpen && _activePeerId != null) {
           _wanService.incrementUnreadCount(_activePeerId!);
+          NotificationService().showIncomingFileNotification(
+            peerId: 'wan:$_activePeerId',
+            senderName: _activePeer?.name ?? 'Internet Peer',
+            fileName: _currentReceivingFileName ?? 'File',
+            fileSizeText: _formatFileSize(_currentReceivingFileSize),
+          );
         }
       }
 
@@ -1319,6 +1484,14 @@ class WanWebRtcManager extends ChangeNotifier {
     }
 
     _currentReceivingFileId = null;
+  }
+
+  String _formatFileSize(int bytes) {
+    if (bytes <= 0) return '0 B';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   /// Disconnect active WebRTC session and free all resources

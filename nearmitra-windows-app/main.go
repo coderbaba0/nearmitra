@@ -19,6 +19,7 @@ import (
 	"nearmitra-windows-app/internal/streaming"
 	"nearmitra-windows-app/internal/transfer"
 	"nearmitra-windows-app/internal/ui"
+	"nearmitra-windows-app/internal/wan"
 )
 
 type syncWriter struct {
@@ -93,6 +94,12 @@ func main() {
 	log.Println("[Main] Initializing IoT...")
 	iotMgr := iot.NewManager()
 	defer iotMgr.Close()
+
+	// 8. Initialize Internet / WAN Remote Discovery & Cloud Mesh
+	log.Println("[Main] Initializing WAN Remote Discovery & Cloud Mesh...")
+	wanService := wan.GetWanService()
+	wanService.Init()
+	defer wanService.Stop()
 
 	var appLauncher *ui.AppLauncher
 	iotAuto := iot.NewAutomationEngine(iotMgr, func(eventLog string) {

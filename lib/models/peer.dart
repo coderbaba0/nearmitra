@@ -5,6 +5,8 @@ class Peer {
     required this.id,
     required this.name,
     required this.ip,
+    this.avatarEmoji,
+    this.platform,
     DateTime? lastSeen,
     this.unreadCount = 0,
     this.isTyping = false,
@@ -17,6 +19,8 @@ class Peer {
   final String id;
   String name;
   String ip;
+  String? avatarEmoji;
+  String? platform;
   DateTime lastSeen;
   int unreadCount;
   bool isTyping;

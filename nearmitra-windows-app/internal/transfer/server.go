@@ -20,6 +20,7 @@ import (
 	"nearmitra-windows-app/internal/calling"
 	"nearmitra-windows-app/internal/config"
 	"nearmitra-windows-app/internal/models"
+	"nearmitra-windows-app/internal/network"
 )
 
 // TransferCallbacks defines event hooks for incoming TCP events.
@@ -166,6 +167,18 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		senderID = peerIP
 	}
 
+	// Always ensure peer is registered in discovery upon direct TCP connection
+	if peerIP != "" && senderID != "" {
+		avatarEmoji := header.AvatarEmoji
+		if avatarEmoji == "" {
+			avatarEmoji = header.Emoji
+		}
+		if avatarEmoji == "" {
+			avatarEmoji = header.Avatar
+		}
+		network.GetDiscovery().RegisterPeer(senderID, senderName, peerIP, models.TransferPort, header.AIHost, avatarEmoji)
+	}
+
 	switch header.Type {
 	case "hello":
 		// Respond with hello handshake to confirm presence & device identity
@@ -185,16 +198,25 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		if text == "" {
 			text = header.Text
 		}
+		msgID := header.MsgID
+		if msgID == "" {
+			msgID = header.TargetMsgID
+		}
+		if msgID == "" {
+			msgID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+		}
 		if text != "" && cb.OnIncomingMessage != nil {
 			cb.OnIncomingMessage(models.ChatMessage{
-				ID:       header.TargetMsgID,
+				ID:       msgID,
 				PeerID:   senderID,
+				PeerIP:   peerIP,
 				Sender:   senderName,
 				Text:     text,
 				Mine:     false,
 				At:       time.Now(),
 				Kind:     "text",
 				IsAi:     header.AIHost,
+				Status:   "Delivered",
 			})
 		}
 
@@ -217,7 +239,7 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		}
 
 	case "file", "folder":
-		ts.receiveFileStream(reader, header, cb)
+		ts.receiveFileStream(reader, header, cb, senderID, senderName, peerIP)
 
 	case "ai_request", "ai_prompt", "ai_req":
 		prompt := header.Prompt
@@ -259,10 +281,20 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.WireHeader, cb TransferCallbacks) {
+func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.WireHeader, cb TransferCallbacks, senderID, senderName, peerIP string) {
 	cfg := config.Get().GetConfig()
 	saveDir := cfg.SaveDirectory
 	_ = os.MkdirAll(saveDir, 0755)
+
+	if senderName == "" {
+		senderName = header.Sender
+	}
+	if senderID == "" {
+		senderID = header.SenderID
+	}
+	if senderID == "" {
+		senderID = peerIP
+	}
 
 	targetPath := filepath.Join(saveDir, header.Name)
 	tempPath := targetPath + ".part"
@@ -299,7 +331,7 @@ func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.
 				cb.OnTransferProgress(models.TransferProgress{
 					Active:     true,
 					Direction:  "download",
-					PeerName:   header.Sender,
+					PeerName:   senderName,
 					FileName:   header.Name,
 					BytesTotal: header.Size,
 					BytesSent:  received,
@@ -329,7 +361,7 @@ func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.
 			cb.OnTransferProgress(models.TransferProgress{
 				Active:     false,
 				Direction:  "download",
-				PeerName:   header.Sender,
+				PeerName:   senderName,
 				FileName:   header.Name,
 				BytesTotal: header.Size,
 				BytesSent:  received,
@@ -342,9 +374,18 @@ func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.
 			if header.Folder {
 				kind = "folder"
 			}
+			msgID := header.MsgID
+			if msgID == "" {
+				msgID = header.TargetMsgID
+			}
+			if msgID == "" {
+				msgID = fmt.Sprintf("msg_file_%d", time.Now().UnixNano())
+			}
 			cb.OnIncomingMessage(models.ChatMessage{
-				PeerID:   header.SenderID,
-				Sender:   header.Sender,
+				ID:       msgID,
+				PeerID:   senderID,
+				PeerIP:   peerIP,
+				Sender:   senderName,
 				Mine:     false,
 				At:       time.Now(),
 				Kind:     kind,
