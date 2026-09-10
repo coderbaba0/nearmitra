@@ -1,10 +1,14 @@
 import 'dart:convert';
-
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/chat_item.dart';
 
-class HistoryService {
+class HistoryService extends ChangeNotifier {
+  static final HistoryService _instance = HistoryService._internal();
+  factory HistoryService() => _instance;
+  HistoryService._internal();
+
   static const _key = 'farmitra_nearby_chat_history_v1';
 
   Future<List<ChatItem>> load() async {
@@ -25,6 +29,7 @@ class HistoryService {
     final prefs = await SharedPreferences.getInstance();
     final trimmed = items.length > 800 ? items.sublist(items.length - 800) : items;
     await prefs.setString(_key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+    notifyListeners();
   }
 
   Future<void> addItem(ChatItem item) async {

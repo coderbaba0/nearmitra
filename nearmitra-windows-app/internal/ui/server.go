@@ -29,6 +29,7 @@ import (
 	"nearmitra-windows-app/internal/network"
 	"nearmitra-windows-app/internal/streaming"
 	"nearmitra-windows-app/internal/transfer"
+	"nearmitra-windows-app/internal/wan"
 )
 
 //go:embed web/*
@@ -204,12 +205,14 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/discovery/rescan", hs.handleDiscoveryRescan)
 	mux.HandleFunc("/api/lan/scan", hs.handleLANScan)
 	mux.HandleFunc("/api/manual-pair", hs.handleManualPair)
+	mux.HandleFunc("/api/profile/update", hs.handleProfileUpdate)
+	mux.HandleFunc("/api/profile/reset", hs.handleProfileReset)
 	mux.HandleFunc("/api/send-file", hs.handleSendFile)
-	mux.HandleFunc("/api/send-file-upload", hs.handleSendFileUpload)
 	mux.HandleFunc("/api/send-folder", hs.handleSendFolder)
 	mux.HandleFunc("/api/chat/send", hs.handleChatSend)
 	mux.HandleFunc("/api/chat/react", hs.handleChatReact)
 	mux.HandleFunc("/api/chat/typing", hs.handleChatTyping)
+	mux.HandleFunc("/api/chat/clear", hs.handleChatClear)
 	mux.HandleFunc("/api/cctv/filter", hs.handleCCTVFilter)
 	mux.HandleFunc("/api/cctv/record", hs.handleCCTVRecord)
 	mux.HandleFunc("/api/cctv/upload-recording", hs.handleUploadRecording)
@@ -258,6 +261,23 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/set-theme", hs.handleSetTheme)
 	mux.HandleFunc("/api/settings/autostart", hs.handleAutoStart)
 	mux.HandleFunc("/api/settings/notifications", hs.handleNotifications)
+
+	// WAN / Internet Mesh Endpoints
+	mux.HandleFunc("/api/wan/state", hs.handleWanState)
+	mux.HandleFunc("/api/wan/toggle", hs.handleWanToggle)
+	mux.HandleFunc("/api/wan/mode", hs.handleWanMode)
+	mux.HandleFunc("/api/wan/pair-code/generate", hs.handleWanPairCodeGenerate)
+	mux.HandleFunc("/api/wan/pair-code/cancel", hs.handleWanPairCodeCancel)
+	mux.HandleFunc("/api/wan/pair-code/claim", hs.handleWanPairCodeClaim)
+	mux.HandleFunc("/api/wan/request/send", hs.handleWanRequestSend)
+	mux.HandleFunc("/api/wan/request/respond", hs.handleWanRequestRespond)
+	mux.HandleFunc("/api/wan/trusted/remove", hs.handleWanTrustedRemove)
+	mux.HandleFunc("/api/wan/session/create", hs.handleWanSessionCreate)
+	mux.HandleFunc("/api/wan/session/accept", hs.handleWanSessionAccept)
+	mux.HandleFunc("/api/wan/session/candidate", hs.handleWanSessionCandidate)
+	mux.HandleFunc("/api/wan/session/get", hs.handleWanSessionGet)
+	mux.HandleFunc("/api/wan/session/incoming", hs.handleWanSessionIncoming)
+	mux.HandleFunc("/api/wan/session/delete", hs.handleWanSessionDelete)
 
 	var listener net.Listener
 	var err error
@@ -308,9 +328,10 @@ func (hs *HTTPServer) handleState(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{
 		"local_device": map[string]interface{}{
-			"id":   hs.cfgMgr.GetConfig().DeviceID,
-			"name": hs.cfgMgr.GetConfig().DeviceName,
-			"ip":   router.IPv4,
+			"id":           hs.cfgMgr.GetConfig().DeviceID,
+			"name":         hs.cfgMgr.GetConfig().DeviceName,
+			"avatar_emoji": hs.cfgMgr.GetConfig().AvatarEmoji,
+			"ip":           router.IPv4,
 		},
 		"peers":        peers,
 		"lan_devices":  lanDevs,
@@ -501,6 +522,12 @@ func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
 func (hs *HTTPServer) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var msg models.ChatMessage
 	_ = json.NewDecoder(r.Body).Decode(&msg)
+	if msg.ID == "" {
+		msg.ID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	}
+	if msg.At.IsZero() {
+		msg.At = time.Now()
+	}
 	hs.chatMgr.AddMessage(msg)
 	
 	targetIP := msg.PeerIP
@@ -515,7 +542,7 @@ func (hs *HTTPServer) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	hs.AddLog(fmt.Sprintf("Chat Message to [%s]: %s", targetIP, msg.Text))
-	if targetIP != "" {
+	if targetIP != "" && !strings.HasPrefix(targetIP, "wan://") && targetIP != "wan" {
 		go transfer.SendTextMessage(targetIP, msg.ID, msg.Text)
 	}
 	w.WriteHeader(http.StatusOK)
@@ -556,6 +583,70 @@ func (hs *HTTPServer) handleChatTyping(w http.ResponseWriter, r *http.Request) {
 		go transfer.SendTypingStatus(targetIP, body.IsTyping)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (hs *HTTPServer) handleChatClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		PeerID   string `json:"peer_id"`
+		PeerIP   string `json:"peer_ip"`
+		Sender   string `json:"sender"`
+		ClearAll bool   `json:"clear_all"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	if body.ClearAll {
+		hs.chatMgr.ClearAllChat()
+		hs.AddLog("[CHAT] All conversation history deleted permanently.")
+	} else {
+		hs.chatMgr.ClearChat(body.PeerID, body.PeerIP, body.Sender)
+		hs.AddLog(fmt.Sprintf("[CHAT] Cleared chat history for peer [%s / %s / %s]", body.PeerID, body.PeerIP, body.Sender))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+func (hs *HTTPServer) handleProfileUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name  string `json:"name"`
+		Emoji string `json:"emoji"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Name != "" || body.Emoji != "" {
+		hs.cfgMgr.SetDeviceIdentity(body.Name, body.Emoji)
+		hs.AddLog(fmt.Sprintf("[PROFILE] Updated device identity: name='%s', emoji='%s'", body.Name, body.Emoji))
+		go hs.discovery.ScanLANNow()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"device_name":  hs.cfgMgr.GetConfig().DeviceName,
+		"avatar_emoji": hs.cfgMgr.GetConfig().AvatarEmoji,
+	})
+}
+
+func (hs *HTTPServer) handleProfileReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name, emoji := hs.cfgMgr.ResetDeviceIdentity()
+	hs.AddLog(fmt.Sprintf("[PROFILE] Reset device identity to hardware defaults: '%s' (%s)", name, emoji))
+	go hs.discovery.ScanLANNow()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"device_name":  name,
+		"avatar_emoji": emoji,
+	})
 }
 
 func (hs *HTTPServer) handleCCTVFilter(w http.ResponseWriter, r *http.Request) {
@@ -1580,3 +1671,211 @@ func (hs *HTTPServer) handleShowInFolder(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(http.StatusOK)
 }
+
+// -----------------------------------------------------------------------------
+// WAN / INTERNET MESH HANDLERS
+// -----------------------------------------------------------------------------
+func (hs *HTTPServer) handleWanState(w http.ResponseWriter, r *http.Request) {
+	ws := wan.GetWanService()
+	state := ws.GetState()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(state)
+}
+
+func (hs *HTTPServer) handleWanToggle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enable bool `json:"enable"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	ws.SetInternetMode(req.Enable)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ws.GetState())
+}
+
+func (hs *HTTPServer) handleWanMode(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	ws.SetDiscoveryMode(wan.WanDiscoveryMode(req.Mode))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ws.GetState())
+}
+
+func (hs *HTTPServer) handleWanPairCodeGenerate(w http.ResponseWriter, r *http.Request) {
+	ws := wan.GetWanService()
+	code, err := ws.GeneratePairCode()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(code)
+}
+
+func (hs *HTTPServer) handleWanPairCodeCancel(w http.ResponseWriter, r *http.Request) {
+	ws := wan.GetWanService()
+	ws.CancelPairCode()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+}
+
+func (hs *HTTPServer) handleWanPairCodeClaim(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	dev, err := ws.ClaimPairCode(req.Code)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(dev)
+}
+
+func (hs *HTTPServer) handleWanRequestSend(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TargetDeviceID string `json:"target_device_id"`
+		TargetName     string `json:"target_name"`
+		TargetPlatform string `json:"target_platform"`
+		TargetAvatar   string `json:"target_avatar"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	dev, err := ws.SendDirectPairRequest(req.TargetDeviceID, req.TargetName, req.TargetPlatform, req.TargetAvatar)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(dev)
+}
+
+func (hs *HTTPServer) handleWanRequestRespond(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RequestID      string `json:"request_id"`
+		FromDeviceID   string `json:"from_device_id"`
+		FromDeviceName string `json:"from_device_name"`
+		FromPlatform   string `json:"from_platform"`
+		FromAvatar     string `json:"from_avatar"`
+		Accept         bool   `json:"accept"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	err := ws.RespondPairRequest(req.RequestID, req.FromDeviceID, req.FromDeviceName, req.FromPlatform, req.FromAvatar, req.Accept)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+func (hs *HTTPServer) handleWanTrustedRemove(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeviceID string `json:"device_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	ws.RemoveTrustedDevice(req.DeviceID)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "removed"})
+}
+
+func (hs *HTTPServer) handleWanSessionCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID  string                 `json:"session_id"`
+		ReceiverID string                 `json:"receiver_id"`
+		Offer      map[string]interface{} `json:"offer"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	sID, err := ws.CreateSignalingSession(req.SessionID, req.ReceiverID, req.Offer)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sID})
+}
+
+func (hs *HTTPServer) handleWanSessionAccept(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string                 `json:"session_id"`
+		Answer    map[string]interface{} `json:"answer"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	err := ws.AcceptSignalingSession(req.SessionID, req.Answer)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+}
+
+func (hs *HTTPServer) handleWanSessionCandidate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string                 `json:"session_id"`
+		Role      string                 `json:"role"`
+		Candidate map[string]interface{} `json:"candidate"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	err := ws.AddIceCandidate(req.SessionID, req.Role, req.Candidate)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "candidate_added"})
+}
+
+func (hs *HTTPServer) handleWanSessionGet(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("id")
+	ws := wan.GetWanService()
+	data, err := ws.GetSession(sessionID)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (hs *HTTPServer) handleWanSessionIncoming(w http.ResponseWriter, r *http.Request) {
+	ws := wan.GetWanService()
+	sessions, err := ws.GetIncomingSessions()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(sessions)
+}
+
+func (hs *HTTPServer) handleWanSessionDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	ws := wan.GetWanService()
+	_ = ws.DeleteSession(req.SessionID)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+}
+

@@ -136,7 +136,7 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
         for (final picked in filesToSend) {
           final file = File(picked.path!);
           if (await file.exists()) {
-            await _rtcManager.sendDirectFile(file);
+            await _rtcManager.sendDirectFile(file, widget.peer.id);
           }
         }
         _scrollToBottom();
@@ -165,7 +165,7 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
 
         for (final file in entities) {
           if (await file.exists()) {
-            await _rtcManager.sendDirectFile(file);
+            await _rtcManager.sendDirectFile(file, widget.peer.id);
           }
         }
         _scrollToBottom();
@@ -403,7 +403,7 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
       final wasConnected = _rtcManager.isConnected;
       await _rtcManager.sendDirectMessage(
         text,
-        null,
+        widget.peer.id,
         replyingTo?.id,
         replyingTo?.sender,
         replyingTo?.text ?? replyingTo?.fileName,

@@ -116,16 +116,39 @@ func (hm *HistoryManager) GetMessagesForPeer(peerID string, peerIP string, isAI 
 }
 
 // ClearChat removes conversation messages with a peer.
-func (hm *HistoryManager) ClearChat(peerID string, peerIP string) {
+func (hm *HistoryManager) ClearChat(peerID string, peerIP string, senderName ...string) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
+	var sender string
+	if len(senderName) > 0 {
+		sender = senderName[0]
+	}
+
 	filtered := make([]models.ChatMessage, 0, len(hm.messages))
 	for _, m := range hm.messages {
-		if m.PeerID != peerID && (peerIP == "" || m.PeerID != peerIP) {
+		isTarget := false
+		if peerID != "" && (m.PeerID == peerID || m.ID == peerID) {
+			isTarget = true
+		}
+		if peerIP != "" && (m.PeerIP == peerIP || m.PeerID == peerIP) {
+			isTarget = true
+		}
+		if sender != "" && m.Sender == sender {
+			isTarget = true
+		}
+		if !isTarget {
 			filtered = append(filtered, m)
 		}
 	}
 	hm.messages = filtered
+	_ = hm.saveUnsafe()
+}
+
+// ClearAllChat removes all chat messages from storage.
+func (hm *HistoryManager) ClearAllChat() {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	hm.messages = make([]models.ChatMessage, 0)
 	_ = hm.saveUnsafe()
 }

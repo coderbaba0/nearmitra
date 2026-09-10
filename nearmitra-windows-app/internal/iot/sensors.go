@@ -8,8 +8,6 @@ import (
 
 // RemotePhoneSensors represents live sensor telemetry received from a remote Android phone or node.
 type RemotePhoneSensors struct {
-	mu sync.RWMutex
-
 	DeviceName       string             `json:"device_name"`
 	DeviceIP         string             `json:"device_ip"`
 	LastSeen         time.Time          `json:"last_seen"`
@@ -60,6 +58,7 @@ type RemoteBLEDevice struct {
 }
 
 var (
+	sensorsMu     sync.RWMutex
 	globalSensors = &RemotePhoneSensors{
 		DeviceName:       "Subham007 (Remote Phone)",
 		DeviceIP:         "192.168.1.5",
@@ -97,15 +96,15 @@ var (
 
 // GetRemotePhoneSensors returns live sensor data from the connected remote phone.
 func GetRemotePhoneSensors() RemotePhoneSensors {
-	globalSensors.mu.RLock()
-	defer globalSensors.mu.RUnlock()
+	sensorsMu.RLock()
+	defer sensorsMu.RUnlock()
 	return *globalSensors
 }
 
 // UpdateRemoteSensors updates sensor values when telemetry packets arrive.
 func UpdateRemoteSensors(data map[string]interface{}) {
-	globalSensors.mu.Lock()
-	defer globalSensors.mu.Unlock()
+	sensorsMu.Lock()
+	defer sensorsMu.Unlock()
 
 	globalSensors.LastSeen = time.Now()
 	if dev, ok := data["device_name"].(string); ok && dev != "" {

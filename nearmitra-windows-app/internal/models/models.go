@@ -25,32 +25,34 @@ type HardwareComputeInfo struct {
 
 // LANDevice represents any physical hardware node discovered on the local LAN subnet.
 type LANDevice struct {
-	IP          string   `json:"ip"`
-	Hostname    string   `json:"hostname"`
-	MAC         string   `json:"mac"`
-	Vendor      string   `json:"vendor"`
-	DeviceType  string   `json:"device_type"` // phone, computer, router, printer, iot, camera, generic
-	PingMs      int      `json:"ping_ms"`
-	OpenPorts   []int    `json:"open_ports"`
-	IsNearMitra bool     `json:"is_nearmitra"`
+	IP          string    `json:"ip"`
+	Hostname    string    `json:"hostname"`
+	MAC         string    `json:"mac"`
+	Vendor      string    `json:"vendor"`
+	DeviceType  string    `json:"device_type"` // phone, computer, router, printer, iot, camera, generic
+	PingMs      int       `json:"ping_ms"`
+	OpenPorts   []int     `json:"open_ports"`
+	IsNearMitra bool      `json:"is_nearmitra"`
+	AvatarEmoji string    `json:"avatar_emoji,omitempty"`
 	LastSeen    time.Time `json:"last_seen"`
 }
 
 // Peer represents a discovered nearby network node.
 type Peer struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	IP           string              `json:"ip,omitempty"`
-	Port         int                 `json:"port,omitempty"`
-	LastSeen     time.Time           `json:"-"`
-	IsOnline     bool                `json:"is_online"`
-	IsAiHost     bool                `json:"ai_host,omitempty"`
-	AIProvider   string              `json:"ai_provider,omitempty"`
-	AIModel      string              `json:"ai_model,omitempty"`
-	ComputeInfo  HardwareComputeInfo `json:"compute_info,omitempty"`
-	IsTyping     bool                `json:"-"`
-	UnreadCount  int                 `json:"-"`
-	IsAiAllowed  bool                `json:"-"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	IP          string              `json:"ip,omitempty"`
+	Port        int                 `json:"port,omitempty"`
+	LastSeen    time.Time           `json:"-"`
+	IsOnline    bool                `json:"is_online"`
+	AvatarEmoji string              `json:"avatar_emoji,omitempty"`
+	IsAiHost    bool                `json:"ai_host,omitempty"`
+	AIProvider  string              `json:"ai_provider,omitempty"`
+	AIModel     string              `json:"ai_model,omitempty"`
+	ComputeInfo HardwareComputeInfo `json:"compute_info,omitempty"`
+	IsTyping    bool                `json:"-"`
+	UnreadCount int                 `json:"-"`
+	IsAiAllowed bool                `json:"-"`
 }
 
 // WireHeader represents standard protocol packet header for TCP & UDP exchanges.
@@ -58,6 +60,9 @@ type WireHeader struct {
 	Type        string              `json:"type,omitempty"` // discover, hello, chat, text, typing, reaction, file, folder, ai_request, ai_response, call_invite, call_accepted, call_declined, call_ended, webrtc_offer, webrtc_answer, webrtc_ice, cctv_ctrl
 	ID          string              `json:"id,omitempty"`   // mobile UDP discovery identifier
 	Name        string              `json:"name,omitempty"` // mobile UDP discovery name or file name
+	AvatarEmoji string              `json:"avatar_emoji,omitempty"`
+	Emoji       string              `json:"emoji,omitempty"`
+	Avatar      string              `json:"avatar,omitempty"`
 	Sender      string              `json:"sender,omitempty"`
 	SenderID    string              `json:"sender_id,omitempty"`
 	Message     string              `json:"message,omitempty"`
@@ -96,20 +101,22 @@ type WireHeader struct {
 
 // ChatMessage represents a persistent or in-memory chat message.
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	PeerID    string    `json:"peer_id"`
-	PeerIP    string    `json:"peer_ip,omitempty"`
-	Sender    string    `json:"sender"`
-	Text      string    `json:"text"`
-	Mine      bool      `json:"mine"`
-	At        time.Time `json:"at"`
-	Kind      string    `json:"kind"` // text, file, folder, ai
-	FileName  string    `json:"file_name,omitempty"`
-	FileSize  int64     `json:"file_size,omitempty"`
-	FilePath  string    `json:"file_path,omitempty"`
-	Status    string    `json:"status,omitempty"` // Sending, Sent, Delivered, Failed
-	Reaction  string    `json:"reaction,omitempty"`
-	IsAi      bool      `json:"is_ai,omitempty"`
+	ID         string      `json:"id"`
+	PeerID     string      `json:"peer_id"`
+	PeerIP     string      `json:"peer_ip,omitempty"`
+	Sender     string      `json:"sender"`
+	Text       string      `json:"text"`
+	Mine       bool        `json:"mine"`
+	At         time.Time   `json:"at"`
+	Kind       string      `json:"kind"` // text, file, folder, ai
+	FileName   string      `json:"file_name,omitempty"`
+	FileSize   int64       `json:"file_size,omitempty"`
+	FilePath   string      `json:"file_path,omitempty"`
+	Status     string      `json:"status,omitempty"` // Sending, Sent, Delivered, Failed
+	Reaction   string      `json:"reaction,omitempty"`
+	IsAi       bool        `json:"is_ai,omitempty"`
+	IsWan      bool        `json:"is_wan,omitempty"`
+	Attachment interface{} `json:"attachment,omitempty"`
 }
 
 // TransferProgress represents active socket file transfer stats.

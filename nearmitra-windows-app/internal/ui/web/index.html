@@ -184,8 +184,8 @@
           </div>
         </button>
 
-        <div class="user-avatar-node" title="Local Windows Node">
-          <span>PC</span>
+        <div class="user-avatar-node clickable" id="userAvatarNode" title="Device Profile & Identity (Click to edit)" onclick="openDeviceProfileModal()">
+          <span id="userAvatarNodeDisplay">💻</span>
           <span class="user-status-dot"></span>
         </div>
       </div>
@@ -194,19 +194,32 @@
     <!-- 2. Master List Column -->
     <section class="master-list-pane">
       
-      <!-- LAN first, then P2P mode tabs -->
+      <!-- 3 Connection Modes: Nearby, P2P, Internet / WAN -->
       <div class="connection-mode-container">
         <div class="connection-mode-tabs">
-          <button class="mode-tab-btn active" id="btnModeLAN" onclick="setConnectionMode('lan')">
+          <button class="mode-tab-btn active" id="btnModeNearby" onclick="setConnectionMode('nearby')" title="Nearby Subnet Devices">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-            <span>LAN Network</span>
-            <span class="mode-badge" id="modeLANBadge">0</span>
+            <span>Nearby</span>
+            <span class="mode-badge" id="modeNearbyBadge">0</span>
           </button>
-          <button class="mode-tab-btn" id="btnModeP2P" onclick="setConnectionMode('p2p')">
+          <button class="mode-tab-btn" id="btnModeP2P" onclick="setConnectionMode('p2p')" title="P2P Mesh Peers">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="20" r="1.5" fill="currentColor"/></svg>
-            <span>P2P Mesh</span>
+            <span>P2P</span>
             <span class="mode-badge" id="modeP2PBadge">0</span>
           </button>
+          <button class="mode-tab-btn" id="btnModeWAN" onclick="setConnectionMode('wan')" title="Internet / WAN Gateway">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            <span>Internet / WAN</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Search Bar -->
+      <div class="master-search-bar-wrap">
+        <div class="master-search-input-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="masterSearchInput" placeholder="Search devices by name or IP..." oninput="onMasterSearchInput(this.value)" autocomplete="off" spellcheck="false" />
+          <button class="search-clear-btn" id="masterSearchClearBtn" onclick="clearMasterSearch()" title="Clear search">✕</button>
         </div>
       </div>
 
@@ -2287,6 +2300,17 @@ TOTAL:    Rs. 94,325.00
         <div class="settings-card">
           <div class="setting-item">
             <div class="setting-text">
+              <label class="setting-label">Device Profile & Avatar Identity</label>
+              <span class="setting-desc">Customize your device display name and profile avatar emoji broadcasted over LAN & P2P</span>
+            </div>
+            <button class="btn btn-primary" onclick="openDeviceProfileModal()" style="background:var(--primary-emerald); font-weight:600;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              <span>Edit Profile</span>
+            </button>
+          </div>
+
+          <div class="setting-item">
+            <div class="setting-text">
               <label class="setting-label">Received Files Directory</label>
               <span class="setting-desc" id="saveDirDisplay">%USERPROFILE%\Downloads\NearMitra</span>
             </div>
@@ -2537,6 +2561,164 @@ TOTAL:    Rs. 94,325.00
           <button class="btn btn-secondary" onclick="closeQuickApiKeyModal()">Cancel</button>
           <button class="btn btn-primary" onclick="saveQuickApiKeyModal()">Save & Apply</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Device Profile & Avatar Modal Dialog -->
+  <div class="modal-overlay" id="deviceProfileModal">
+    <div class="modal-card profile-modal-card">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div class="modal-header-icon" style="background:rgba(16, 185, 129, 0.15); width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;color:var(--primary-emerald);"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          </div>
+          <div>
+            <h3 class="modal-title" style="margin:0; font-size:15px; font-weight:700;">Device Profile & Avatar</h3>
+            <p style="font-size:11px; color:var(--text-muted); margin:0;">Configure how this Windows PC appears to phones & laptops</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeDeviceProfileModal()">&times;</button>
+      </div>
+      
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px; max-height:72vh; overflow-y:auto; padding:16px 20px;">
+        <!-- 1. Hero Identity Display Card -->
+        <div class="profile-hero-card">
+          <div class="profile-avatar-large" id="profileHeroAvatar">💻</div>
+          <div class="profile-hero-details">
+            <div class="profile-hero-title-row">
+              <h3 class="profile-hero-name" id="profileHeroName">Windows PC</h3>
+              <span class="card-badge-pill bg-emerald-dim">Broadcasting</span>
+            </div>
+            <div class="profile-device-id-row">
+              <span class="profile-id-label">Device ID:</span>
+              <code class="profile-id-code" id="profileHeroID">0000-0000-0000</code>
+              <button class="btn-copy-mini" onclick="copyProfileID()" title="Copy Device ID">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              </button>
+            </div>
+            <div class="profile-broadcast-status">
+              <span class="status-pulse-dot"></span>
+              <span>UDP 43888 Multicast & LAN Socket Active</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Device Display Name -->
+        <div class="form-row">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label class="form-label" style="font-weight:700; font-size:11.5px; color:var(--text-title); display:flex; align-items:center; gap:6px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--primary-emerald);"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="13" y2="16"/></svg>
+              DEVICE DISPLAY NAME
+            </label>
+            <button class="link-helper" onclick="resetProfileNameToPC()" style="background:none; border:none; color:#38BDF8; font-size:11px; cursor:pointer;">Reset to Hardware Name</button>
+          </div>
+          <input type="text" id="profileDeviceNameInput" class="form-input" placeholder="e.g. Subham-Laptop, My-Desktop" oninput="onProfileNameChange(this.value)">
+        </div>
+
+        <!-- 3. Avatar Emoji Grid -->
+        <div class="form-row">
+          <label class="form-label" style="font-weight:700; font-size:11.5px; color:var(--text-title); display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;color:var(--primary-emerald);"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            CHOOSE PROFILE AVATAR EMOJI
+          </label>
+          
+          <div class="profile-emoji-grid" id="profileEmojiGrid">
+            <!-- Populated dynamically with preset emojis -->
+          </div>
+
+          <!-- Custom emoji input -->
+          <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+            <span style="font-size:11.5px; color:var(--text-muted);">Custom Emoji:</span>
+            <input type="text" id="profileCustomEmojiInput" class="form-input" style="width:70px; text-align:center; font-size:16px; padding:4px;" placeholder="🎯" maxlength="4" oninput="onCustomEmojiInput(this.value)">
+          </div>
+        </div>
+
+        <!-- 4. Network Info Box -->
+        <div class="profile-info-banner">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:#38BDF8;flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>When you save, your chosen name and avatar emoji are instantly broadcasted to all smartphones and laptops on your network.</span>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; padding:12px 20px;">
+        <button class="btn btn-secondary" onclick="resetProfileToHardwareDefaults()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          <span>Reset Default</span>
+        </button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-secondary" onclick="closeDeviceProfileModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveDeviceProfile()" style="background:var(--primary-emerald); font-weight:700;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;"><polyline points="20 6 9 17 4 12"/></svg>
+            <span>Save & Broadcast Identity</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WAN 6-Digit PIN Pairing Code Claim Modal -->
+  <div class="modal-overlay" id="wanPinCodeModal">
+    <div class="modal-card" style="width: 440px; max-width: 95vw;">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="background:rgba(99, 102, 241, 0.15); width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#818CF8;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div>
+            <h3 class="modal-title" style="margin:0; font-size:15px; font-weight:700;">Enter Remote Pairing PIN</h3>
+            <p style="font-size:11px; color:var(--text-muted); margin:0;">Enter the 6-digit code shown on the remote smartphone or PC</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeWanPinCodeModal()">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px; padding:16px 20px;">
+        <div style="text-align:center;">
+          <input type="text" id="wanPinCodeInput" class="form-input wan-pin-input" placeholder="• • • • • •" maxlength="6" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter') submitWanPinCode()">
+          <p style="font-size:11px; color:var(--text-muted); margin-top:8px;">Valid for 5 minutes. Code is single-use and end-to-end authenticated.</p>
+        </div>
+        <div id="wanPinCodeStatusMsg" style="font-size:12px; font-weight:600; text-align:center; min-height:16px;"></div>
+      </div>
+      <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:8px; padding:12px 20px;">
+        <button class="btn btn-secondary" onclick="closeWanPinCodeModal()">Cancel</button>
+        <button class="btn btn-primary" id="btnSubmitWanPin" onclick="submitWanPinCode()" style="background:#6366F1; font-weight:700;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>Connect & Pair</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Incoming Pair Request Dialog -->
+  <div class="modal-overlay" id="incomingPairRequestModal">
+    <div class="modal-card" style="width: 440px; max-width: 95vw; border: 1px solid rgba(99, 102, 241, 0.4); box-shadow: 0 16px 48px rgba(0,0,0,0.6);">
+      <div class="modal-header" style="background: rgba(99, 102, 241, 0.08); margin:-16px -16px 16px -16px; padding:16px 20px; border-bottom:1px solid rgba(99, 102, 241, 0.2);">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:22px;">🔗</span>
+          <div>
+            <h3 class="modal-title" style="margin:0; font-size:15px; font-weight:700; color:#818CF8;">Incoming Pairing Request</h3>
+            <p style="font-size:11px; color:var(--text-muted); margin:0;">A remote device is asking to connect with this PC</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px;">
+        <div style="display:flex; align-items:center; gap:14px; background: rgba(255,255,255,0.03); padding:12px; border-radius:10px; border:1px solid var(--border-color);">
+          <div id="incomingReqAvatar" style="width:48px; height:48px; border-radius:50%; background:linear-gradient(135deg,#6366F1,#4F46E5); display:flex; align-items:center; justify-content:center; font-size:22px; color:#FFF; flex-shrink:0;">📱</div>
+          <div>
+            <h4 id="incomingReqName" style="margin:0; font-size:15px; font-weight:700; color:var(--text-title);">Remote Device</h4>
+            <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">
+              Platform: <span id="incomingReqPlatform" style="color:#818CF8; font-weight:600;">Android</span> • <span id="incomingReqType">PIN Code Authenticated</span>
+            </div>
+          </div>
+        </div>
+        <p style="font-size:11.5px; color:var(--text-muted); margin:0; line-height:1.4;">Accepting will add this device to your Trusted Cloud Friends list for instant P2P messaging & file transfer over the internet.</p>
+      </div>
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+        <button class="btn btn-secondary" onclick="respondIncomingPairRequest(false)" style="color:#EF4444;">Decline</button>
+        <button class="btn btn-primary" onclick="respondIncomingPairRequest(true)" style="background:var(--primary-emerald); font-weight:700;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Accept & Pair</span>
+        </button>
       </div>
     </div>
   </div>

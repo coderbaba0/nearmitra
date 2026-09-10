@@ -10,8 +10,6 @@ import (
 
 // VirtualBridgeState tracks active hardware links with network peers.
 type VirtualBridgeState struct {
-	mu sync.RWMutex
-
 	// Audio Cast to Remote Speaker
 	AudioCastActive    bool    `json:"audio_cast_active"`
 	AudioCastPeer      string  `json:"audio_cast_peer"`
@@ -37,27 +35,30 @@ type VirtualBridgeState struct {
 	NFCReadTimestamp   time.Time `json:"nfc_read_timestamp"`
 }
 
-var globalVirtualBridge = &VirtualBridgeState{
-	AudioCastVolume: 0.85,
-}
+var (
+	virtualBridgeMu     sync.RWMutex
+	globalVirtualBridge = &VirtualBridgeState{
+		AudioCastVolume: 0.85,
+	}
+)
 
 // GetVirtualBridgeState returns current hardware bridge statuses.
 func GetVirtualBridgeState() VirtualBridgeState {
-	globalVirtualBridge.mu.RLock()
-	defer globalVirtualBridge.mu.RUnlock()
+	virtualBridgeMu.RLock()
+	defer virtualBridgeMu.RUnlock()
 	return *globalVirtualBridge
 }
 
 // StartAudioCast begins casting music/sound to remote peer speaker.
 func StartAudioCast(peerName string, peerIP string, trackTitle string, volume float64) error {
-	globalVirtualBridge.mu.Lock()
+	virtualBridgeMu.Lock()
 	globalVirtualBridge.AudioCastActive = true
 	globalVirtualBridge.AudioCastPeer = peerName
 	globalVirtualBridge.AudioCastPeerIP = peerIP
 	globalVirtualBridge.AudioCastTrack = trackTitle
 	globalVirtualBridge.AudioCastVolume = volume
 	globalVirtualBridge.AudioCastPlaying = true
-	globalVirtualBridge.mu.Unlock()
+	virtualBridgeMu.Unlock()
 
 	if peerIP != "" {
 		_ = CastAudioToPeer(peerIP, "play", trackTitle, volume)
@@ -67,11 +68,11 @@ func StartAudioCast(peerName string, peerIP string, trackTitle string, volume fl
 
 // StopAudioCast stops casting audio to remote peer.
 func StopAudioCast() {
-	globalVirtualBridge.mu.Lock()
+	virtualBridgeMu.Lock()
 	peerIP := globalVirtualBridge.AudioCastPeerIP
 	globalVirtualBridge.AudioCastActive = false
 	globalVirtualBridge.AudioCastPlaying = false
-	globalVirtualBridge.mu.Unlock()
+	virtualBridgeMu.Unlock()
 
 	if peerIP != "" {
 		_ = CastAudioToPeer(peerIP, "stop", "", 0)
@@ -80,8 +81,8 @@ func StopAudioCast() {
 
 // ToggleRemoteMic links or unlinks remote phone's microphone to host PC.
 func ToggleRemoteMic(peerName string, peerIP string, active bool) {
-	globalVirtualBridge.mu.Lock()
-	defer globalVirtualBridge.mu.Unlock()
+	virtualBridgeMu.Lock()
+	defer virtualBridgeMu.Unlock()
 	globalVirtualBridge.RemoteMicActive = active
 	globalVirtualBridge.RemoteMicPeer = peerName
 	globalVirtualBridge.RemoteMicPeerIP = peerIP
@@ -94,8 +95,8 @@ func ToggleRemoteMic(peerName string, peerIP string, active bool) {
 
 // ToggleRemoteCam links or unlinks remote phone's camera lens to host PC.
 func ToggleRemoteCam(peerName string, peerIP string, active bool) {
-	globalVirtualBridge.mu.Lock()
-	defer globalVirtualBridge.mu.Unlock()
+	virtualBridgeMu.Lock()
+	defer virtualBridgeMu.Unlock()
 	globalVirtualBridge.RemoteCamActive = active
 	globalVirtualBridge.RemoteCamPeer = peerName
 	globalVirtualBridge.RemoteCamPeerIP = peerIP

@@ -95,6 +95,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _wanService.addListener(_onServiceChanged);
     _wanRtcManager.addListener(_onServiceChanged);
     _firebasePresenceService.addListener(_onServiceChanged);
+    _historyService.addListener(_onHistoryChanged);
     _scroll.addListener(_onScroll);
     _peerStatusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) setState(() {});
@@ -950,10 +951,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _wanService.removeListener(_onServiceChanged);
     _wanRtcManager.removeListener(_onServiceChanged);
     _firebasePresenceService.removeListener(_onServiceChanged);
+    _historyService.removeListener(_onHistoryChanged);
     widget.service.stop();
     _message.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _onHistoryChanged() async {
+    final updated = await _historyService.load();
+    if (mounted) {
+      setState(() {
+        _history.clear();
+        _history.addAll(updated);
+      });
+    }
   }
 
   bool _isPeerOnline(Peer peer) {
@@ -1275,6 +1287,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
 
     final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
+
+    // 1. Immediately create and show queued item in chat UI
+    final chatItem = ChatItem(
+      id: itemId,
+      peerId: peer.id,
+      sender: widget.service.deviceName,
+      mine: true,
+      createdAt: DateTime.now(),
+      kind: ChatKind.text,
+      text: text,
+      status: 'Queued',
+      isAi: false,
+      replyToId: replyingTo?.id,
+      replyToSender: replyingTo?.sender,
+      replyToText: replyingTo?.text ?? replyingTo?.fileName,
+    );
+    _history.add(chatItem);
+    await _historyService.save(_history);
+    if (mounted) setState(() {});
+    _triggerScrollToBottom();
+
+    // 2. Attempt sending over network
     final ok = await widget.service.sendChat(
       peer,
       text,
@@ -1283,9 +1317,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       replyToSender: replyingTo?.sender,
       replyToText: replyingTo?.text ?? replyingTo?.fileName,
     );
-    final status = ok ? 'Sent' : 'Queued';
 
-    if (!ok) {
+    if (ok) {
+      chatItem.status = 'Sent';
+      await _historyService.save(_history);
+      if (mounted) setState(() {});
+    } else {
+      chatItem.status = 'Queued';
       await widget.service.queueOutboxItem(QueuedOutboxItem(
         id: itemId,
         peerId: peer.id,
@@ -1294,26 +1332,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         text: text,
         createdAt: DateTime.now(),
       ));
+      await _historyService.save(_history);
       _toast('Peer is offline • Message queued (auto-sends when online)');
+      if (mounted) setState(() {});
     }
-
-    _history.add(ChatItem(
-      id: itemId,
-      peerId: peer.id,
-      sender: widget.service.deviceName,
-      mine: true,
-      createdAt: DateTime.now(),
-      kind: ChatKind.text,
-      text: text,
-      status: status,
-      isAi: false,
-      replyToId: replyingTo?.id,
-      replyToSender: replyingTo?.sender,
-      replyToText: replyingTo?.text ?? replyingTo?.fileName,
-    ));
-    await _historyService.save(_history);
-    setState(() {});
-    _triggerScrollToBottom();
   }
 
   Future<void> _cancelQueuedMessage(ChatItem item) async {
@@ -1366,10 +1388,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final name = f.name;
       final size = await file.length();
       final itemId = '${DateTime.now().millisecondsSinceEpoch}_${i}_${peer.id}';
-      final ok = await widget.service.sendFile(peer, file, displayName: name);
-      final status = ok ? 'Sent' : 'Queued';
 
-      if (!ok) {
+      final fileItem = ChatItem(
+        id: itemId,
+        peerId: peer.id,
+        sender: widget.service.deviceName,
+        mine: true,
+        createdAt: DateTime.now(),
+        kind: ChatKind.file,
+        fileName: name,
+        filePath: path,
+        fileSize: size,
+        status: 'Queued',
+      );
+      _history.add(fileItem);
+      await _historyService.save(_history);
+      if (mounted) setState(() {});
+      _triggerScrollToBottom();
+
+      final ok = await widget.service.sendFile(peer, file, displayName: name);
+      if (ok) {
+        fileItem.status = 'Sent';
+        await _historyService.save(_history);
+        if (mounted) setState(() {});
+      } else {
+        fileItem.status = 'Queued';
         await widget.service.queueOutboxItem(QueuedOutboxItem(
           id: itemId,
           peerId: peer.id,
@@ -1380,24 +1423,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           fileSize: size,
           createdAt: DateTime.now(),
         ));
+        await _historyService.save(_history);
+        if (mounted) setState(() {});
       }
-
-      _history.add(ChatItem(
-        id: itemId,
-        peerId: peer.id,
-        sender: widget.service.deviceName,
-        mine: true,
-        createdAt: DateTime.now(),
-        kind: ChatKind.file,
-        fileName: name,
-        filePath: path,
-        fileSize: size,
-        status: status,
-      ));
-
-      await _historyService.save(_history);
-      if (mounted) setState(() {});
-      _triggerScrollToBottom();
     }
 
     if (!widget.service.peers.any((p) => p.id == peer.id && p.ip.isNotEmpty)) {
