@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,26 +20,60 @@ func TestPayloadExtractsOfflineWithoutInstalling(t *testing.T) {
 	if !bytes.Equal(data, appBinary) {
 		t.Fatal("extracted app differs from embedded payload")
 	}
-	for _, name := range []string{"nearmitra.ico", "uninstall.ps1", "setup-network.ps1"} {
+	for _, name := range []string{"nearmitra.ico", "Uninstall.exe"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("missing setup component %s: %v", name, err)
 		}
 	}
 }
-func TestRegistrationQuotesPathsAndUsesPerUserLocations(t *testing.T) {
-	path := `C:\Users\O'Brien\AppData\Local\Programs\NearMitra`
-	script := registrationScript(path, InstallOptions{DesktopShortcut: true, StartMenu: true})
-	if !strings.Contains(script, "O''Brien") || !strings.Contains(script, "GetFolderPath('Desktop')") || !strings.Contains(script, "GetFolderPath('Programs')") {
-		t.Fatal("paths are not safely quoted or redirected folders ignored")
+func TestNativeShortcutHandlesSpacesAndApostrophes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "O'Brien Folder")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(script, "Remove-ItemProperty") || strings.Contains(script, "HKLM:") {
-		t.Fatal("per-user autostart preference not respected")
+	path := filepath.Join(dir, "NearMitra.lnk")
+	if err := createShortcut(path, filepath.Join(dir, "NearMitra.exe"), dir, filepath.Join(dir, "nearmitra.ico")); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(script, "DisplayVersion") {
-		t.Fatal("missing app version registration")
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) < 76 {
+		t.Fatalf("invalid Windows shortcut: %v", err)
+	}
+	if data[0] != 0x4c {
+		t.Fatal("not a native Shell Link")
+	}
+	value := startupValue(filepath.Join(dir, "NearMitra.exe"))
+	if !strings.HasPrefix(value, `"`) || !strings.HasSuffix(value, `" --minimized`) {
+		t.Fatalf("incorrect startup command: %s", value)
 	}
 }
+func TestFirewallRulesRemainPrivateAndLocal(t *testing.T) {
+	exe := `C:\Users\O'Brien\Programs\NearMitra\NearMitra.exe`
+	for _, protocol := range []string{"TCP", "UDP"} {
+		args := strings.Join(firewallRuleArguments(exe, protocol), "|")
+		for _, want := range []string{"profile=private", "remoteip=localsubnet", "program=" + exe, "protocol=" + protocol} {
+			if !strings.Contains(args, want) {
+				t.Fatalf("missing firewall scope %s", want)
+			}
+		}
+		if strings.Contains(args, "profile=any") {
+			t.Fatal("public network firewall access granted")
+		}
+	}
+}
+func TestInstallerUsesNoPowerShell(t *testing.T) {
+	for _, name := range []string{"install.go", "native_windows.go", "main.go"} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.ToLower(string(data)), "powershell.exe") || strings.Contains(string(data), "runInstallerScript") {
+			t.Fatalf("PowerShell still required by %s", name)
+		}
+	}
+}
+
 func TestReleasePayloadIsCurrent(t *testing.T) {
 	release := filepath.Join("..", "build", "windows-release", "NearMitra.exe")
 	current, err := os.ReadFile(release)
@@ -55,17 +88,5 @@ func TestReleasePayloadIsCurrent(t *testing.T) {
 	}
 	if !bytes.Contains(appBinary, []byte("NearMitraCall.resolvePeer")) {
 		t.Fatal("setup missing direct Nearby call routing")
-	}
-}
-
-func TestRegistrationScriptParsesInPowerShell(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registration.ps1")
-	script := registrationScript(`C:\Users\O'Brien\AppData\Local\Programs\NearMitra`, InstallOptions{DesktopShortcut: true, StartMenu: true, Autostart: true})
-	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
-		t.Fatal(err)
-	}
-	parser := "$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile(" + psLiteral(path) + ",[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{Write-Output $_.Message};exit 1};exit 0"
-	if output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", parser).CombinedOutput(); err != nil {
-		t.Fatalf("invalid registration script: %s %v", output, err)
 	}
 }

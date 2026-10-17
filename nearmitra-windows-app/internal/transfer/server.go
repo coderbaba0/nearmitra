@@ -4,6 +4,7 @@ package transfer
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -216,7 +217,7 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 				At:     time.Now(),
 				Kind:   "text",
 				IsAi:   header.AIHost,
-				Status: "Delivered",
+				Status: "Delivered", ReplyToID: header.ReplyToID, ReplyToSender: header.ReplyToSender, ReplyToText: header.ReplyToText, IsForwarded: header.IsForwarded,
 			})
 			ts.writeDeliveryAck(conn, header, storeErr)
 		}
@@ -271,15 +272,51 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 			cb.OnAIRequest(prompt, senderID, senderName, conn)
 			return
 		}
-		response, err := ai.Get().GenerateSharedResponse(prompt)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		encoder := json.NewEncoder(conn)
+		var outputMu sync.Mutex
+		send := func(packet map[string]interface{}) error {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+			return encoder.Encode(packet)
+		}
+		// Phone's line reader remains responsive while a local model is loading.
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := send(map[string]interface{}{"type": "ai_stream", "status": "loading", "done": false}); err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+		// A stopped remote request cancels model generation without waiting for its next token.
+		go func() { var one [1]byte; _, _ = conn.Read(one[:]); cancel() }()
+
+		err := ai.Get().StreamSharedResponse(ctx, prompt, func(delta string) error {
+			// Re-check revocations during a long answer, before sending another token.
+			current := config.Get().GetConfig().AIConfig
+			if ok, why := ai.SharedAccess(current, senderID, header.InternetDeviceID, peerIP); !ok {
+				return fmt.Errorf("%s", why)
+			}
+			return send(map[string]interface{}{"type": "ai_stream", "sender": cfg.DeviceName + " AI", "sender_id": cfg.DeviceID, "reply": delta, "done": false, "status": "streaming", "provider": cfg.AIConfig.Provider})
+		})
+		reply["reply"] = ""
 		if err != nil {
 			reply["status"] = "error"
 			reply["error"] = err.Error()
 		} else {
-			reply["status"] = "success"
-			reply["reply"] = response
+			reply["status"] = "done"
 		}
-		_ = json.NewEncoder(conn).Encode(reply)
+		_ = send(reply)
 
 	case "call_invite", "call_accepted", "call_declined", "call_ended", "call_video_toggle":
 		kind := header.Type
@@ -320,6 +357,11 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 			cb.OnStreamSignal(peerIP, header)
 		}
 
+	case "wireless_audio_pending", "wireless_audio_request", "wireless_audio_offer", "wireless_audio_answer", "wireless_audio_ice", "wireless_audio_stop", "wireless_audio_reject":
+		if cb.OnStreamSignal != nil {
+			cb.OnStreamSignal(peerIP, header)
+		}
+
 	case "stream_offer", "stream_answer", "stream_ice", "stream_control", "stream_rejected", "stream_stopped", "webrtc_offer", "webrtc_answer", "webrtc_ice":
 		if cb.OnStreamSignal != nil {
 			cb.OnStreamSignal(peerIP, header)
@@ -341,40 +383,63 @@ func (ts *TransferServer) writeDeliveryAck(conn net.Conn, header models.WireHead
 
 func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.WireHeader, cb TransferCallbacks, senderID, senderName, peerIP string) error {
 	started := time.Now()
-	tracked := &progressReader{Reader: reader, OnRead: func(received int64) {
+	id := header.MsgID
+	if id == "" {
+		id = fmt.Sprintf("msg_file_%d", time.Now().UnixNano())
+	}
+	kind := "file"
+	if header.Folder || header.Type == "folder" {
+		kind = "folder"
+	}
+	progress := models.TransferProgress{ID: id, PeerID: senderID, PeerIP: peerIP, Kind: kind, Active: true, Direction: "download", PeerName: senderName, FileName: header.Name, BytesTotal: header.Size, StartTime: started, ETASeconds: -1}
+	report := func() {
 		if cb.OnTransferProgress != nil {
-			seconds := time.Since(started).Seconds()
-			speed := float64(0)
-			if seconds > 0 {
-				speed = float64(received) / (1024 * 1024) / seconds
-			}
-			cb.OnTransferProgress(models.TransferProgress{Active: true, Direction: "download", PeerName: senderName, FileName: header.Name, BytesTotal: header.Size, BytesSent: received, SpeedMBps: speed, StartTime: started})
+			cb.OnTransferProgress(progress)
+		}
+	}
+	report()
+	lastReport := started
+	tracked := &progressReader{Reader: reader, OnRead: func(received int64) {
+		progress.BytesSent = received
+		seconds := time.Since(started).Seconds()
+		if seconds > 0 {
+			progress.SpeedMBps = float64(received) / (1024 * 1024) / seconds
+		}
+		if progress.SpeedMBps > 0 {
+			progress.ETASeconds = float64(header.Size-received) / (progress.SpeedMBps * 1024 * 1024)
+		}
+		if time.Since(lastReport) >= 100*time.Millisecond || received == header.Size {
+			report()
+			lastReport = time.Now()
 		}
 	}}
 	path, err := StoreReceivedFile(config.Get().GetConfig().SaveDirectory, header.Name, header.Folder || header.Type == "folder", tracked, header.Size)
 	if err != nil {
 		log.Printf("[TransferServer] Receive failed for %s: %v", header.Name, err)
 		if cb.OnTransferProgress != nil {
-			cb.OnTransferProgress(models.TransferProgress{FileName: header.Name, Error: err.Error()})
+			progress.Active = false
+			progress.Error = err.Error()
+			report()
 		}
 		return err
 	}
 	if cb.OnIncomingMessage == nil {
+		progress.Active = false
+		progress.Error = "message storage is unavailable"
+		report()
 		return fmt.Errorf("message storage is unavailable")
 	}
-	kind := "file"
-	if header.Folder || header.Type == "folder" {
-		kind = "folder"
-	}
-	id := header.MsgID
-	if id == "" {
-		id = fmt.Sprintf("msg_file_%d", time.Now().UnixNano())
-	}
 	err = cb.OnIncomingMessage(models.ChatMessage{ID: id, PeerID: senderID, PeerIP: peerIP, Sender: senderName,
-		Mine: false, At: time.Now(), Kind: kind, FileName: header.Name, FileSize: header.Size, FilePath: path, Status: "Delivered"})
-	if err == nil && cb.OnTransferProgress != nil {
-		cb.OnTransferProgress(models.TransferProgress{Direction: "download", PeerName: senderName, FileName: header.Name, BytesTotal: header.Size, BytesSent: header.Size, Complete: true})
+		Mine: false, At: time.Now(), Kind: kind, FileName: header.Name, FileSize: header.Size, FilePath: path, Status: "Delivered", ReplyToID: header.ReplyToID, ReplyToSender: header.ReplyToSender, ReplyToText: header.ReplyToText, IsForwarded: header.IsForwarded})
+	progress.Active = false
+	if err == nil {
+		progress.Complete = true
+		progress.BytesSent = header.Size
+		progress.ETASeconds = 0
+	} else {
+		progress.Error = err.Error()
 	}
+	report()
 	return err
 }
 

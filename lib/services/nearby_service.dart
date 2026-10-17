@@ -21,6 +21,7 @@ import 'internet_device_identity_service.dart';
 import 'notification_service.dart';
 import 'socket_reader.dart';
 import 'history_service.dart';
+import 'wireless_audio_service.dart';
 
 const int discoveryPort = 43888;
 const int transferPort = 43889;
@@ -80,6 +81,12 @@ class QueuedOutboxItem {
 }
 
 class NearbyService extends ChangeNotifier {
+  late final WirelessAudioService wirelessAudio = WirelessAudioService(
+    send: (peer, type, data) =>
+        sendWebRtcSignal(peer, type, data, requireDelivery: true),
+    isOccupied: () =>
+        CallService().isCallActive || CallService().incomingCall.value != null,
+  );
   static NearbyService? _instance;
   static NearbyService get instance => _instance!;
 
@@ -579,10 +586,12 @@ class NearbyService extends ChangeNotifier {
   Future<void> sendWebRtcSignal(
     Peer peer,
     String signalType,
-    Map<String, dynamic> data,
-  ) async {
+    Map<String, dynamic> data, {
+    bool requireDelivery = false,
+  }) async {
     final targetIp = _resolveTargetIp(peer);
     if (targetIp.isEmpty) {
+      if (requireDelivery) throw StateError('Nearby IP is unavailable');
       log('[WebRtcSignal] Cannot send $signalType: IP not resolved for ${peer.name} (${peer.id})');
       return;
     }
@@ -604,6 +613,7 @@ class NearbyService extends ChangeNotifier {
       log('[WebRtcSignal] Sent $signalType to ${peer.name} ($targetIp)');
     } catch (e) {
       log('Error sending WebRTC signal $signalType to ${peer.name} ($targetIp): $e');
+      if (requireDelivery) rethrow;
     }
   }
 
@@ -689,6 +699,7 @@ class NearbyService extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    await wirelessAudio.stop();
     _announceTimer?.cancel();
     _cleanupTimer?.cancel();
     _keepaliveTimer?.cancel();
@@ -975,13 +986,21 @@ class NearbyService extends ChangeNotifier {
 
       if (type == 'sensor_request') {
         try {
-          if (!Platform.isAndroid) throw UnsupportedError('Sensor sharing requires Android');
+          if (!Platform.isAndroid) {
+            throw UnsupportedError('Sensor sharing requires Android');
+          }
           final sensors = await AndroidNetworkBridge()
               .requestPhoneTelemetry('$sender ($remoteIp)');
           sensors['device_name'] = deviceName;
-          socket.write('${jsonEncode({'type': 'sensor_response', 'sensors': sensors})}\n');
+          socket.write('${jsonEncode({
+                'type': 'sensor_response',
+                'sensors': sensors
+              })}\n');
         } catch (error) {
-          socket.write('${jsonEncode({'type': 'sensor_response', 'error': error.toString()})}\n');
+          socket.write('${jsonEncode({
+                'type': 'sensor_response',
+                'error': error.toString()
+              })}\n');
         }
         await socket.flush();
         return;
@@ -1131,7 +1150,7 @@ class NearbyService extends ChangeNotifier {
       }
 
       if (type == 'call_invite') {
-        final isVideo = h['is_video'] == true || h['call_type']=='video';
+        final isVideo = h['is_video'] == true || h['call_type'] == 'video';
         final pId = resolvedPeerId.isNotEmpty
             ? resolvedPeerId
             : (senderId.isNotEmpty ? senderId : remoteIp);
@@ -1140,14 +1159,21 @@ class NearbyService extends ChangeNotifier {
             _peers[remoteIp] ??
             _upsertPeer(pId, pName, remoteIp);
 
-        final ringing=await CallService().showIncomingCall(
-          peerId: peerObj.id,
-          peerName: peerObj.name,
-          peerIp: peerObj.ip.isNotEmpty ? peerObj.ip : remoteIp,
-          isVideoCall: isVideo,
-        );
-        if(h['require_ack']==true){socket.write('${jsonEncode({'type':'call_ringing','status':ringing?'ringing':'busy'})}\n');await socket.flush();}
-        if(!ringing)unawaited(sendCallSignal(peerObj,'call_declined'));
+        final ringing = !wirelessAudio.busy &&
+            await CallService().showIncomingCall(
+              peerId: peerObj.id,
+              peerName: peerObj.name,
+              peerIp: peerObj.ip.isNotEmpty ? peerObj.ip : remoteIp,
+              isVideoCall: isVideo,
+            );
+        if (h['require_ack'] == true) {
+          socket.write('${jsonEncode({
+                'type': 'call_ringing',
+                'status': ringing ? 'ringing' : 'busy'
+              })}\n');
+          await socket.flush();
+        }
+        if (!ringing) unawaited(sendCallSignal(peerObj, 'call_declined'));
         return;
       }
 
@@ -1187,6 +1213,14 @@ class NearbyService extends ChangeNotifier {
       if (type == 'webrtc_ice') {
         onWebRtcIceCandidate?.call(
             resolvedPeerId, Map<String, dynamic>.from(h));
+        return;
+      }
+
+      if (type?.startsWith('wireless_audio_') == true) {
+        await wirelessAudio.handle(
+          Peer(id: resolvedPeerId, name: sender, ip: remoteIp),
+          Map<String, dynamic>.from(h),
+        );
         return;
       }
 
@@ -1632,7 +1666,9 @@ class NearbyService extends ChangeNotifier {
 
               if (status == 'disabled' || h['error_code'] == 'ai_disabled') {
                 explicitDisabled = true;
-                const msg = 'Nearby AI is not enabled on this device.';
+                final msg = h['reply']?.toString() ??
+                    h['message']?.toString() ??
+                    'Nearby AI access has not been granted by this device.';
                 log('[AI DEBUG] AI error response: $msg');
                 yield msg;
                 break;
@@ -1695,9 +1731,9 @@ class NearbyService extends ChangeNotifier {
       }
     }
 
-    log('[AI DEBUG] Querying configured AiSettingsService engine...');
-    final localAiResult = await AiSettingsService().queryAi(cleanPrompt);
-    yield localAiResult;
+    // Nearby AI always belongs to the selected remote device.
+    // A connection failure must never silently query this phone's own engine.
+    yield 'Could not reach this device’s Nearby AI. Ask its owner to enable sharing and allow your device.';
   }
 
   Future<String> sendAiPrompt(Peer peer, String prompt) async {

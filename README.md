@@ -1,6 +1,45 @@
 # NearMitra: Local-First Distributed Edge Computing, Global WAN & Communication Framework
 
-**NearMitra is a local-first distributed edge computing, WAN and communication platform.** It combines high-speed private local network and direct peer-to-peer (P2P) transport with **Global WAN (Internet / Cloud Relay) Connectivity**, **Decentralized Nearby AI Model Sharing**, **AI-Powered Live CCTV Camera & Voice Streaming**, **Multi-Hop Mesh Messaging**, **Real-Time WebRTC Calling**, and **High-Speed File Transfer** — operating **100% offline without requiring internet connections, cellular data, or external cloud infrastructure, with optional WAN connectivity for global device communication**.
+NearMitra connects Android phones and Windows PCs for local chat, file/folder transfers, WebRTC calls, camera/audio streams and permission-based AI sharing. Nearby LAN and Wi-Fi Direct/P2P provide direct connections; Internet/WAN mode adds remote device discovery, presence and signaling. Local operation depends on the selected feature: cloud AI providers and WAN services require internet access.
+
+## Latest updates — 17 October 2026
+
+The current Windows installer is **2.1.17**. Android remains **1.0.1+2** in `pubspec.yaml`; the mobile changes below are source updates, not a newly published APK. See the [Windows README](nearmitra-windows-app/README.md), [hardware and feature notes](nearmitra-windows-app/IOT_SETUP.md), and [Windows signing guide](nearmitra-windows-app/WINDOWS_SIGNING.md).
+
+| Area | Current behavior |
+|---|---|
+| Chat and transfers | Nearby/P2P and WAN identities share conversation routing, with an available direct route preferred. Windows shows incoming file/folder progress, byte counts, speed and ETA in the sender's chat. Per-device and Chat unread badges use the active theme and count a transfer once across completion. |
+| Reactions and replies | Windows handles mobile reactions and removal over Nearby and WAN. Quoted replies preserve the original sender/text and can jump to the original message. Desktop messages/files support Reply, Select and Forward, including multiple selected items. |
+| Calling | Connected-call controls support camera/audio switching and screen sharing, with cleanup on stop/disconnect. Normal microphone/camera calls do not open a screen-share picker. Nearby device resolution and receive-only PCs without a microphone are handled separately from explicit audio broadcast. |
+| Wi-Fi Audio | A standalone speaker/microphone session, separate from calls and CCTV. Windows Voice → Broadcast PC Audio to Phone pairs with Android Streaming → Wi-Fi Audio. Requests require owner approval; both sides can stop. Android includes output-route feedback and a meter based on actual audio energy. |
+| All-PC sound | Windows uses native WASAPI loopback of the chosen playback output for Chrome, YouTube and desktop players. PCM conversion follows the device's actual sample rate. An active physical or virtual playback output is required; no audio driver is bundled. Browser-tab capture remains a separate option. |
+| Nearby AI | A device chat's Nearby AI uses that selected device's shared engine. My AI configures the current device's own engine. Windows can allow/revoke a selected phone's access to its configured Ollama; actual response chunks stream to the phone, with loading heartbeats, cancellation and permission checks during generation. |
+| Presence | Windows WAN presence uses heartbeats, expiry and offline cleanup. Mobile treats stale desktop presence as offline rather than trusting an old online flag indefinitely. |
+| Phone sensors | Windows can request an owner-approved battery/location snapshot. Android handles permission levels, recent readings and fresh GPS/network fixes; Windows displays the actual location status. This is not continuous tracking. |
+| Windows integration | Theme-aware sidebar icons, tray/startup support, native file-picker ownership, and native Explorer Open Folder / Show in Folder. Exact folder matching raises/restores the requested Explorer window rather than assuming a launched process takes focus. |
+| Installer | Per-user setup, default-checked minimized auto-start, native shortcut/registry/uninstall steps with no PowerShell dependency. Private-network firewall setup is optional and still requests administrator approval. Declining it completes installation with a firewall warning. |
+
+### First cross-device test
+
+1. Install the latest Windows setup and close older tray/portable copies. Run the current Android source if testing features absent from your installed APK.
+2. Connect both devices through Nearby LAN or a working Wi-Fi Direct/P2P link. Approve requests on the receiving device.
+3. Test text, a file and a folder. Check the sender's Windows chat while receiving, then test reaction removal, quoted Reply and Select → Forward.
+4. For PC sound, open Windows **Voice → Broadcast PC Audio to Phone**, choose **All PC apps** and the same playback output used by your player, then **Send PC audio**. Approve on Android. Without a physical output, configure a separately installed virtual playback device first. Tab mode requires selecting an audible tab and sharing its audio.
+5. For phone microphone playback in NearMitra, choose **Use phone mic** and approve microphone access on Android. Using it as another Windows application's microphone requires a separate virtual audio routing device.
+6. For Windows Ollama sharing, configure/enable the engine in **My AI settings**, select the phone's chat and choose **Share my AI with this device → Allow**. On the phone, open that Windows device's Nearby AI. To query the phone's engine from Windows, its owner must separately allow the Windows device on the phone.
+
+### Release and validation limits
+
+- **Unsigned installer:** `flutterfever.com` is installer/Apps branding. UAC still shows **Unknown publisher** until a trusted Authenticode certificate signs the app/setup. The current installer still offers optional firewall elevation; a no-UAC installer was discussed but was not implemented. See [signing requirements](nearmitra-windows-app/WINDOWS_SIGNING.md).
+- **Build artifacts:** setup EXEs, APKs, user data and logs are not versioned. Build the Windows installer with `nearmitra-windows-app/build-installer.bat`; local output is `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.17_x64.exe`. No GitHub Release/upload is implied by a source push.
+- **Compatibility:** standalone Wi-Fi Audio, native Android speaker routing and the GPS-provider changes require updated mobile source. Existing older APKs do not acquire those features when Windows is upgraded. The Windows Ollama stream uses the existing mobile streaming protocol.
+- **Transport:** standalone Wi-Fi Audio and device-chat Nearby AI require a direct Nearby/P2P connection. They are not WAN-only features. Ollama has incremental host streaming; cloud engines retain their current provider response behavior.
+- **AI vision:** the warehouse/person-counting database, persistent identities, male/female classification and production object-counting pipeline were discussed and deferred. Screenshot labels and visual filters do not establish that these models or a counting database are implemented. IoT devices require the supported gateway/driver contract described in [IOT_SETUP.md](nearmitra-windows-app/IOT_SETUP.md).
+- **Security:** local TCP chat/file/AI paths use newline-delimited JSON and payload bytes; do not assume AES/end-to-end encryption for every LAN packet. WebRTC media/data-channel security is a separate transport. Owner permission is an application access control, not cryptographic device authentication.
+- **Verification:** Windows Go tests and 118 desktop/installer JavaScript checks pass. An interactive Windows test verified Explorer foreground activation with an existing folder behind a temporary app window. All 53 mobile tests pass; source-analysis details are listed in the Windows README. Physical phone–Windows audio/call/GPS/AI behavior still needs device testing; improved buffering does not establish that every reported low-pitch/slow-playback case is resolved.
+
+---
+
 
 ---
 
@@ -22,6 +61,8 @@ NearMitra bridges mobile devices and desktop workstations across local Wi-Fi net
 ---
 
 ## App Visual Showcase
+
+Screenshots illustrate earlier UI versions. In particular, CCTV vision labels are not proof of deployed person-counting, identity or classification models; use the current release notes above for implementation status.
 
 ### Series 1: P2P Discovery, 60 FPS Radar & WebRTC Calling
 
@@ -118,9 +159,9 @@ No single mobile smartphone possesses sufficient RAM, GPU compute, or battery ca
 
 #### The NearMitra Solution:
 NearMitra introduces a **Local Peer-to-Peer AI Model Sharing Protocol**:
-- **Workstation as Local AI Host**: A single desktop PC (equipped with GPU running Ollama/LocalAI) or a high-end mobile node acts as a local AI Host on the network.
-- **Zero-Cloud LAN Querying**: Any lightweight client on the local network or direct P2P link can dispatch prompts and receive real-time streaming responses from these specialized models.
-- **Model Interoperability**: Clients can request different models hosted across the network (e.g., query a vision model on Node A, a reasoning model on Node B, or a domain-specific model on Node C) without installing heavy model weights locally.
+- **Device as AI Host**: A Windows PC running Ollama, or a phone with its own supported AI provider configuration, can share its configured engine with approved peers.
+- **Permission-Based LAN Querying**: An allowed client can query the selected host’s configured engine over Nearby/P2P. Windows Ollama responses stream incrementally; cloud-hosted engines still require internet access.
+- **Host-Owned Model Selection**: Each owner selects the engine/model in My AI settings. Clients use that selected host’s engine without downloading its weights; model capability discovery and specialist vision pipelines remain separate work.
 - **Granular Security Controls**: AI Host nodes maintain complete control with persistent per-peer access whitelisting and revocations.
 
 ```
@@ -186,9 +227,9 @@ NearMitra offers a flexible multi-mode connectivity layer to seamlessly connect 
 
 ---
 
-### 7. Real-Time Audio & Video Calling (WebRTC P2P & WAN)
+### 7. Real-Time Audio & Video Calling
 
-- **P2P & WAN HD Voice & Video Calls**: Direct device-to-device audio and video streams powered by WebRTC over local sockets or secure global signaling.
+- **Nearby/P2P Voice & Video Calls**: Direct device-to-device audio and video powered by WebRTC with local signaling. Conversation transport routing keeps normal chat separate from direct-call availability.
 - **Full-Screen Call Interface**: Audio mute, camera flip, speakerphone switching, and call duration tracking.
 - **Background Call Delivery**: Integrated with native Android full-screen incoming call notifications even when the application is backgrounded or the screen is locked.
 
@@ -311,8 +352,10 @@ Node Capability Advertisement:
 
 ## Building the Application
 
+For Windows Go/installer build steps and tests, see the [Windows README](nearmitra-windows-app/README.md).
+
 ### Prerequisites:
-- Flutter SDK (v3.19+)
+- Flutter SDK compatible with the Dart SDK constraint in `pubspec.yaml` (Dart 3.4 or newer)
 - Android SDK (API Level 26+ / Android 8.0+)
 - Java JDK 17
 
@@ -334,9 +377,9 @@ flutter build apk --split-per-abi
 
 ## Privacy & Security Model
 
-- **100% Offline**: No network traffic ever leaves the local subnet or direct P2P link.
-- **Zero Cloud Footprint**: No registration, no centralized user database, no telemetry tracking.
-- **Deterministic Local Storage**: All settings, logs, and permissions remain strictly on local device storage.
+- **Local transport**: Nearby chat/file/AI requests use direct local connections. WebRTC sessions may use STUN/ICE services depending on configuration.
+- **Optional external services**: WAN uses Firebase presence/signaling; cloud AI requests reach the selected provider. These modes require their configured services and internet access.
+- **Local application data**: Chat history, received files, device permissions and desktop configuration are stored locally. Browser-selected sent attachments are retained locally for forwarding. Protect the host and its configured provider credentials.
 
 ---
 

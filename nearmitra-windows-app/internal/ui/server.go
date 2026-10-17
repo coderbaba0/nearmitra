@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -137,6 +138,10 @@ func (hs *HTTPServer) PushStreamSignal(peerIP string, header models.WireHeader) 
 		Received: time.Now(),
 	})
 	hs.AddLog(fmt.Sprintf("[SIGNAL] WebRTC Stream Signal [%s] received from %s", header.Type, peerIP))
+	if strings.HasPrefix(header.Type, "wireless_audio_") && header.Reason != "" {
+		hs.AddLog(fmt.Sprintf("[AUDIO] %s from %s: %s", header.Type, peerIP, header.Reason))
+		log.Printf("[AUDIO] %s from %s: %s", header.Type, peerIP, header.Reason)
+	}
 }
 
 // AddLog appends a timestamped log to the UI console.
@@ -150,57 +155,61 @@ func (hs *HTTPServer) AddLog(msg string) {
 	}
 }
 
+// serveEmbeddedUI serves the same embedded assets used by the installed app.
+func serveEmbeddedUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" || path == "index.html" {
+		data, err := fs.ReadFile(webFS, "web/index.html")
+		if err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "style.css" {
+		data, err := fs.ReadFile(webFS, "web/style.css")
+		if err == nil {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "app.js" || path == "chat-routing.js" || path == "nearby-call.js" || path == "audio-capture.js" || path == "wireless-audio.js" || path == "chat-transfers.js" || path == "native-audio.js" || path == "native-audio-worklet.js" || path == "native-pcm-buffer.js" {
+		data, err := fs.ReadFile(webFS, "web/"+path)
+		if err == nil {
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "logo.png" {
+		data, err := fs.ReadFile(webFS, "web/logo.png")
+		if err == nil {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "favicon.ico" {
+		data, err := fs.ReadFile(webFS, "web/favicon.ico")
+		if err == nil {
+			w.Header().Set("Content-Type", "image/x-icon")
+			_, _ = w.Write(data)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
 // Start launches embedded web server.
 func (hs *HTTPServer) Start() error {
 	mux := http.NewServeMux()
 
-	// Direct Embedded Asset Handlers
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" || path == "index.html" {
-			data, err := fs.ReadFile(webFS, "web/index.html")
-			if err == nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "style.css" {
-			data, err := fs.ReadFile(webFS, "web/style.css")
-			if err == nil {
-				w.Header().Set("Content-Type", "text/css; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "app.js" || path == "chat-routing.js" || path == "nearby-call.js" || path == "audio-capture.js" {
-			data, err := fs.ReadFile(webFS, "web/"+path)
-			if err == nil {
-				w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "logo.png" {
-			data, err := fs.ReadFile(webFS, "web/logo.png")
-			if err == nil {
-				w.Header().Set("Content-Type", "image/png")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "favicon.ico" {
-			data, err := fs.ReadFile(webFS, "web/favicon.ico")
-			if err == nil {
-				w.Header().Set("Content-Type", "image/x-icon")
-				_, _ = w.Write(data)
-				return
-			}
-		}
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("/", serveEmbeddedUI)
 
 	// API Endpoints
+	mux.HandleFunc("/api/audio/devices", hs.handleAudioDevices)
+	mux.HandleFunc("/api/audio/loopback", hs.handleAudioLoopback)
 	mux.HandleFunc("/api/state", hs.handleState)
 	mux.HandleFunc("/api/discovery/rescan", hs.handleDiscoveryRescan)
 	mux.HandleFunc("/api/lan/scan", hs.handleLANScan)
@@ -211,8 +220,11 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/send-folder", hs.handleSendFolder)
 	mux.HandleFunc("/api/chat/send", hs.handleChatSend)
 	mux.HandleFunc("/api/chat/receive-file", hs.handleChatReceiveFile)
+	mux.HandleFunc("/api/chat/cache-attachment", hs.handleChatCacheAttachment)
 	mux.HandleFunc("/api/chat/folder-archive", hs.handleChatFolderArchive)
 	mux.HandleFunc("/api/chat/react", hs.handleChatReact)
+	mux.HandleFunc("/api/chat/forward", hs.handleChatForward)
+	mux.HandleFunc("/api/chat/forward-file", hs.handleChatForwardFile)
 	mux.HandleFunc("/api/chat/typing", hs.handleChatTyping)
 	mux.HandleFunc("/api/chat/clear", hs.handleChatClear)
 	mux.HandleFunc("/api/cctv/filter", hs.handleCCTVFilter)
@@ -237,6 +249,8 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/ai/set-config", hs.handleAISetConfig)
 	mux.HandleFunc("/api/ai/get-config", hs.handleAIGetConfig)
 	mux.HandleFunc("/api/ai/query", hs.handleAIQuery)
+	mux.HandleFunc("/api/ai/nearby-query", hs.handleNearbyAIQuery)
+	mux.HandleFunc("/api/ai/selected-sharing", hs.handleSelectedAISharing)
 	mux.HandleFunc("/api/ai/share-toggle", hs.handleAIShareToggle)
 	mux.HandleFunc("/api/ai/peer-permission", hs.handleAIPeerPermission)
 	mux.HandleFunc("/api/ai/analytics", hs.handleAIAnalytics)
@@ -419,14 +433,15 @@ func (hs *HTTPServer) handleSendFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Select an available Nearby device", 400)
 		return
 	}
-	if err := transfer.SendFile(targetIP, filePath, nil); err != nil {
+	sent, err := hs.sendChatAttachment(targetIP, filePath, false)
+	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(502)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": filepath.Base(filePath)})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": filepath.Base(filePath), "message": sent})
 }
 
 // handleSendFileUpload receives drag-dropped file bytes from the browser,
@@ -452,37 +467,24 @@ func (hs *HTTPServer) handleSendFileUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer file.Close()
+	defer r.MultipartForm.RemoveAll()
 
 	if targetIP == "" {
 		http.Error(w, "Select an available Nearby device", 400)
 		return
 	}
-	tmpDir, err := os.MkdirTemp("", "nearmitra-send-*")
+	path, err := transfer.StoreReceivedFile(hs.chatMgr.AttachmentDirectory(), header.Filename, false, file, header.Size)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	defer os.RemoveAll(tmpDir)
-	tmpPath := filepath.Join(tmpDir, filepath.Base(header.Filename))
-	tmpFile, err := os.Create(tmpPath)
+	sent, err := hs.sendChatAttachment(targetIP, path, false)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	_, copyErr := io.Copy(tmpFile, file)
-	closeErr := tmpFile.Close()
-	if copyErr != nil || closeErr != nil {
-		http.Error(w, "Could not stage upload", 500)
-		return
-	}
-	if err := transfer.SendFile(targetIP, tmpPath, nil); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(502)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		http.Error(w, err.Error(), 502)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": header.Filename, "size": header.Size})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": header.Filename, "size": header.Size, "message": sent})
 }
 
 func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
@@ -493,14 +495,15 @@ func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Select an available Nearby device", 400)
 			return
 		}
-		if err := transfer.SendFolder(targetIP, folder, nil); err != nil {
+		sent, err := hs.sendChatAttachment(targetIP, folder, true)
+		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(502)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"folder": filepath.Base(folder)})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"folder": filepath.Base(folder), "message": sent})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -532,7 +535,7 @@ func (hs *HTTPServer) handleChatSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Nearby device unavailable", 503)
 			return
 		}
-		if err := transfer.SendTextMessage(ip, msg.ID, msg.Text); err != nil {
+		if err := transfer.SendTextMessage(ip, msg.ID, msg.Text, msg); err != nil {
 			msg.Status = "Queued"
 			_ = hs.chatMgr.AddMessage(msg)
 			http.Error(w, err.Error(), 502)
@@ -549,6 +552,12 @@ func (hs *HTTPServer) handleChatSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleChatReceiveFile(w http.ResponseWriter, r *http.Request) {
+	hs.handleChatFileStorage(w, r, false)
+}
+func (hs *HTTPServer) handleChatCacheAttachment(w http.ResponseWriter, r *http.Request) {
+	hs.handleChatFileStorage(w, r, true)
+}
+func (hs *HTTPServer) handleChatFileStorage(w http.ResponseWriter, r *http.Request, outgoing bool) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", 405)
 		return
@@ -573,14 +582,21 @@ func (hs *HTTPServer) handleChatReceiveFile(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "incomplete transfer", 400)
 		return
 	}
-	msg.FilePath, err = transfer.StoreReceivedFile(hs.cfgMgr.GetConfig().SaveDirectory, msg.FileName, msg.Kind == "folder", input, header.Size)
+	directory := hs.chatMgr.AttachmentDirectory()
+	if !outgoing {
+		directory = hs.cfgMgr.GetConfig().SaveDirectory
+	}
+	msg.FilePath, err = transfer.StoreReceivedFile(directory, msg.FileName, msg.Kind == "folder", input, header.Size)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	msg.Mine = false
+	msg.Mine = outgoing
 	msg.IsWan = true
 	msg.Status = "Delivered"
+	if outgoing {
+		msg.Status = "Sent"
+	}
 	if msg.Kind == "" {
 		msg.Kind = "file"
 	}
@@ -593,15 +609,37 @@ func (hs *HTTPServer) handleChatReceiveFile(w http.ResponseWriter, r *http.Reque
 }
 
 func (hs *HTTPServer) handleChatReact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
+	}
 	var body struct {
 		TargetIP string `json:"target_ip"`
 		MsgID    string `json:"msg_id"`
 		Emoji    string `json:"emoji"`
+		PeerID   string `json:"peer_id"`
+		Incoming bool   `json:"incoming"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	hs.chatMgr.AddReaction(body.MsgID, body.Emoji)
-	if body.TargetIP != "" {
-		go transfer.SendReaction(body.TargetIP, body.MsgID, body.Emoji)
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.MsgID == "" {
+		http.Error(w, "Invalid reaction", 400)
+		return
+	}
+	if body.Incoming {
+		if !hs.chatMgr.SetPeerReaction(body.MsgID, body.Emoji, hs.reactionPeerAliases(body.PeerID)...) {
+			http.Error(w, "Message not found for peer", 404)
+			return
+		}
+	} else {
+		if body.TargetIP != "" {
+			if err := transfer.SendReaction(body.TargetIP, body.MsgID, body.Emoji); err != nil {
+				http.Error(w, err.Error(), 502)
+				return
+			}
+		}
+		if !hs.chatMgr.SetLocalReaction(body.MsgID, body.Emoji) {
+			http.Error(w, "Message not found", 404)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -874,6 +912,12 @@ func (hs *HTTPServer) handleCCTVSignal(w http.ResponseWriter, r *http.Request) {
 	signalPayload["id"] = cfg.DeviceID
 
 	sigType, _ := signalPayload["type"].(string)
+	if strings.HasPrefix(sigType, "wireless_audio_") {
+		if reason, ok := signalPayload["reason"].(string); ok && reason != "" {
+			hs.AddLog(fmt.Sprintf("[AUDIO] %s to %s: %s", sigType, targetIP, reason))
+			log.Printf("[AUDIO] %s to %s: %s", sigType, targetIP, reason)
+		}
+	}
 	if sigType == "" {
 		sigType, _ = rawMap["type"].(string)
 		signalPayload["type"] = sigType
@@ -951,7 +995,10 @@ func (hs *HTTPServer) handleStreamingTrustDevice(w http.ResponseWriter, r *http.
 func (hs *HTTPServer) handleOpenRecordings(w http.ResponseWriter, r *http.Request) {
 	recDir := filepath.Join(hs.cfgMgr.GetConfig().SaveDirectory, "CCTV_Recordings")
 	_ = os.MkdirAll(recDir, 0755)
-	OpenFolderInExplorer(recDir)
+	if err := OpenFolderInExplorer(recDir); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1177,7 +1224,7 @@ func (hs *HTTPServer) handleAIPeerPermission(w http.ResponseWriter, r *http.Requ
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	cfg := hs.cfgMgr.GetConfig().AIConfig
-	if strings.TrimSpace(body.PeerID) == "" {
+	if strings.TrimSpace(body.PeerID) == "" || body.PeerID == "unknown_device_id" {
 		http.Error(w, "Select a device", 400)
 		return
 	}
@@ -1185,7 +1232,7 @@ func (hs *HTTPServer) handleAIPeerPermission(w http.ResponseWriter, r *http.Requ
 	for _, peer := range hs.discovery.GetPeers() {
 		if peer.ID == body.PeerID || peer.InternetDeviceID == body.PeerID || peer.IP == body.PeerID {
 			ids[peer.ID] = true
-			if peer.InternetDeviceID != "" {
+			if peer.InternetDeviceID != "" && peer.InternetDeviceID != "unknown_device_id" {
 				ids[peer.InternetDeviceID] = true
 			}
 			// Remove legacy IP grants when changing this device's permission.
@@ -1627,7 +1674,10 @@ func (hs *HTTPServer) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleOpenSaveDir(w http.ResponseWriter, r *http.Request) {
-	OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+	if err := OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1746,12 +1796,16 @@ func (hs *HTTPServer) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleShowInFolder(w http.ResponseWriter, r *http.Request) {
-	targetPath := r.URL.Query().Get("path")
-	if targetPath != "" {
-		OpenFileInExplorer(targetPath)
-		hs.AddLog(fmt.Sprintf("Highlighted file in Explorer: %s", filepath.Base(targetPath)))
+	target := r.URL.Query().Get("path")
+	var err error
+	if target != "" {
+		err = OpenFileInExplorer(target)
 	} else {
-		OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+		err = OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -2033,4 +2087,16 @@ func (hs *HTTPServer) handleIOTScale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeIOTJSON(w, state)
+}
+
+func (hs *HTTPServer) reactionPeerAliases(id string) []string {
+	aliases := []string{id, "wan://" + id}
+	if hs.discovery != nil {
+		for _, p := range hs.discovery.GetPeers() {
+			if p.ID == id || p.InternetDeviceID == id {
+				aliases = append(aliases, p.ID, p.InternetDeviceID, p.IP)
+			}
+		}
+	}
+	return aliases
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestWanFileIsSavedBeforeDeliveredResponse(t *testing.T) {
 	t.Setenv("USERPROFILE", t.TempDir())
 	cfg := config.Get()
 	cfg.SetSaveDirectory(t.TempDir())
-	hs := &HTTPServer{cfgMgr: cfg, chatMgr: chat.GetHistory()}
+	hs := &HTTPServer{cfgMgr: cfg, chatMgr: chat.NewHistory(filepath.Join(t.TempDir(), "history.json"))}
 	for _, badSize := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "truncated"}[badSize], func(t *testing.T) {
 			var body bytes.Buffer

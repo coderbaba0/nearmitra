@@ -3,15 +3,16 @@
  class AudioCapture {
   constructor(options){this.o=options;this.active=new Map();this.warnings=new WeakMap();}
   async capture(constraints,source='mic',deviceId=''){
-   const streams=[],contexts=[],warnings=[];let output,disposed=false;
-   const dispose=()=>{if(disposed)return;disposed=true;for(const stream of new Set([...streams,output].filter(Boolean)))stream.getTracks().forEach(t=>t.stop());for(const context of contexts)Promise.resolve(context.close()).catch(()=>{});if(output)this.active.delete(output);};
+   const streams=[],contexts=[],warnings=[];let output,nativeDesktop,disposed=false;
+   const dispose=()=>{if(disposed)return;disposed=true;if(nativeDesktop)this.o.releaseSystemAudio?.(nativeDesktop);for(const stream of new Set([...streams,output].filter(Boolean)))stream.getTracks().forEach(t=>t.stop());for(const context of contexts)Promise.resolve(context.close()).catch(()=>{});if(output)this.active.delete(output);};
    try{
     if(!constraints.audio) return await this.o.media.getUserMedia(constraints);
     let desktop,mic;
     // Open the picker during the button's user gesture, before any microphone await.
     if(source==='system' || source==='both'){
-     desktop=await this.o.media.getDisplayMedia({video:true,audio:true,systemAudio:'include',selfBrowserSurface:'exclude',surfaceSwitching:'include'});streams.push(desktop);
-     if(!desktop.getAudioTracks().length)throw new Error('No system audio was shared. Choose a screen or browser tab and enable "Share audio", or select PC microphone.');
+     if(this.o.musicAudio && this.o.captureScope?.()!=='tab' && this.o.captureSystemAudio){desktop=await this.o.captureSystemAudio();nativeDesktop=desktop;}
+     else desktop=await this.o.media.getDisplayMedia({video:this.o.musicAudio?{displaySurface:this.o.captureScope?.()==='tab'?'browser':'monitor'}:true,monitorTypeSurfaces:'include',audio:this.o.musicAudio?{suppressLocalAudioPlayback:false}:true,systemAudio:'include',windowAudio:'system',selfBrowserSurface:'exclude',surfaceSwitching:'include'});streams.push(desktop);
+     if(!desktop.getAudioTracks().length)throw new Error('No system audio was shared. For Chrome or another PC app, choose Entire screen and enable Share system audio. Browser-tab capture only lists tabs in the browser running NearMitra.');
     }
     if(source==='mic' || source==='both' || constraints.video){
      const audio=source==='mic' || source==='both' ? {echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(deviceId?{deviceId:{exact:deviceId}}:{})}:false;
@@ -40,7 +41,7 @@
      await context.resume();tracks.push(...destination.stream.getAudioTracks());
     }
     if(desktop?.getTracks().some(track=>track.readyState==='ended'))throw new Error('System audio sharing stopped before capture was ready.');
-    output=this.o.createStream(tracks);this.active.set(output,dispose);this.warnings.set(output,warnings);
+    output=this.o.createStream(tracks);if(this.o.musicAudio)output.getAudioTracks().forEach(track=>{try{track.contentHint='music';}catch(error){warnings.push('Browser did not accept the optional music quality hint.');}});this.active.set(output,dispose);this.warnings.set(output,warnings);
     if(desktop){
      const ended=()=>{if(disposed)return;dispose();this.o.onSourceEnded?.('System audio sharing stopped. The call has ended.',output);};
      desktop.getTracks().forEach(track=>track.addEventListener('ended',ended,{once:true}));

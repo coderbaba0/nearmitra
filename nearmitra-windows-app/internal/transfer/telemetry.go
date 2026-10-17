@@ -20,7 +20,7 @@ func RequestPhoneTelemetry(ip string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(45 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(90 * time.Second))
 	cfg := config.Get().GetConfig()
 	return exchangeTelemetry(conn, ip, map[string]interface{}{"type": "sensor_request", "sender": cfg.DeviceName, "sender_id": cfg.DeviceID})
 }

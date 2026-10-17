@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/peer.dart';
 import '../services/nearby_service.dart';
 import '../services/streaming_service.dart';
+import '../widgets/wireless_audio_panel.dart';
 
 enum StreamerRole { hostCamera, remoteViewer }
 enum AudioStreamRole { broadcastMic, listenRemote }
@@ -72,6 +73,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   String _audioStatus = 'Ready to stream audio';
   Peer? _selectedPeer;
   bool _isDisposing = false;
+  bool Function()? _previousWirelessGuard;
+  bool _wirelessMediaGuard() => _previousWirelessGuard?.call() == true || _isHostActive || _isRemoteConnected || _isConnecting || _isAudioActive || _isAudioConnecting;
 
   @override
   void initState() {
@@ -83,10 +86,13 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     } else if (widget.initialStreamType == 'screen') {
       initialIdx = 2;
     }
-    _tabController = TabController(length: 4, vsync: this, initialIndex: initialIdx);
+    if (widget.initialStreamType == 'wireless') initialIdx = 4;
+    _tabController = TabController(length: 5, vsync: this, initialIndex: initialIdx);
     _selectedPeer = widget.targetPeer ??
         (widget.service.peers.isNotEmpty ? widget.service.peers.first : null);
 
+    _previousWirelessGuard = widget.service.wirelessAudio.otherMediaBusy;
+    widget.service.wirelessAudio.otherMediaBusy = _wirelessMediaGuard;
     _streamingService.addListener(_onServiceUpdate);
     _setupSignalListeners();
     _initPermissionsAndMedia();
@@ -197,7 +203,24 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
 
+  final Map<String, Function(String, Map<String, dynamic>)?> _previousStreamListeners = {};
+  final Map<String, Function(String, Map<String, dynamic>)?> _installedStreamListeners = {};
+  Map<String, Function(String, Map<String, dynamic>)?> _streamListeners() => {
+    'offer': widget.service.onStreamOffer, 'answer': widget.service.onStreamAnswer,
+    'ice': widget.service.onStreamIceCandidate, 'control': widget.service.onStreamControl,
+    'rejected': widget.service.onStreamRejected, 'stopped': widget.service.onStreamStopped,
+  };
+  void _restoreStreamListeners() {
+    final current = _streamListeners();
+    if (current['offer'] == _installedStreamListeners['offer']) widget.service.onStreamOffer = _previousStreamListeners['offer'];
+    if (current['answer'] == _installedStreamListeners['answer']) widget.service.onStreamAnswer = _previousStreamListeners['answer'];
+    if (current['ice'] == _installedStreamListeners['ice']) widget.service.onStreamIceCandidate = _previousStreamListeners['ice'];
+    if (current['control'] == _installedStreamListeners['control']) widget.service.onStreamControl = _previousStreamListeners['control'];
+    if (current['rejected'] == _installedStreamListeners['rejected']) widget.service.onStreamRejected = _previousStreamListeners['rejected'];
+    if (current['stopped'] == _installedStreamListeners['stopped']) widget.service.onStreamStopped = _previousStreamListeners['stopped'];
+  }
   void _setupSignalListeners() {
+    _previousStreamListeners.addAll(_streamListeners());
     // 1. Host receives Remote Control Signals from Viewer
     widget.service.onStreamControl = (peerId, control) async {
       final action = control['action']?.toString();
@@ -320,6 +343,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         _pendingStreamCandidates.add(candidate);
       }
     };
+    _installedStreamListeners.addAll(_streamListeners());
   }
 
   void _broadcastStatus() {
@@ -334,6 +358,10 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   Future<void> _handleIncomingStreamOfferAsHost(
       Peer peer, Map<String, dynamic> offer) async {
     try {
+      if (widget.service.wirelessAudio.busy) {
+        await widget.service.sendWebRtcSignal(peer, 'stream_rejected', {'reason': 'Wireless audio is active'});
+        return;
+      }
       final sdp = offer['sdp']?.toString();
       if (sdp == null || sdp.isEmpty) return;
 
@@ -416,6 +444,10 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         }
       }
 
+      if (widget.service.wirelessAudio.busy) {
+        await widget.service.sendWebRtcSignal(peer, 'stream_rejected', {'reason': 'Wireless audio is active'});
+        return;
+      }
       if (streamType == 'screen') {
         if (_localStream == null) {
           await _startHostScreen();
@@ -547,6 +579,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   Future<void> _startHostCamera() async {
+    if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting another stream'); return; }
     if (!_streamingService.allowCamera) {
       if (!mounted) return;
       final enable = await _showStreamPermissionDialog(
@@ -612,6 +645,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   bool _isRequestingScreenShare = false;
 
   Future<void> _startHostScreen() async {
+    if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting another stream'); return; }
     if (!_streamingService.allowScreen) {
       if (!mounted) return;
       final enable = await _showStreamPermissionDialog(
@@ -742,6 +776,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   // --- STREAM CONNECTION (CAMERA / AUDIO) ---
 
   Future<void> _connectToRemoteViewer(String streamType) async {
+    if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting another stream'); return; }
     final peer = _selectedPeer;
     if (peer == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1059,6 +1094,10 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   @override
   void dispose() {
     _isDisposing = true;
+    _restoreStreamListeners();
+    if (widget.service.wirelessAudio.otherMediaBusy == _wirelessMediaGuard) {
+      widget.service.wirelessAudio.otherMediaBusy = _previousWirelessGuard;
+    }
     _streamingService.removeListener(_onServiceUpdate);
     WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
@@ -1180,6 +1219,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
                   ],
                 ),
               ),
+              Tab(height: 48, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.graphic_eq_rounded, size: 20), SizedBox(width: 7), Text('Wi-Fi Audio')])),
             ],
           ),
         ),
@@ -1190,6 +1230,8 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
             _buildLiveAudioTab(scheme),
             _buildScreenCastTab(scheme),
             _buildSecurityHubTab(scheme),
+            WirelessAudioPanel(service: widget.service, targetPeer: _selectedPeer,
+              otherStreamActive: _isHostActive || _isRemoteConnected || _isConnecting || _isAudioActive || _isAudioConnecting),
           ],
         ),
       ),

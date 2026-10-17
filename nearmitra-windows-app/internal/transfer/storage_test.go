@@ -2,9 +2,11 @@ package transfer
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"nearmitra-windows-app/internal/config"
 	"nearmitra-windows-app/internal/models"
 	"net"
@@ -149,5 +151,54 @@ func TestWindowsArchiveUsesPortablePaths(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("portable nested file missing")
+	}
+}
+
+func TestReceiveProgressStartsBeforePayloadAndPreservesIdentityThroughStorage(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	config.Get().SetSaveDirectory(t.TempDir())
+	var events []models.TransferProgress
+	var saved models.ChatMessage
+	cb := TransferCallbacks{OnTransferProgress: func(p models.TransferProgress) { events = append(events, p) }, OnIncomingMessage: func(m models.ChatMessage) error { saved = m; return nil }}
+	r, w := io.Pipe()
+	done := make(chan error, 1)
+	started := make(chan models.TransferProgress, 1)
+	cb.OnTransferProgress = func(p models.TransferProgress) {
+		events = append(events, p)
+		if len(events) == 1 {
+			started <- p
+		}
+	}
+	go func() {
+		done <- (&TransferServer{}).receiveFileStream(bufio.NewReader(r), models.WireHeader{Name: "same.txt", Size: 5}, cb, "phone", "Phone", "192.168.1.6")
+	}()
+	initial := <-started
+	if !initial.Active || initial.BytesSent != 0 || initial.ID == "" || initial.PeerID != "phone" || initial.PeerIP != "192.168.1.6" || initial.ETASeconds != -1 {
+		t.Fatalf("invalid initial progress: %+v", initial)
+	}
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	last := events[len(events)-1]
+	if last.Active || !last.Complete || last.ID != initial.ID || saved.ID != initial.ID || last.BytesSent != 5 || last.PeerIP != initial.PeerIP {
+		t.Fatalf("progress/history identity changed: %+v %+v", last, saved)
+	}
+}
+func TestFailedReceiveKeepsPeerAndTransferID(t *testing.T) {
+	config.Get().SetSaveDirectory(t.TempDir())
+	var events []models.TransferProgress
+	err := (&TransferServer{}).receiveFileStream(bufio.NewReader(strings.NewReader("short")), models.WireHeader{MsgID: "failed", Name: "same.txt", Size: 100}, TransferCallbacks{OnTransferProgress: func(p models.TransferProgress) { events = append(events, p) }}, "phone2", "Phone 2", "192.168.1.7")
+	if err == nil {
+		t.Fatal("truncated receive succeeded")
+	}
+	last := events[len(events)-1]
+	if last.Active || last.Complete || last.Error == "" || last.ID != "failed" || last.PeerID != "phone2" || last.PeerIP != "192.168.1.7" {
+		t.Fatalf("failure lost sender: %+v", last)
 	}
 }

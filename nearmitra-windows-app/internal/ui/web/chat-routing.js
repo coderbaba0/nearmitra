@@ -25,8 +25,18 @@
   }
   function normalize(message) {
     const result = {...message};
+    result.reply_to_id = message.reply_to_id || message.replyToId || '';
+    result.reply_to_sender = message.reply_to_sender || message.replyToSender || '';
+    result.reply_to_text = message.reply_to_text || message.replyToText || '';
+    result.is_forwarded = message.is_forwarded === true || message.isForwarded === true;
+    result.reaction = message.reaction || "";
+    result.local_reaction = message.local_reaction || "";
+    result.reactions = {};
+    for (const emoji of [message.reaction, message.local_reaction]) {
+      if (emoji) result.reactions[emoji] = (result.reactions[emoji] || 0) + 1;
+    }
     if (!result.attachment && result.file_name) result.attachment = {
-      name:result.file_name, size:result.file_size, type:result.kind || 'file', status:result.status, progress:100
+      name:result.file_name, size:result.file_size, type:result.kind || 'file', status:result.status, progress:['Sending','Queued'].includes(result.status)?0:100
     };
     return result;
   }

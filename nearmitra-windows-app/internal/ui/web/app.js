@@ -204,14 +204,14 @@ function switchTab(tabKey, pushHistory = true) {
 
   if(remoteSensorPollTimer){clearInterval(remoteSensorPollTimer);remoteSensorPollTimer=null;}
   if (tabKey === 'chat') {
-    renderChatMessages();
+    renderChatMessages();renderMasterList();
   } else if (tabKey === 'recents') {
     loadRecentFiles();
     renderRecentCalls();
   } else if (tabKey === 'cctv') {
     populateCctvPeerSelect();
   } else if (tabKey === 'voice') {
-    populateAudioPeerSelect();loadPcMicrophones();
+    populateAudioPeerSelect();loadPcMicrophones();renderWirelessAudio();loadWirelessOutputs();
     const dashboard = document.getElementById("voiceDashboardView");
     const activeCallView = document.getElementById("voiceActiveCallView");
     if (!isCallActive) {
@@ -305,7 +305,7 @@ function filterMasterList(query) {
 // -----------------------------------------------------------------------------
 function startStatePoller() {
   fetchState();
-  setInterval(fetchState, 1500);
+  setInterval(fetchState, 1000);
 }
 
 async function fetchState() {
@@ -350,6 +350,7 @@ function updateUIFromState(data) {
     });
     const cleanPeers = Array.from(seenMap.values());
     appState.peers = cleanPeers;
+    renderWirelessAudio();
     const peerBadge = document.getElementById("badgePeerCount");
     if (peerBadge) peerBadge.innerText = cleanPeers.length;
     const modeP2P = document.getElementById("modeP2PBadge");
@@ -427,6 +428,7 @@ function updateUIFromState(data) {
       updateDetailViewForPeer(appState.activePeer);
     }
     savePersistedMessages();
+    syncIncomingIndicators(true);
     renderChatMessages();
     if(appState.activePeer) updateDetailViewForPeer(appState.activePeer);
   }
@@ -610,10 +612,10 @@ function renderMasterList() {
             <div class="card-content">
               <div class="card-top-row">
                 <span class="card-title">
-                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
                   ${escapeHTML(p.name)}
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
+                  ${incomingDeviceBadge(p)}
                   <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : 'Live'}</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
@@ -722,10 +724,10 @@ function renderMasterList() {
             <div class="card-content">
               <div class="card-top-row">
                 <span class="card-title">
-                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
                   ${escapeHTML(displayName)}
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
+                  ${incomingDeviceBadge({id:dev.id || dev.ip,ip:dev.ip,name:displayName})}
                   <span class="card-time">${dev.ping_ms || 2}ms</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
@@ -875,10 +877,44 @@ function refreshDiscoveryState() {
 // P2P ENCRYPTED CHAT (Targeted to Selected Peer + Persistent + Clear Chat)
 // -----------------------------------------------------------------------------
 
+function incomingChatItems(){
+ return typeof NearMitraTransfers==='undefined'?appState.messages:NearMitraTransfers.project(appState.messages,appState.transfers);
+}
+let incomingReadIDs = new Set();
+let incomingBaselineReady=false;
+try{const saved=localStorage.getItem('nearmitra_incoming_read_v1');if(saved){incomingReadIDs=new Set(JSON.parse(saved));incomingBaselineReady=true;}}catch(_){}
+function incomingItemKey(m){return (m.peer_id || m.peer_ip || '')+'|'+m.id;}
+function visibleChatIsOpen(){return document.getElementById('tab-chat')?.classList?.contains('active') && document.visibilityState!=='hidden' && (!document.hasFocus || document.hasFocus());}
+function saveIncomingReads(){try{localStorage.setItem('nearmitra_incoming_read_v1',JSON.stringify([...incomingReadIDs].slice(-10000)));}catch(_){} }
+function syncIncomingIndicators(establishBaseline=false){
+ const items=incomingChatItems().filter(m=>!m.mine && m.id);
+ if(!incomingBaselineReady && establishBaseline){
+  // Existing history is not a fresh notification; live transfers remain unread.
+  const transferring=new Set((appState.transfers || []).filter(t=>t.Active).map(t=>t.ID));
+  for(const m of items)if(!m._liveTransfer&&!transferring.has(m.id))incomingReadIDs.add(incomingItemKey(m));
+  incomingBaselineReady=true;saveIncomingReads();
+ }
+ if(visibleChatIsOpen() && appState.activePeer){for(const m of items)if(NearMitraChat.matches(m,appState.activePeer,appState.peers,chatDeviceLinks))incomingReadIDs.add(incomingItemKey(m));saveIncomingReads();}
+ const unread=items.filter(m=>!incomingReadIDs.has(incomingItemKey(m)));
+ const badge=document.getElementById('badgeChatUnread');if(badge){badge.hidden=!unread.length;badge.innerText=unread.length>99?'99+':String(unread.length);}
+ return unread;
+}
+function incomingDeviceBadge(peer){
+ const unread=incomingChatItems().filter(m=>!m.mine&&!incomingReadIDs.has(incomingItemKey(m))&&NearMitraChat.matches(m,peer,appState.peers,chatDeviceLinks));
+ return unread.length?'<span class="device-unread-count" aria-label="'+unread.length+' unread items">'+(unread.length>99?'99+':unread.length)+'</span>':'';
+}
+window.addEventListener('focus',()=>{syncIncomingIndicators();renderMasterList();});
+document.addEventListener('visibilitychange',()=>{syncIncomingIndicators();renderMasterList();});
+
+let chatSelection=new Set(), chatSelectionScope='', chatReply=null, chatForwardBusy=false;
+
 function renderChatMessages() {
+  syncNearbyAIConversation();
   const container = document.getElementById("chatStream");
   if (!container) return;
 
+  syncIncomingIndicators();
+  const followLatest=container.scrollHeight-container.scrollTop-container.clientHeight<120;
   const activePeer = appState.activePeer;
   const activeIP = activePeer ? activePeer.ip : "";
   const activeID = activePeer ? activePeer.id : "";
@@ -897,7 +933,9 @@ function renderChatMessages() {
   `;
 
   const route = resolveChatRoute(activePeer);
-  const targetMessages = (appState.messages || []).filter(m =>
+  if(chatSelectionScope!==route.id) {chatSelection.clear();chatReply=null;chatSelectionScope=route.id;}
+  updateChatReplyPreview();
+  const targetMessages = (incomingChatItems() || []).filter(m =>
     NearMitraChat.matches(m,activePeer,appState.peers,chatDeviceLinks))
     .sort((a,b) => new Date(a.at)-new Date(b.at));
 
@@ -910,9 +948,12 @@ function renderChatMessages() {
     `;
   }
 
+  const validIDs=new Set(targetMessages.filter(chatCanAct).map(m=>m.id));
+  for(const id of chatSelection) if(!validIDs.has(id)) chatSelection.delete(id);
+  if(chatSelection.size) html+=`<div class="chat-selection-bar"><strong>${chatSelection.size} selected</strong><button onclick="openChatForward()">Forward</button><button onclick="clearChatSelection()">Cancel</button></div>`;
   targetMessages.forEach(m => {
     const timeStr = formatTime(m.at);
-    const reactions = m.reactions || {};
+    const reactions = NearMitraChat.normalize(m).reactions;
     const reactionKeys = Object.keys(reactions).filter(k => reactions[k] > 0);
 
     let reactionsHTML = "";
@@ -920,8 +961,8 @@ function renderChatMessages() {
       reactionsHTML = `
         <div class="msg-reaction-badges">
           ${reactionKeys.map(k => `
-            <span class="reaction-badge-pill" onclick="toggleMessageReaction('${m.id}', '${k}')">
-              ${k} <span class="badge-count">${reactions[k]}</span>
+            <span class="reaction-badge-pill">
+              ${escapeHTML(k)} <span class="badge-count">${reactions[k]}</span>
             </span>
           `).join("")}
         </div>
@@ -932,21 +973,22 @@ function renderChatMessages() {
     if (m.attachment) {
       const isSending = m.attachment.status === "Sending" || m.status === "Sending" || (m.attachment.progress !== undefined && m.attachment.progress < 100 && m.attachment.status !== "Sent" && m.attachment.status !== "Delivered");
       const isDownloading = m.attachment.status === "Downloading" || m.status === "Downloading";
-      const isProgressing = isSending || isDownloading;
-      const progress = m.attachment.progress !== undefined ? m.attachment.progress : (isProgressing ? 50 : 100);
       const isFailed = m.attachment.status === "Failed" || m.status === "Failed";
+      const isProgressing = !isFailed && (isSending || isDownloading);
+      const progress = m.attachment.progress !== undefined ? m.attachment.progress : (isProgressing ? 50 : 100);
       const isMine = m.mine;
 
       attachmentHTML = `
-        <div class="msg-attachment-card" id="att_${m.id}" onclick="handleAttachmentClick('${m.id}')" title="Click to open or save">
+        <div class="msg-attachment-card" id="att_${m.id}" onclick="${m._liveTransfer ? '' : `handleAttachmentClick('${m.id}')`}" title="Click to open or save">
           <div class="attachment-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
           <div class="attachment-info" style="flex:1; min-width:0;">
             <span class="attachment-name">${escapeHTML(m.attachment.name || 'File')}</span>
             <span class="attachment-meta" id="att_meta_${m.id}">
-              ${m.attachment.size || ''} • ${isProgressing ? `${isSending ? 'Sending' : 'Downloading'} (${progress}%)` : (isFailed ? 'Failed ✕' : (isMine ? 'Sent ✓' : 'Received ✓'))}
+              ${typeof m.attachment.size==='number'?formatFileSize(m.attachment.size):m.attachment.size || ''} • ${isProgressing ? `${m.mine ? 'Sending' : 'Receiving'} (${progress}%)` : (isFailed ? 'Failed ✕' : (isMine ? 'Sent ✓' : 'Received ✓'))}
             </span>
+            ${m._liveTransfer && typeof NearMitraTransfers!=='undefined' ? '<span class="incoming-transfer-detail">'+escapeHTML(NearMitraTransfers.detail(m.attachment,formatFileSize))+'</span>':''}
             ${isProgressing ? `
               <div class="wan-progress-track" style="margin-top:6px; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; overflow:hidden;">
                 <div class="wan-progress-fill" id="att_prog_${m.id}" style="width:${progress}%; height:100%; background:var(--primary-emerald); transition:width 0.2s linear;"></div>
@@ -960,6 +1002,10 @@ function renderChatMessages() {
       `;
     }
 
+    const quote=NearMitraChat.normalize(m);
+    const quoteHTML=quote.reply_to_id ? `<button class="msg-quoted-reply" data-quote-id="${escapeHTML(quote.reply_to_id)}" onclick="jumpQuotedMessage(event)"><strong>${escapeHTML(quote.reply_to_sender || 'Message')}</strong><span>${escapeHTML(quote.reply_to_text || 'Attachment')}</span></button>` : '';
+    const forwardedHTML=quote.is_forwarded ? '<div class="msg-forwarded-label">↪ Forwarded</div>' : '';
+    const actionHTML=chatCanAct(m) ? `<div class="msg-chat-actions" data-chat-id="${escapeHTML(m.id)}"><button onclick="chatMessageAction(event,'reply')" title="Reply to message">↩ Reply</button><button onclick="chatMessageAction(event,'forward')" title="Forward message or file">↪ Forward</button><button onclick="chatMessageAction(event,'select')" aria-pressed="${chatSelection.has(m.id)}">${chatSelection.has(m.id)?'✓ Selected':'Select'}</button></div>` : '';
     const hoverReactionsBar = `
       <div class="msg-hover-reactions">
         <span onclick="toggleMessageReaction('${m.id}', '👍')">👍</span>
@@ -976,7 +1022,9 @@ function renderChatMessages() {
         <div class="msg-row outgoing" id="${m.id}">
           <div class="msg-bubble-wrap">
             ${hoverReactionsBar}
-            <div class="msg-bubble">
+            ${actionHTML}
+            <div class="msg-bubble ${chatSelection.has(m.id)?'msg-selected':''}">
+              ${forwardedHTML}${quoteHTML}
               ${attachmentHTML}
               ${m.text ? `<div class="msg-text">${escapeHTML(m.text)}</div>` : ''}
               <div class="msg-meta">
@@ -993,8 +1041,11 @@ function renderChatMessages() {
         <div class="msg-row incoming" id="${m.id}">
           <div class="msg-bubble-wrap">
             ${hoverReactionsBar}
-            <div class="msg-bubble">
+            ${actionHTML}
+            <div class="msg-bubble ${chatSelection.has(m.id)?'msg-selected':''}">
+              ${forwardedHTML}
               <div class="msg-sender">${escapeHTML(m.sender || activeName || 'Peer')}</div>
+              ${quoteHTML}
               ${attachmentHTML}
               ${m.text ? `<div class="msg-text">${escapeHTML(m.text)}</div>` : ''}
               <div class="msg-meta">
@@ -1009,7 +1060,7 @@ function renderChatMessages() {
   });
 
   container.innerHTML = html;
-  container.scrollTop = container.scrollHeight;
+  if(followLatest || !Number.isFinite(container.clientHeight))container.scrollTop = container.scrollHeight;
 }
 
 function sendChatMessage() {
@@ -1019,7 +1070,9 @@ function sendChatMessage() {
  if (!text || !peer) return;
  const route=resolveChatRoute(peer);
  appState.messages.push({id:crypto.randomUUID(),peer_id:route.id,peer_ip:route.nearby?.ip || 'wan://'+route.id,
-  peer_name:peer.name,sender:'Windows Host',text,mine:true,at:new Date(),status:'Queued'});
+  peer_name:peer.name,sender:'Windows Host',text,mine:true,at:new Date(),status:'Queued',
+  ...(chatReply?{reply_to_id:chatReply.id,reply_to_sender:chatReply.sender,reply_to_text:chatReply.text || chatReply.file_name || chatReply.attachment?.name || 'Attachment'}:{})});
+ chatReply=null;updateChatReplyPreview();
  savePersistedMessages(); input.value=''; renderChatMessages();
  handleUserTyping(false);
  flushChatOutbox();
@@ -1030,31 +1083,21 @@ function sendPresetText(text) {
   sendChatMessage();
 }
 
-function toggleMessageReaction(msgId, emoji) {
-  const msg = appState.messages.find(m => m.id === msgId);
-  if (!msg) return;
-
-  if (!msg.reactions) msg.reactions = {};
-  if (msg.reactions[emoji]) {
-    delete msg.reactions[emoji];
-  } else {
-    msg.reactions[emoji] = 1;
+async function toggleMessageReaction(msgId,emoji) {
+ const msg=appState.messages.find(m=>m.id===msgId),peer=appState.activePeer;
+ if(!msg || !peer || !NearMitraChat.matches(msg,peer,appState.peers,chatDeviceLinks)) return;
+ const route=resolveChatRoute(peer), selected=msg.local_reaction===emoji?'':emoji;
+ try {
+  if(route.mode==='offline') throw new Error('Recipient is offline');
+  if(route.mode==='wan') {
+   const dc=await ensureWanChannel(route.id,peer.name);
+   // Send the selected value explicitly, including an empty value for removal.
+   dc.send(JSON.stringify({type:'control',timestamp:Date.now(),payload:{action:'reaction',messageId:msgId,reaction:selected}}));
   }
-
-  savePersistedMessages();
-
-  const targetIP = appState.activePeer ? appState.activePeer.ip : "";
-  fetch("/api/chat/react", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      target_ip: targetIP,
-      msg_id: msgId,
-      emoji: emoji
-    })
-  });
-
-  renderChatMessages();
+  const response=await fetch('/api/chat/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_ip:route.nearby?.ip || '',msg_id:msgId,emoji:selected})});
+  if(!response.ok) throw new Error(await response.text());
+  msg.local_reaction=selected;savePersistedMessages();renderChatMessages();
+ } catch(error) {showToast('Reaction could not be sent: '+error.message);}
 }
 
 async function clearActivePeerChat() {
@@ -1181,9 +1224,11 @@ function openFile(filePath) {
   showToast("Opening file with default system application...");
 }
 
-function showInFolder(filePath) {
-  fetch(`/api/recents/show-in-folder?path=${encodeURIComponent(filePath)}`);
-  showToast("[Explorer] Highlighting file in Windows Explorer");
+async function showInFolder(filePath) {
+ try {
+  const response=await fetch('/api/recents/show-in-folder?path='+encodeURIComponent(filePath));
+  if(!response.ok)throw new Error(await response.text());
+ } catch(error) {showToast('Could not open Explorer: '+error.message);}
 }
 
 function renderRecentCalls() {
@@ -1508,39 +1553,23 @@ function selectAttachCategory(category) {
 // -----------------------------------------------------------------------------
 // FILE & FOLDER TRANSFERS (Targeted to Selected Peer)
 // -----------------------------------------------------------------------------
-function triggerSendFile(category) {
-  const targetPeer = appState.activePeer;
-  const targetIP = targetPeer ? (resolveChatRoute(targetPeer).nearby?.ip || "") : "";
-  const targetID = targetPeer ? targetPeer.id : "";
-  const targetName = targetPeer ? targetPeer.name : "Active Peer";
-
-  const catParam = category ? `&type=${encodeURIComponent(category)}` : "";
-  fetch(`/api/send-file?ip=${encodeURIComponent(targetIP)}${catParam}`)
-    .then(r => r.json())
-    .then(data => {
-      if(data && data.error) {showToast(data.error);return;}
-      if (data && data.file) {
-        showToast(`Sending ${data.file} to ${targetName}...`);
-        const fileMsg = {
-          id: "msg_" + Date.now(),
-          peer_id: targetID,
-          peer_ip: targetIP,
-          sender: "Windows Host",
-          mine: true,
-          at: new Date(),
-          attachment: {
-            name: data.file.split(/[\\/]/).pop(),
-            size: "15.2 MB",
-            type: category || "file"
-          },
-          status: "Sent",
-          reactions: {}
-        };
-        appState.messages.push(fileMsg);
-        savePersistedMessages();
-        renderChatMessages();
-      }
-    });
+async function triggerSendFile(category) {
+ const peer=appState.activePeer;if(!peer) {showToast('Select a device first');return}
+ const route=resolveChatRoute(peer);
+ if(!route.nearby) {showToast('Select an available Nearby device');return}
+ try {
+  const response=await fetch('/api/send-file?ip='+encodeURIComponent(route.nearby.ip)+'&type='+encodeURIComponent(category || 'file'));
+  const text=await response.text();if(!response.ok) throw new Error(text);
+  if(!text) return;
+  const data=JSON.parse(text);if(data.error) throw new Error(data.error);
+  acceptSentAttachment(data);
+ } catch(error) {showToast('File could not be sent: '+error.message);}
+}
+function acceptSentAttachment(data) {
+ if(!data?.message) return;
+ const stored=NearMitraChat.normalize(data.message);
+ appState.messages=NearMitraChat.merge(appState.messages,[stored]);
+ savePersistedMessages();renderChatMessages();showToast('Sent '+stored.file_name);
 }
 
 async function triggerSendFolder() {
@@ -1559,13 +1588,14 @@ async function triggerSendFolder() {
   }
   const targetPeer = appState.activePeer;
   const targetIP = targetPeer ? (resolveChatRoute(targetPeer).nearby?.ip || "") : "";
-  fetch(`/api/send-folder?ip=${encodeURIComponent(targetIP)}`)
-    .then(r => r.json())
-    .then(data => {
-      if (data && data.folder) {
-        showToast(`Sending folder ${data.folder}...`);
-      }
-    });
+  try {
+    const response=await fetch('/api/send-folder?ip='+encodeURIComponent(targetIP));
+    const text=await response.text();if(!response.ok) throw new Error(text);
+    if(!text) return;
+    const data=JSON.parse(text);if(data.error) throw new Error(data.error);
+    acceptSentAttachment(data);
+  } catch(error) {showToast('Folder could not be sent: '+error.message);}
+
 }
 
 function handleDropFile(e) {
@@ -1575,9 +1605,11 @@ function handleDropFile(e) {
   handleChatDrop(e);
 }
 
-function openSaveDirectory() {
-  fetch("/api/open-save-dir");
-  showToast("Opening NearMitra Received Files in File Explorer...");
+async function openSaveDirectory() {
+ try {
+  const response=await fetch('/api/open-save-dir');
+  if(!response.ok)throw new Error(await response.text());
+ } catch(error) {showToast('Could not open folder: '+error.message);}
 }
 
 // -----------------------------------------------------------------------------
@@ -2474,6 +2506,7 @@ function setStreamerRole(role) {
 }
 
 async function toggleHostCameraStream() {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting CCTV');return;}
   const btn = document.getElementById("btnStartHostCamera");
   const btnLabel = document.getElementById("btnHostCameraLabel");
   const localVid = document.getElementById("localCctvVideo");
@@ -2659,6 +2692,10 @@ function startStreamSignalPoller() {
 async function handleIncomingStreamSignal(sig) {
   const hdr = sig.header || sig;
   if (!hdr || !hdr.type) return;
+  if(hdr.type.startsWith('wireless_audio_')) {
+    if(wirelessAudio)await wirelessAudio.handle(sig.peer_ip || sig.sender_ip,hdr);
+    return;
+  }
 
   if(hdr.type.startsWith('webrtc_') || hdr.type.startsWith('call_')) {
     try {await desktopCall.handle(sig.peer_ip || sig.sender_ip,hdr);}
@@ -2751,6 +2788,7 @@ async function handleIncomingStreamSignal(sig) {
 }
 
 async function handleIncomingStreamOffer(sig) {
+ if(wirelessAudio?.session){await sendWebRTCSignalToTarget(sig.peer_ip || sig.sender_ip,{type:'stream_rejected',reason:'Wireless audio is active'});return;}
   const hdr = sig.header;
   const senderIP = sig.sender_ip;
   if (!hdr || !hdr.sdp || !senderIP) return;
@@ -2853,6 +2891,7 @@ function disconnectRemoteCctv(reason = "") {
 }
 
 async function toggleRemoteCctvConnection() {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting CCTV');return;}
   const btn = document.getElementById("btnConnectRemoteCctv");
   const btnLabel = document.getElementById("btnConnectRemoteLabel");
   const hwBox = document.getElementById("remoteHwTriggersBox");
@@ -3268,6 +3307,7 @@ let incomingCallData = null;
 let testMicStream = null;
 let testMicInterval = null;
 
+let retainedAudioTarget = null;
 function populateAudioPeerSelect() {
   const sel = document.getElementById("audioPeerSelect");
   if (!sel) return;
@@ -3284,8 +3324,13 @@ function populateAudioPeerSelect() {
     }
   });
 
+  const sessionPeer = wirelessAudio?.session?.peer;
+  if (sessionPeer && !map.has(sessionPeer.ip)) map.set(sessionPeer.ip, {ip:sessionPeer.ip,name:sessionPeer.name,isPhone:true});
+  const previous = sel.value;
+  if(retainedAudioTarget?.ip===previous && !map.has(previous))map.set(previous,retainedAudioTarget);
   const list = Array.from(map.values());
-  const activeIP = appState.activePeer ? appState.activePeer.ip : "";
+  const activeIP = sessionPeer?.ip || (map.has(previous) ? previous : appState.activePeer?.ip || '');
+  retainedAudioTarget=map.get(activeIP) || list[0] || retainedAudioTarget;
 
   if (list.length === 0) {
     sel.innerHTML = `<option value="">No devices discovered yet (Scanning LAN...)</option>`;
@@ -3300,6 +3345,7 @@ function populateAudioPeerSelect() {
 }
 
 function onAudioTargetPeerChanged(ip) {
+  renderWirelessAudio();
   const matched = (appState.peers || []).find(p => p.ip === ip) ||
     (appState.lanDevices || []).find(d => d.ip === ip);
   if (matched) {
@@ -3590,31 +3636,27 @@ async function revokeTrustedDevice(peerId) {
 }
 
 async function toggleVideoCamera() {
- try {const video=!desktopCall.session?.video;await desktopCall.camera(video);setCallMode(video?'video':'audio');}
+ try {await desktopCall.camera(!desktopCall.session?.video);}
  catch(error){showToast(error.message);}
 }
 
-let callScreenStream=null;
 async function toggleScreenShare(){
- const session=desktopCall.session;if(!session?.pc)return;
- try{
-  if(callScreenStream){
-   const sender=session.pc.getSenders().find(s=>s.track?.kind==='video');
-   if(sender)await sender.replaceTrack(session.stream.getVideoTracks()[0] || null);
-   callScreenStream.getTracks().forEach(t=>{t.onended=null;t.stop();});callScreenStream=null;isScreenSharing=false;
-   const video=callElement('localVideo');if(video)video.srcObject=session.stream;
-  }else{
-   if(!session.stream.getVideoTracks().length)await desktopCall.camera(true);
-   const stream=await navigator.mediaDevices.getDisplayMedia({video:true});
-   if(desktopCall.session!==session){stream.getTracks().forEach(t=>t.stop());return;}
-   const track=stream.getVideoTracks()[0];const sender=session.pc.getSenders().find(s=>s.track?.kind==='video');
-   try{await sender.replaceTrack(track);}catch(error){stream.getTracks().forEach(t=>t.stop());throw error;}
-   callScreenStream=stream;isScreenSharing=true;track.onended=()=>toggleScreenShare();
-   const video=callElement('localVideo');if(video)video.srcObject=stream;
-   setCallMode('video');
-  }
-  callText('screenLabel',isScreenSharing?'Sharing':'Share');
- }catch(error){showToast('Screen sharing: '+error.message);}
+ try {await desktopCall.screen(!desktopCall.session?.sharing);}
+ catch(error){showToast('Screen sharing: '+error.message);}
+}
+function syncCallMedia(session){
+ if(!session)return;
+ isScreenSharing=session.sharing;
+ setCallMode(session.video || session.sharing || session.peerVideo?'video':'audio');
+ callElement('btnCallCam')?.classList.toggle('active-ctrl',session.video);
+ callElement('btnCallScreen')?.classList.toggle('active-ctrl',session.sharing);
+ callText('camLabel',session.video?'Camera On':'Camera Off');
+ callText('screenLabel',session.sharing?'Stop Sharing':'Share');
+ for(const id of ['btnCallCam','btnCallScreen']){const button=callElement(id);if(button)button.disabled=!session.connected || session.mediaBusy;}
+ const local=callElement('localVideo');if(local){local.style.objectFit=session.sharing?'contain':'cover';local.style.transform=session.sharing?'none':'';}
+ const remote=callElement('remoteVideo');if(remote)remote.style.objectFit='contain';
+ callDisplay('localVideoPip',session.video || session.sharing?'block':'none');
+ callDisplay('remoteVideoPlaceholder',session.peerVideo?'none':'flex');
 }
 function toggleSpeaker(){
  appState.voice.speaker=!appState.voice.speaker;
@@ -3750,30 +3792,13 @@ function setChatSubTab(tab) {
     if (btnAI) btnAI.classList.add("active");
     if (viewPeer) viewPeer.style.display = "none";
     if (viewAI) viewAI.style.display = "flex";
-    updateAIChatHeader();
+    updateNearbyAIChat();
   } else {
     if (btnPeer) btnPeer.classList.add("active");
     if (btnAI) btnAI.classList.remove("active");
     if (viewPeer) viewPeer.style.display = "flex";
     if (viewAI) viewAI.style.display = "none";
   }
-}
-
-function updateAIChatHeader() {
-  const badge = document.getElementById("aiSubtabProviderBadge");
-  const modelBadge = document.getElementById("aiChatModelBadge");
-  const shareInd = document.getElementById("aiShareIndicator");
-  const prov = appState.ai.provider || "gemini";
-  const mod = appState.ai.model || "Gemini 2.0 Flash";
-
-  if (badge) badge.innerText = prov.toUpperCase();
-  if (modelBadge) modelBadge.innerText = `${prov.toUpperCase()}: ${mod}`;
-  if (shareInd) shareInd.style.display = appState.ai.shareAI ? "inline-flex" : "none";
-
-  ['gemini', 'openai', 'groq', 'ollama'].forEach(p => {
-    const pill = document.getElementById(`aiProvPill${p.charAt(0).toUpperCase() + p.slice(1)}`);
-    if (pill) pill.classList.toggle("active", prov === p);
-  });
 }
 
 // -----------------------------------------------------------------------------
@@ -4630,7 +4655,9 @@ async function toggleShareAI(checked) {
       body: JSON.stringify({ enabled: checked })
     });
     const data = await res.json();
+    if(!res.ok)throw new Error('Could not update AI sharing');
     appState.ai.shareAI = checked;
+    nearbyAISharing=null;if(nearbyAIKey())loadSelectedAISharing();
     updateAIChatHeader();
     showToast(data.share_ai ? "Host AI Compute shared with P2P Mesh Nodes" : "Host AI Compute sharing disabled");
   } catch (e) {
@@ -4740,7 +4767,10 @@ async function togglePeerAIPermission(peerId, allow) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ peer_id: peerId, allow: allow })
     });
+    if(!res.ok)throw new Error(await res.text());
     const data = await res.json();
+    nearbyAISharing=null;
+    if(nearbyAIKey())loadSelectedAISharing();
     showToast(`AI Access ${allow ? 'Granted' : 'Revoked'} for peer`);
     loadAIAnalytics();
   } catch (e) {
@@ -5031,11 +5061,12 @@ async function pollRemoteSensors() {
     callText('phoneBatHealthText',battery===null?'No recent battery reading':s.battery_temp_c+'°C');
     const fill=callElement('phoneBatFill');if(fill)fill.style.width=(battery ?? 0)+'%';
     const gps=fresh && s.gps_locked;
-    callText('gpsLockBadge',gps?'GPS received':'Awaiting phone location');
+    callText('gpsLockBadge',gps?'Location received':fresh?'Location unavailable':'Awaiting phone location');
     callText('gpsLatVal',gps?s.gps_latitude.toFixed(6)+'°':'—');
     callText('gpsLngVal',gps?s.gps_longitude.toFixed(6)+'°':'—');
     callText('gpsAltVal',gps?s.gps_altitude+' m':'—');
-    callText('gpsLocName',gps?s.gps_location_name || 'Phone location':'No recent location received');
+    callText('gpsLocName',gps?(s.gps_location_name || s.location_status || 'Phone location'):(fresh?s.location_status || 'Phone did not supply a location fix':'No recent location received'));
+    if(fresh && s.location_status && !phoneSensorRequestPending)callText('phoneSensorStatus',s.location_status);
     const map=callElement('gpsMapLink');if(map){if(gps)map.href='https://www.google.com/maps?q='+s.gps_latitude+','+s.gps_longitude;else map.removeAttribute('href');map.setAttribute('aria-disabled',String(!gps));}
   }catch(error){showToast(error.message);}
 }
@@ -5208,23 +5239,14 @@ function renderLogs(logs) {
 }
 
 function renderTransfers(transfers) {
-  const el = document.getElementById("transfersList");
-  if (!el || !transfers) return;
-  if (transfers.length === 0) {
-    el.innerHTML = `<div style="color:var(--text-muted); font-size:12px; padding:8px 0;">No active socket file transfers.</div>`;
-    return;
-  }
-  el.innerHTML = transfers.map(t => `
-    <div style="background:var(--bg-app); border:1px solid var(--border-color); border-radius:6px; padding:10px; margin-bottom:8px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-        <span style="font-weight:600; font-size:12.5px;">${escapeHTML(t.FileName)}</span>
-        <span style="font-size:11px; color:var(--primary-emerald);">${t.SpeedMBps ? t.SpeedMBps.toFixed(1) + ' MB/s' : 'Done'}</span>
-      </div>
-      <div style="height:6px; background:var(--bg-input); border-radius:3px; overflow:hidden;">
-        <div style="width:${t.Complete ? 100 : 65}%; height:100%; background:var(--primary-emerald);"></div>
-      </div>
-    </div>
-  `).join("");
+ const el=document.getElementById('transfersList');if(!el || !transfers)return;
+ if(!transfers.length){el.innerHTML='<div class="transfer-empty">No file transfers.</div>';return;}
+ el.innerHTML=transfers.map(t=>{
+  const percent=t.Complete?100:t.BytesTotal>0?Math.min(99,Math.floor(t.BytesSent/t.BytesTotal*100)):0;
+  const status=t.Error?'Failed':t.Complete?'Received':t.BytesSent>=t.BytesTotal&&t.BytesTotal>0?'Saving…':'Receiving '+percent+'%';
+  const detail=typeof NearMitraTransfers==='undefined'?'':NearMitraTransfers.detail(NearMitraTransfers.message(t).attachment,formatFileSize);
+  return '<div class="live-transfer-row"><strong>'+escapeHTML(t.PeerName || 'Device')+' · '+escapeHTML(t.FileName)+'</strong><span>'+escapeHTML(status)+'</span><progress max="100" value="'+percent+'"></progress><small>'+escapeHTML(detail)+'</small></div>';
+ }).join('');
 }
 
 function clearLogs() {
@@ -6850,6 +6872,16 @@ function setupWanDataChannel(dc, peerId, peerName) {
       // Handle typing control from Flutter (WanDataMessage.control('typing', ...))
       if (msgType === 'CONTROL') {
         const payload = data.payload || {};
+        if(payload.action==='reaction') {
+          const msg=appState.messages.find(m=>m.id===payload.messageId && NearMitraChat.canonical(m.peer_id,chatDeviceLinks)===NearMitraChat.canonical(peerId,chatDeviceLinks));
+          if(msg) {
+            const emoji=payload.reaction || '';
+            const response=await fetch('/api/chat/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({incoming:true,peer_id:peerId,msg_id:msg.id,emoji})});
+            if(!response.ok) throw new Error(await response.text());
+            msg.reaction=emoji;savePersistedMessages();renderChatMessages();
+          }
+          return;
+        }
         if (payload.action === 'typing') {
           const isTyping = payload.isTyping !== false;
           if (isTyping) {
@@ -6885,6 +6917,7 @@ function setupWanDataChannel(dc, peerId, peerName) {
           fileSize: fileSize,
           bytesReceived: 0,
           folder: payload.folder === true,
+          isForwarded:payload.isForwarded===true,
           chunks: []
         };
 
@@ -6925,7 +6958,7 @@ function setupWanDataChannel(dc, peerId, peerName) {
           const form=new FormData();
           form.append('file',new Blob(file.chunks),file.fileName);
           form.append('message',JSON.stringify({id:file.fileId,peer_id:peerId,peer_ip:'wan://'+peerId,
-            sender:peerName || 'Peer',file_name:file.fileName,file_size:file.fileSize,kind:file.folder?'folder':'file',at:new Date().toISOString(),is_wan:true}));
+            sender:peerName || 'Peer',is_forwarded:file.isForwarded,file_name:file.fileName,file_size:file.fileSize,kind:file.folder?'folder':'file',at:new Date().toISOString(),is_wan:true}));
           const response=await fetch('/api/chat/receive-file',{method:'POST',body:form});
           if (!response.ok) throw new Error(await response.text());
           const stored=NearMitraChat.normalize(await response.json());
@@ -6951,6 +6984,7 @@ function setupWanDataChannel(dc, peerId, peerName) {
             peer_ip: "wan://" + peerId,
             sender: peerName || "Peer",
             text: text,
+            ...chatWireMetadata(data.payload || data),
             mine: false,
             at: new Date(data.timestamp || Date.now()),
             status: "Delivered",
@@ -7018,18 +7052,18 @@ async function ensureWanChannel(peerId, peerName) {
  }
  throw new Error('Connection timed out');
 }
-async function sendWanChatMessage(targetId,text,msgId) {
+async function sendWanChatMessage(targetId,text,msgId,metadata={}) {
  const dc=await ensureWanChannel(targetId,'Peer');
- await sendConfirmedWan(dc,{id:msgId,type:'text',timestamp:Date.now(),payload:{text}},msgId);
+ await sendConfirmedWan(dc,{id:msgId,type:'text',timestamp:Date.now(),payload:{text,replyToId:metadata.reply_to_id,replyToSender:metadata.reply_to_sender,replyToText:metadata.reply_to_text,isForwarded:metadata.is_forwarded===true}},msgId);
  const response=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-  id:msgId,peer_id:targetId,peer_ip:'wan://'+targetId,sender:'Windows Host',text,mine:true,at:new Date().toISOString(),status:'Sent',is_wan:true})});
+  ...metadata,id:msgId,peer_id:targetId,peer_ip:'wan://'+targetId,sender:'Windows Host',text,mine:true,at:new Date().toISOString(),status:'Sent',is_wan:true})});
  if (!response.ok) throw new Error('Could not persist sent message');
 }
 
 // -----------------------------------------------------------------------------
 // WAN WEBRTC FILE STREAMING SENDER & PROGRESS CONTROLLER
 // -----------------------------------------------------------------------------
-async function streamFileOverWanInternal(file, peerId, peerName, folder = false) {
+async function streamFileOverWanInternal(file, peerId, peerName, folder = false, metadata={}) {
   if (!file) return;
 
   let channel;
@@ -7042,6 +7076,8 @@ async function streamFileOverWanInternal(file, peerId, peerName, folder = false)
 
   // 1. Create file message with initial sending progress
   const fileMsg = {
+    ...metadata,
+    kind:folder?'folder':'file',file_name:file.name,file_size:file.size,
     id: fileId,
     peer_id: peerId,
     peer_ip: "wan://" + peerId,
@@ -7075,7 +7111,7 @@ async function streamFileOverWanInternal(file, peerId, peerName, folder = false)
       timestamp: Date.now(),
       payload: {
         transferId: fileId,
-        folder: folder,
+        folder: folder,isForwarded:metadata.is_forwarded===true,
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type || "application/octet-stream",
@@ -7143,22 +7179,18 @@ async function streamFileOverWanInternal(file, peerId, peerName, folder = false)
   renderChatMessages();
   showToast(`✅ Sent ${file.name} successfully!`);
 
-  // Persist to Go backend
-  fetch("/api/chat/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id: fileId,
-      peer_id: peerId,
-      peer_ip: "wan://" + peerId,
-      sender: "Windows Host",
-      text: `[File Attachment: ${file.name}]`,
-      mine: true,
-      at: new Date().toISOString(),
-      status: "Sent",
-      is_wan: true
-    })
-  }).catch(() => {});
+  let saved;
+  if(metadata.file_path) {
+    saved=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...fileMsg,at:new Date(fileMsg.at).toISOString()})});
+  } else {
+    const form=new FormData();form.append('file',file,file.name);
+    form.append('message',JSON.stringify({...fileMsg,attachment:undefined,at:new Date(fileMsg.at).toISOString()}));
+    saved=await fetch('/api/chat/cache-attachment',{method:'POST',body:form});
+  }
+  if(!saved.ok) throw new Error('Sent, but attachment could not be saved for forwarding');
+  Object.assign(fileMsg,NearMitraChat.normalize(await saved.json()));
+  savePersistedMessages();renderChatMessages();
+  return fileMsg;
 }
 
 // -----------------------------------------------------------------------------
@@ -7248,42 +7280,15 @@ async function handleChatDrop(e) {
   }
 }
 
-function uploadDroppedFileToPeer(file, targetIP, targetID) {
-  const formData = new FormData();
-  formData.append("file", file);
-  showToast(`Uploading ${file.name} to peer...`);
-
-  fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP || "")}`, {
-    method: "POST",
-    body: formData
-  }).then(r => r.json()).then(data => {
-    if(data.error) throw new Error(data.error);
-    const fileMsg = {
-      id: "msg_" + Date.now(),
-      peer_id: targetID,
-      peer_ip: targetIP,
-      sender: "Windows Host",
-      mine: true,
-      at: new Date(),
-      attachment: {
-        name: file.name,
-        size: formatBytes(file.size),
-        type: getFileType(file.name),
-        status: "Sent"
-      },
-      status: "Sent",
-      reactions: {}
-    };
-    appState.messages.push(fileMsg);
-    savePersistedMessages();
-    renderChatMessages();
-    showToast(`✅ File ${file.name} sent successfully!`);
-  }).catch(() => {
-    showToast("Error uploading file");
-  });
+async function uploadDroppedFileToPeer(file,targetIP,targetID) {
+ const form=new FormData();form.append('file',file);
+ try {
+  const response=await fetch('/api/send-file-upload?ip='+encodeURIComponent(targetIP || ''),{method:'POST',body:form});
+  if(!response.ok) throw new Error(await response.text());
+  const data=await response.json();if(data.error) throw new Error(data.error);
+  acceptSentAttachment(data);
+ } catch(error) {showToast('File could not be sent: '+error.message);}
 }
-
-
 
 
 let chatDeviceLinks = {};
@@ -7311,7 +7316,7 @@ async function flushChatOutbox() {
      delivered=response.ok;
     }
     if (!delivered && route.internet && appState.wanState.internet_mode_enabled) {
-     await sendWanChatMessage(route.internet.id,msg.text,msg.id);
+     await sendWanChatMessage(route.internet.id,msg.text,msg.id,msg);
      delivered=true;
     }
     msg.status=delivered?'Sent':'Queued';
@@ -7394,6 +7399,8 @@ const desktopCall=new NearMitraCall({
   if(session){if(!stream.getAudioTracks().length)session.sourceLabel='Receiving phone audio only';session.mediaWarnings=pcAudioCapture.warnings.get(stream) || [];if(session.mediaWarnings.length)showToast(session.mediaWarnings.join(' '));}
   return stream;
  },
+ getDisplayMedia:constraints=>navigator.mediaDevices.getDisplayMedia(constraints),
+ onMedia:session=>syncCallMedia(session),
  createStream:tracks=>new MediaStream(tracks),
  releaseMedia:stream=>pcAudioCapture.release(stream),
  invite:(peer,video)=>callRequest('/api/call/invite',{target_ip:peer.ip,peer_id:peer.id,peer_name:peer.name,is_video:video}),
@@ -7406,7 +7413,7 @@ const desktopCall=new NearMitraCall({
   if(!audio){audio=document.createElement('audio');audio.id='remoteCallAudio';audio.autoplay=true;document.body.appendChild(audio);}
   audio.srcObject=stream;audio.muted=false;audio.play().catch(()=>showToast('Click the call window to enable audio playback'));
   const video=callElement('remoteVideo');if(video){video.srcObject=stream;video.muted=true;video.play().catch(()=>{});}
-  callDisplay('remoteVideoPlaceholder','none');
+  syncCallMedia(desktopCall.session);
  },
  onError:error=>showToast(error.message),
  onState:(state,session)=>{
@@ -7414,7 +7421,7 @@ const desktopCall=new NearMitraCall({
   isCallActive=state!=='ended';appState.voice.active=state==='connected';
   if(state==='ended'){
    if(callAudioStatsTimer)clearInterval(callAudioStatsTimer);callAudioStatsTimer=null;callText('callAudioStatus','Audio stopped');
-   if(callScreenStream){callScreenStream.getTracks().forEach(t=>{t.onended=null;t.stop();});callScreenStream=null;}isScreenSharing=false;
+   isScreenSharing=false;
    localMediaStream=null;peerConnection=null;appState._ringingShown=false;hideIncomingCallOverlay();
    if(callDurationInterval)clearInterval(callDurationInterval);callDurationInterval=null;
    if(equalizerInterval)clearInterval(equalizerInterval);equalizerInterval=null;
@@ -7426,10 +7433,12 @@ const desktopCall=new NearMitraCall({
    callText('callPeerTitle',session.peer.name);callDisplay('voiceDashboardView','none');callDisplay('voiceActiveCallView','flex');}
   if(session?.mediaWarnings?.length)callText('callAudioStatus',session.mediaWarnings.join(' '));
   callText('callPeerStatus',({permissions:'Requesting microphone/camera permission…',ringing:'Ringing…',connecting:'Connecting…',connected:'Connected'})[state] || state);
+  syncCallMedia(session);
   if(state==='connected'){appState.voice.callDuration=0;startCallTimer();startEqualizerLoop();startCallAudioStats();}
  }
 });
 async function startCallWithPeer(ip,name,isVideo=false,mode='duplex') {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting a call');return;}
  const peer=(appState.peers || []).find(p=>p.ip===ip || p.id===ip);
  const nearby=NearMitraCall.resolvePeer(peer || {id:ip,ip,name},appState.peers || [],appState.lanDevices || []);
  if(!nearby){showToast('Select a Nearby device with a local IP address. Internet-only calling is unavailable.');return;}
@@ -7437,6 +7446,7 @@ async function startCallWithPeer(ip,name,isVideo=false,mode='duplex') {
  catch(error){showToast('Could not start call: '+describePcMediaError(error));}
 }
 function showIncomingCallOverlay(name,ip,isVideo) {
+ if(wirelessAudio?.session){callRequest('/api/call/decline').catch(()=>{});return;}
  incomingCallData={peerName:name,peerIP:ip,isVideo};
  callText('icPeerName',name);callText('icAvatar',getInitials(name || 'Peer'));callText('icCallType',isVideo?'Nearby video call':'Nearby audio call');
  callDisplay('incomingCallOverlay','flex');
@@ -7457,4 +7467,274 @@ function describePcMediaError(error){
  if(error?.name==='NotAllowedError')return 'PC microphone/camera permission was denied. Allow access for NearMitra in the browser and Windows privacy settings, or use Listen Remote Mic.';
  if(error?.name==='NotReadableError')return 'Windows could not open the PC microphone/camera. Check its connection and whether another app is using it.';
  return error?.message || String(error);
+}
+
+const nativeSystemAudio = typeof NearMitraNativeAudio === 'undefined' ? null : new NearMitraNativeAudio({
+ fetch:(url,options)=>fetch(url,options),
+ createAudioContext:()=>new AudioContext({latencyHint:'interactive'}),
+ createWorklet:(context,name,options)=>new AudioWorkletNode(context,name,options),
+ onEnded:(message,stream)=>{const s=wirelessAudio?.session;if(s?.local?.getAudioTracks().some(t=>stream.getAudioTracks().includes(t)))wirelessAudio.stop(true,message);}
+});
+async function loadWirelessOutputs(){
+ const el=callElement('wirelessOutputDevice');if(!el || wirelessAudio?.session)return;
+ try{
+  const response=await fetch('/api/audio/devices');if(!response.ok)throw new Error(await response.text());
+  const data=await response.json(),selected=el.value;
+  const help=callElement('nativeAudioOutputHelp');if(help)help.hidden=!!(data.devices || []).length;
+  el.innerHTML='<option value="">Windows default output</option>'+(data.devices || []).map(d=>'<option value="'+escapeHTML(d.id)+'">'+escapeHTML(d.name)+(d.is_default?' (default)':'')+'</option>').join('');
+  if((data.devices || []).some(d=>d.id===selected))el.value=selected;
+  callText('nativeAudioDeviceStatus',(data.devices || []).length?'Ready: '+((data.devices || []).find(d=>d.id===selected || (!selected&&d.is_default))?.name || 'Select the player’s Windows playback output'):'No active Windows playback output. Connect headphones/USB audio, or install a virtual playback device. Browser-tab mode is still available.');
+ }catch(error){showToast('Could not list Windows playback outputs: '+error.message);}
+}
+const wirelessAudioCapture = typeof NearMitraWirelessAudio === 'undefined' ? null : new NearMitraAudioCapture({
+ musicAudio:true,
+ captureScope:()=>callElement('wirelessCaptureScope')?.value || 'system',
+ captureSystemAudio:()=>{if(!nativeSystemAudio)throw new Error('Native system audio did not load. Restart the updated app.');return nativeSystemAudio.capture(callElement('wirelessOutputDevice')?.value || '');},
+ releaseSystemAudio:stream=>nativeSystemAudio?.release(stream),
+ media:{getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),getDisplayMedia:c=>navigator.mediaDevices.getDisplayMedia(c),enumerateDevices:()=>navigator.mediaDevices.enumerateDevices()},
+ createStream:tracks=>new MediaStream(tracks),createAudioContext:()=>new AudioContext({latencyHint:'interactive'}),
+ onSourceEnded:(message,stream)=>{if(wirelessAudio?.session?.local===stream)wirelessAudio.stop(true,message);}
+});
+const wirelessAudio = typeof NearMitraWirelessAudio === 'undefined' ? null : new NearMitraWirelessAudio({
+ newID:()=>crypto.randomUUID(), createPeerConnection:c=>new RTCPeerConnection(c), createStream:tracks=>new MediaStream(tracks),
+ isOccupied:()=>!!(desktopCall.session || remotePeerConnection || hostPeerConnection || localHostCameraStream),
+ capture:source=>wirelessAudioCapture.capture({audio:true,video:false},source,callElement('pcMicrophoneDevice')?.value || ''),
+ release:stream=>wirelessAudioCapture.release(stream),
+ send:(ip,header)=>callRequest('/api/cctv/signal',{target_ip:ip,...header}),
+ play:async stream=>{const audio=callElement('wirelessAudioPlayback');if(!audio)throw new Error('Playback control unavailable');audio.srcObject=stream;audio.muted=false;await audio.play();},
+ stopPlayback:()=>{const audio=callElement('wirelessAudioPlayback');if(audio){audio.pause();audio.srcObject=null;}},
+ onChange:service=>{renderWirelessAudio();if(service.session?.pending)switchTab('voice',true);}
+});
+function requireWirelessAudio(){
+ if(!wirelessAudio)throw new Error('Wireless audio did not load. Exit NearMitra from the system tray, install the latest setup, then reopen the app.');
+ return wirelessAudio;
+}
+function renderWirelessAudio(){
+ if(!wirelessAudio){
+  callText('wirelessAudioStatus','Wireless audio did not load. Restart the updated NearMitra app.');
+  for(const id of ['wirelessAudioSend','wirelessAudioMic','wirelessAudioConnect','wirelessAudioReceive']){const el=callElement(id);if(el)el.disabled=true;}
+  const stop=callElement('wirelessAudioStop');if(stop)stop.hidden=true;
+  return;
+ }
+ const s=wirelessAudio.session;
+ callText('wirelessAudioStatus',wirelessAudio.status+(s?' • '+s.peer.name:''));
+ callText('wirelessAudioSignal',s?.audioStatus || '');
+ for(const id of ['wirelessAudioSend','wirelessAudioMic','wirelessAudioConnect','wirelessAudioReceive','wirelessCaptureScope','wirelessOutputDevice','audioPeerSelect','pcAudioSource','pcMicrophoneDevice']){const el=callElement(id);if(el)el.disabled=!!s;}
+ const stop=callElement('wirelessAudioStop');if(stop){stop.disabled=!s;stop.hidden=!s;}
+ const selected=callElement('audioPeerSelect')?.value;
+ const target=s?.peer || (appState.peers || []).find(p=>p.ip===selected) || (appState.lanDevices || []).find(p=>p.ip===selected);
+ const sourceLabel=({system:'System audio',mic:'PC microphone',both:'System audio + microphone'})[callElement('pcAudioSource')?.value || 'system'];
+ callText('wirelessAudioTarget',target?'Target: '+(target.name || target.hostname || selected)+' • '+target.ip+' • '+sourceLabel:'Select a Nearby / P2P target device above');
+ const consent=callElement('wirelessAudioConsent');if(consent)consent.hidden=!s?.pending;
+ const source=({system:'PC playback audio (Chrome, music or video players)',mic:'PC microphone',both:'system audio and PC microphone'})[s?.source] || 'PC audio';
+ callText('wirelessAudioConsentText',s?.offer?'Allow '+s.peer.name+' to play microphone audio on this PC? This PC microphone stays off.':'Allow '+(s?.peer.name || 'device')+' to receive '+source+'?');
+ const mute=callElement('wirelessAudioMute');if(mute){mute.hidden=!s?.sending;mute.innerText=s?.muted?'Unmute outgoing audio':'Mute outgoing audio';}
+ const play=callElement('wirelessAudioPlay');if(play)play.hidden=!s?.playbackBlocked;
+ const volume=callElement('wirelessAudioVolumeControl');if(volume)volume.hidden=!s || s.sending || s.pending;
+}
+function selectedWirelessPeer(){
+ const ip=callElement('audioPeerSelect')?.value;
+ const peer=NearMitraCall.resolvePeer({ip},appState.peers || [],appState.lanDevices || []);
+ if(!peer)throw new Error('Select a Nearby / P2P device in the Audio target selector first');return peer;
+}
+async function startWirelessPcAudio(){
+ try{await requireWirelessAudio().start(selectedWirelessPeer(),callElement('pcAudioSource')?.value || 'system');}
+ catch(e){showToast(e.message);}
+}
+async function requestWirelessPhoneMic(){try{await requireWirelessAudio().requestMic(selectedWirelessPeer());}catch(e){showToast(e.message);}}
+function setWirelessPlaybackVolume(value){const audio=callElement('wirelessAudioPlayback');if(audio)audio.volume=Math.max(0,Math.min(1,Number(value)/100));}
+window.addEventListener('beforeunload',()=>{if(wirelessAudio?.session)wirelessAudio.stop(true,'Streaming window closed');});
+
+function chatWireMetadata(payload) {
+ return {reply_to_id:payload.replyToId || payload.reply_to_id || '',reply_to_sender:payload.replyToSender || payload.reply_to_sender || '',reply_to_text:payload.replyToText || payload.reply_to_text || '',is_forwarded:payload.isForwarded===true || payload.is_forwarded===true};
+}
+function chatCanAct(message) {
+ return !message._liveTransfer && !message.is_ai && !message.isAi && !['Queued','Sending','Downloading','Failed'].includes(message.status);
+}
+function chatMessageAction(event,action) {
+ event.stopPropagation();
+ const id=event.currentTarget.closest('[data-chat-id]').dataset.chatId;
+ const message=appState.messages.find(m=>m.id===id);
+ if(!message || !chatCanAct(message)) return;
+ if(action==='reply') {
+  chatReply={...message};updateChatReplyPreview();document.getElementById('chatInput')?.focus();
+ } else if(action==='select') {
+  if(chatSelection.has(id)) chatSelection.delete(id);else chatSelection.add(id);
+  renderChatMessages();
+ } else if(action==='forward') openChatForward([id]);
+}
+function clearChatSelection() {chatSelection.clear();renderChatMessages();}
+function cancelChatReply() {chatReply=null;updateChatReplyPreview();}
+function updateChatReplyPreview() {
+ const preview=document.getElementById('chatReplyPreview');if(!preview) return;
+ preview.hidden=!chatReply;
+ if(chatReply) preview.innerHTML=`<div><strong>Replying to ${escapeHTML(chatReply.mine?'yourself':chatReply.sender || 'Peer')}</strong><span>${escapeHTML(chatReply.text || chatReply.file_name || chatReply.attachment?.name || 'Attachment')}</span></div><button onclick="cancelChatReply()" aria-label="Cancel reply">✕</button>`;
+}
+function jumpQuotedMessage(event) {
+ const target=document.getElementById(event.currentTarget.dataset.quoteId),stream=document.getElementById('chatStream');
+ if(!target || !stream?.contains(target)) {showToast('Original message is no longer in this chat');return;}
+ target.scrollIntoView({block:'center',behavior:'smooth'});
+ target.animate([{background:'var(--primary-glow)'},{background:'transparent'}],{duration:1500});
+}
+function chatForwardTargets() {
+ const result=new Map();
+ for(const peer of [...appState.peers,...(appState.wanState?.trusted_devices || []).map(p=>({...p,is_wan:true}))]) {
+  const route=resolveChatRoute(peer);
+  if(route.mode!=='offline' && !result.has(route.id)) result.set(route.id,{...peer,id:route.id});
+ }
+ return [...result.values()];
+}
+function openChatForward(ids=[...chatSelection]) {
+ if(chatForwardBusy || !ids.length) return;
+ document.getElementById('chatForwardDialog')?.remove();
+ const messages=appState.messages.filter(m=>ids.includes(m.id) && chatCanAct(m)).sort((a,b)=>new Date(a.at)-new Date(b.at));
+ if(!messages.length) return;
+ const targets=chatForwardTargets(),dialog=document.createElement('dialog');dialog.id='chatForwardDialog';dialog.className='chat-forward-dialog';
+ dialog.innerHTML=`<div class="chat-forward-heading"><h3>Forward ${messages.length===1?'message':messages.length+' messages'}</h3><button data-close aria-label="Close">✕</button></div><p>Choose a connected device</p><input type="search" placeholder="Search devices" aria-label="Search recipients"><div class="chat-forward-targets">${targets.length?targets.map((p,i)=>`<button data-target="${i}"><strong>${escapeHTML(p.name || 'Device')}</strong><span>${resolveChatRoute(p).mode==='nearby'?'Nearby / P2P':'Internet / WAN'}</span></button>`).join(''):'<p>No connected devices available.</p>'}</div><p class="chat-forward-status" role="status"></p>`;
+ document.body.appendChild(dialog);
+ const close=()=>{if(!chatForwardBusy){dialog.close();dialog.remove();}};
+ dialog.querySelector('[data-close]').onclick=close;
+ dialog.addEventListener('cancel',event=>{if(chatForwardBusy)event.preventDefault();else dialog.remove();});
+ dialog.querySelector('input').oninput=event=>dialog.querySelectorAll('[data-target]').forEach(button=>{button.hidden=!targets[Number(button.dataset.target)].name?.toLowerCase().includes(event.target.value.toLowerCase());});
+ dialog.querySelectorAll('[data-target]').forEach(button=>button.onclick=async()=>{
+  if(chatForwardBusy) return;
+  chatForwardBusy=true;dialog.querySelectorAll('button,input').forEach(el=>el.disabled=true);
+  const status=dialog.querySelector('[role=status]'),target=targets[Number(button.dataset.target)];
+  let sent=0;
+  try {
+   for(const message of [...messages]) {
+    status.textContent=`Forwarding ${sent+1} of ${messages.length+sent}…`;
+    await forwardChatMessage(message,target);
+    sent++;messages.splice(messages.indexOf(message),1);chatSelection.delete(message.id);
+   }
+   showToast(`Forwarded to ${target.name || 'device'}`);chatForwardBusy=false;close();renderChatMessages();
+  } catch(error) {
+   chatForwardBusy=false;status.textContent=`${sent?sent+' sent. ':''}${error.message}`;
+   dialog.querySelectorAll('button,input').forEach(el=>el.disabled=false);renderChatMessages();
+  }
+ });
+ dialog.showModal();
+}
+async function forwardChatMessage(message,target) {
+ const route=resolveChatRoute(target);
+ if(route.mode==='offline') throw new Error('Recipient is offline');
+ if(route.mode==='nearby') {
+  const response=await fetch('/api/chat/forward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:message.id,peer_id:route.id})});
+  if(!response.ok) throw new Error(await response.text());
+  const stored=NearMitraChat.normalize(await response.json());
+  appState.messages=NearMitraChat.merge(appState.messages,[stored]);
+ } else if(message.attachment || ['file','folder'].includes(message.kind)) {
+  const response=await fetch('/api/chat/forward-file?id='+encodeURIComponent(message.id));
+  if(!response.ok) throw new Error(await response.text());
+  const folder=message.kind==='folder' || message.attachment?.type==='folder';
+  const name=message.file_name || message.attachment?.name || 'File';
+  const file=new File([await response.blob()],folder && !name.endsWith('.zip')?name+'.zip':name);
+  const result=await streamFileOverWanInternal(file,route.id,target.name,folder,{is_forwarded:true,file_path:message.file_path});
+  if(!result || result.status!=='Sent') throw new Error('File forwarding did not complete');
+ } else {
+  const forwarded={id:crypto.randomUUID(),peer_id:route.id,peer_ip:'wan://'+route.id,sender:'Windows Host',text:message.text,mine:true,at:new Date(),kind:'text',is_wan:true,is_forwarded:true,status:'Sending'};
+  // A forward starts a new message; the original conversation's quote is not copied.
+  await sendWanChatMessage(route.id,forwarded.text,forwarded.id,forwarded);
+  forwarded.status='Sent';appState.messages.push(forwarded);
+ }
+ savePersistedMessages();renderChatMessages();
+}
+
+const nearbyAIConversations=new Map();
+let nearbyAIActiveID='',nearbyAIRequest=null,nearbyAISharing=null,nearbyAIShareLoading=false;
+function nearbyAIKey() {const peer=appState.activePeer;return peer?NearMitraChat.canonical(peer.internet_device_id || peer.id,chatDeviceLinks):'';}
+function syncNearbyAIConversation() {
+ const key=nearbyAIKey();if(key===nearbyAIActiveID){
+  const pane=document.getElementById("chatViewAI");if(pane?.style.display==='flex')updateNearbyAIChat();
+  return;
+ }
+ stopNearbyAIQuery();nearbyAIActiveID=key;nearbyAISharing=null;nearbyAIShareLoading=false;
+ renderNearbyAIConversation();updateNearbyAIChat();
+}
+function renderNearbyAIConversation() {
+ const stream=document.getElementById('aiChatStream');if(!stream)return;
+ const items=nearbyAIConversations.get(nearbyAIKey()) || [];
+ stream.innerHTML=items.length?items.map(m=>`<div class="msg-row ${m.mine?'outgoing':'incoming'}"><div class="msg-bubble-wrap"><div class="msg-bubble"><div class="msg-sender">${escapeHTML(m.mine?'You':m.sender)}</div><div class="msg-text">${escapeHTML(m.text || 'Waiting for the device…')}</div>${m.error?'<div class="nearby-ai-error">Request failed</div>':''}</div></div></div>`).join(''):'<div class="ai-welcome-bubble"><p>Ask the selected device’s shared AI. Its owner must allow this Windows device. Configure your own engine in My AI settings.</p></div>';
+ stream.scrollTop=stream.scrollHeight;
+}
+function updateNearbyAIChat() {
+ const peer=appState.activePeer,route=resolveChatRoute(peer),available=!!route.nearby;
+ const title=document.getElementById('nearbyAITargetLabel'),status=document.getElementById('nearbyAITargetStatus'),badge=document.getElementById('aiSubtabProviderBadge');
+ if(title)title.textContent=(peer?.name || 'Selected device')+' · Nearby AI';
+ if(status)status.textContent=available?'Runs on '+(peer.name || 'the selected device')+'. The owner must grant access.':'Connect this device through Nearby / P2P to use its AI.';
+ if(badge)badge.textContent='Device';
+ const send=document.getElementById('nearbyAISend');if(send)send.disabled=!available || !!nearbyAIRequest;
+ const stop=document.getElementById('nearbyAIStop');if(stop)stop.hidden=!nearbyAIRequest;
+ renderNearbyAISharing();
+ if(available && !nearbyAISharing && !nearbyAIShareLoading)loadSelectedAISharing();
+}
+async function loadSelectedAISharing() {
+ const key=nearbyAIKey();nearbyAIShareLoading=true;
+ try {
+  const response=await fetch('/api/ai/selected-sharing?peer_id='+encodeURIComponent(key));
+  if(!response.ok)throw new Error(await response.text());
+  const data=await response.json();if(key!==nearbyAIKey())return;
+  nearbyAISharing=data;
+ } catch(error) {if(key===nearbyAIKey())nearbyAISharing={error:error.message};}
+ finally {if(key===nearbyAIKey()){nearbyAIShareLoading=false;renderNearbyAISharing();}}
+}
+function renderNearbyAISharing() {
+ const text=document.getElementById('nearbyAIShareStatus'),button=document.getElementById('nearbyAIShareToggle');
+ const state=nearbyAISharing,peer=appState.activePeer;
+ if(text)text.textContent=!peer?'Select a device':!state?'Checking your sharing settings…':state.error?state.error:!state.ai_enabled?'My AI is disabled. Configure and enable your engine in My AI settings.':state.allowed && state.sharing_enabled?'Allowed: '+peer.name+' can use your '+state.provider+' engine.':state.allowed?'Device allowed, but My AI sharing is off. Enable sharing to serve requests.':'This device cannot use your AI until you allow it.';
+ if(button){button.disabled=!state || !!state.error || !state.ai_enabled || nearbyAIShareLoading;button.textContent=state?.allowed && state?.sharing_enabled?'Revoke':state?.allowed?'Enable sharing':'Allow';}
+}
+async function toggleSelectedAISharing() {
+ const state=nearbyAISharing,key=nearbyAIKey();if(!state || !key)return;
+ const allow=!(state.allowed && state.sharing_enabled);
+ nearbyAIShareLoading=true;renderNearbyAISharing();
+ try {
+  if(allow && !state.sharing_enabled) {
+   const response=await fetch('/api/ai/share-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})});
+   if(!response.ok)throw new Error(await response.text());
+  }
+  const response=await fetch('/api/ai/peer-permission',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peer_id:key,allow})});
+  if(!response.ok)throw new Error(await response.text());
+  if(key===nearbyAIKey()) {nearbyAISharing=null;await loadSelectedAISharing();}
+ } catch(error){showToast('AI sharing: '+error.message);}
+ finally {if(key===nearbyAIKey()){nearbyAIShareLoading=false;renderNearbyAISharing();}}
+}
+function stopNearbyAIQuery() {
+ if(!nearbyAIRequest)return;
+ const request=nearbyAIRequest;nearbyAIRequest=null;request.controller.abort();
+ if(!request.answer.text)request.answer.text='Request stopped.';
+ const stop=document.getElementById('nearbyAIStop');if(stop)stop.hidden=true;
+}
+async function sendAIChatMessage(preset) {
+ syncNearbyAIConversation();
+ const input=document.getElementById('aiChatInput'),prompt=(preset || input?.value || '').trim(),peer=appState.activePeer;
+ if(!prompt || !peer || nearbyAIRequest)return;
+ const route=resolveChatRoute(peer);if(!route.nearby){showToast('Nearby AI needs a connected Nearby / P2P device');return;}
+ const key=nearbyAIKey(),items=nearbyAIConversations.get(key) || [];
+ nearbyAIConversations.set(key,items);
+ const answer={mine:false,sender:(peer.name || 'Device')+' AI',text:''};items.push({mine:true,text:prompt},answer);
+ const request={key,answer,controller:new AbortController()};nearbyAIRequest=request;
+ if(input)input.value='';renderNearbyAIConversation();updateNearbyAIChat();
+ let completed=false;
+ const consume=packet=>{
+  if(packet.status==='disabled' || packet.error_code==='ai_disabled') throw new Error(packet.reply || packet.message || 'The selected device has not allowed AI access.');
+  if(packet.status==='error' || packet.error)throw new Error(packet.error || packet.message || packet.reply || 'Remote AI request failed');
+  const chunk=packet.reply ?? packet.response ?? packet.text ?? packet.message ?? packet.content ?? packet.delta ?? '';
+  if(chunk)answer.text+=chunk;
+  if(packet.done===true || ['done','success','ok'].includes(packet.status))completed=true;
+  if(nearbyAIKey()===key)renderNearbyAIConversation();
+ };
+ try {
+  const response=await fetch('/api/ai/nearby-query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peer_id:route.id,prompt}),signal:request.controller.signal});
+  if(!response.ok)throw new Error(await response.text());
+  const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';
+  try {while(true){const {value,done}=await reader.read();pending+=decoder.decode(value || new Uint8Array(),{stream:!done});let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end).trim();pending=pending.slice(end+1);if(line)consume(JSON.parse(line));}if(done){if(pending.trim())consume(JSON.parse(pending));break;}}}finally{reader.releaseLock();}
+  if(!completed)throw new Error('Nearby AI disconnected before completing its answer');
+ } catch(error) {
+  if(error.name!=='AbortError'){answer.error=true;answer.text+=(answer.text?'\n\n':'')+error.message;}
+ } finally {
+  request.controller.abort();
+  if(nearbyAIRequest===request)nearbyAIRequest=null;
+  if(nearbyAIKey()===key){renderNearbyAIConversation();updateNearbyAIChat();}
+ }
 }

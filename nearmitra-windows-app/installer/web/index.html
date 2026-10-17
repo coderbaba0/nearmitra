@@ -27,7 +27,8 @@
           <div class="brand-avatar"><img src="logo.png" alt="NearMitra" width="28" height="28"></div>
           <div class="brand-info">
             <div class="brand-title">NearMitra</div>
-            <div class="brand-ver" id="sidebarVersion">v2.1.2 • Windows 10 / 11</div>
+            <div class="brand-ver" id="sidebarVersion">v2.1.17 • Windows 10 / 11</div>
+            <div class="brand-ver" id="sidebarPublisher">flutterfever.com</div>
           </div>
         </div>
 
@@ -101,7 +102,7 @@
             <div class="dir-input-row">
               <input type="text" id="txtInstallPath" class="form-input" readonly value="%LOCALAPPDATA%\Programs\NearMitra">
             </div>
-            <span class="opt-hint">App installs in your user profile. Private-network setup asks for administrator approval.</span>
+            <span class="opt-hint">Installs for your Windows account. No PowerShell is required. Optional private-network access may ask for administrator approval.</span>
           </div>
 
           <div class="options-group" style="margin-top:18px;">
@@ -120,14 +121,14 @@
               </label>
 
               <label class="custom-checkbox">
-                <input type="checkbox" id="chkAutostart">
+                <input type="checkbox" id="chkAutostart" checked>
                 <span class="checkmark"></span>
                 <span class="label-text">Auto-start NearMitra minimized when Windows starts</span>
               </label>
             </div>
           </div>
 
-          <label class="custom-checkbox"><input type="checkbox" id="chkPrivateNetwork" checked><span class="checkmark"></span><span class="label-text">Allow Nearby on private networks (Windows administrator prompt)</span></label>
+          <label class="custom-checkbox"><input type="checkbox" id="chkPrivateNetwork" checked><span class="checkmark"></span><span class="label-text">Allow Nearby on private networks (recommended; optional administrator approval)</span></label>
           <div class="stage-footer">
             <button class="btn btn-secondary" onclick="goToStep(1)">➔ Back</button>
             <button class="btn btn-primary btn-install" onclick="startInstallation()">Install Now ⚡</button>

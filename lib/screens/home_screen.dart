@@ -34,6 +34,7 @@ import '../services/nearby_service.dart';
 import '../services/notification_service.dart';
 import '../services/wifi_direct_service.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/incoming_call_dialog.dart';
 import '../widgets/p2p_qr_widget.dart';
 import '../widgets/p2p_radar_view.dart';
 import '../widgets/peer_tile.dart';
@@ -124,6 +125,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _wanService.isAppInForeground = true;
       CallService().isAppInForeground=true;
       _onIncomingCallChanged();
+      _onWirelessAudioChanged();
     } else if (state == AppLifecycleState.paused ||
                state == AppLifecycleState.inactive ||
                state == AppLifecycleState.hidden) {
@@ -150,6 +152,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _history.clear();
     _history.addAll(await _historyService.load());
     _initCallService();
+    widget.service.wirelessAudio.addListener(_onWirelessAudioChanged);
+    widget.service.wirelessAudio.otherMediaBusy = () => _backgroundStreamPc != null;
     await widget.service.start();
     await _wanService.init();
     _wanRtcManager.init();
@@ -221,6 +225,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     widget.service.onStreamOffer = (peerId, offer) async {
       if (!mounted) return;
+      if (widget.service.wirelessAudio.busy) {
+        final ip = offer['remote_ip']?.toString() ?? '';
+        await widget.service.sendWebRtcSignal(Peer(id: peerId, name: 'Peer', ip: ip), 'stream_rejected', {'reason': 'Wireless audio is active'});
+        return;
+      }
       final streamType = offer['stream_type']?.toString() ?? 'camera';
       final remoteIp = offer['remote_ip']?.toString() ?? offer['sender_ip']?.toString() ?? '';
       final senderName = offer['sender']?.toString() ?? offer['name']?.toString() ?? 'Remote Device';
@@ -322,8 +331,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _scan(); // Automatic scan on launch
   }
 
+  RTCPeerConnection? _backgroundStreamPc;
+  MediaStream? _backgroundStreamMedia;
+  Future<void> _closeBackgroundStream() async {
+    final pc = _backgroundStreamPc;
+    final media = _backgroundStreamMedia;
+    _backgroundStreamPc = null; _backgroundStreamMedia = null;
+    if (pc != null) {
+      pc.onConnectionState = null;
+      try { await pc.close(); await pc.dispose(); } catch (_) {}
+    }
+    if (media != null) {
+      for (final track in media.getTracks()) { try { await track.stop(); } catch (_) {} }
+      try { await media.dispose(); } catch (_) {}
+    }
+  }
+
   Future<void> _respondToStreamOffer(
       Peer peer, String streamType, Map<String, dynamic> offer) async {
+    if (widget.service.wirelessAudio.busy) {
+      await widget.service.sendWebRtcSignal(peer, 'stream_rejected', {'reason': 'Wireless audio is active'});
+      return;
+    }
+    await _closeBackgroundStream();
     try {
       final sdp = offer['sdp']?.toString();
       if (sdp == null || sdp.isEmpty) return;
@@ -334,6 +364,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ],
         'sdpSemantics': 'unified-plan',
       });
+
+      _backgroundStreamPc = pc;
+      pc.onConnectionState = (state) {
+        if (_backgroundStreamPc == pc && (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed || state == RTCPeerConnectionState.RTCPeerConnectionStateClosed)) {
+          unawaited(_closeBackgroundStream());
+        }
+      };
+      widget.service.onStreamStopped = (id, _) {
+        if (id == peer.id || id == peer.ip) unawaited(_closeBackgroundStream());
+      };
 
       final mediaConstraints = <String, dynamic>{
         'audio': streamType == 'audio' || streamType == 'camera',
@@ -372,6 +412,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
       final localStream =
           await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      if (_backgroundStreamPc != pc) {
+        for (final track in localStream.getTracks()) { await track.stop(); }
+        await localStream.dispose();
+        return;
+      }
+      _backgroundStreamMedia = localStream;
       for (final track in localStream.getTracks()) {
         track.enabled = true;
         await pc.addTrack(track, localStream);
@@ -420,6 +466,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
       _toast('Streaming live ${streamType.toUpperCase()} to ${peer.name}');
     } catch (e) {
+      await _closeBackgroundStream();
       debugPrint('Error responding to stream offer: $e');
     }
   }
@@ -606,27 +653,82 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   DialogRoute<bool>? _incomingCallRoute;
   bool _incomingDialogPending=false;
   void _onIncomingCallChanged() {
-    final call=CallService().incomingCall.value;
-    if(call==null){final route=_incomingCallRoute;if(route?.isActive==true)route!.navigator?.removeRoute(route);return;}
-    if(!mounted || _isCallScreenOpen || _incomingDialogPending || !CallService().isAppInForeground)return;
-    _incomingDialogPending=true;
+    final call = CallService().incomingCall.value;
+    if (call == null) {
+      final route = _incomingCallRoute;
+      if (route?.isActive == true) route!.navigator?.removeRoute(route);
+      return;
+    }
+    if (!mounted ||
+        _isCallScreenOpen ||
+        _incomingDialogPending ||
+        !CallService().isAppInForeground) {
+      return;
+    }
+    _incomingDialogPending = true;
     unawaited(SystemSound.play(SystemSoundType.alert));
     unawaited(HapticFeedback.mediumImpact());
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if(!mounted || CallService().incomingCall.value!=call){_incomingDialogPending=false;return;}
-      final navigator=rootNavigatorKey.currentState ?? Navigator.of(context);
-      final route=DialogRoute<bool>(context:context,barrierDismissible:false,builder:(dialogContext)=>AlertDialog(
-        title:Text('Incoming ${call.isVideo?'video':'audio'} call'),
-        content:Text('${call.peer.name} is calling over Nearby / P2P.'),
-        actions:[TextButton(onPressed:()=>Navigator.of(dialogContext).pop(false),child:const Text('Decline')),
-          FilledButton(onPressed:()=>Navigator.of(dialogContext).pop(true),child:const Text('Answer'))],
-      ));
-      _incomingCallRoute=route;
-      final answer=await navigator.push<bool>(route);
-      _incomingCallRoute=null;_incomingDialogPending=false;
-      if(CallService().incomingCall.value!=call)return;
-      if(answer==true){CallService().acceptPendingIncomingCall();}
-      else{CallService().declinePendingIncomingCall();}
+      if (!mounted || CallService().incomingCall.value != call) {
+        _incomingDialogPending = false;
+        return;
+      }
+      final navigator = rootNavigatorKey.currentState ?? Navigator.of(context);
+      final route = DialogRoute<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => IncomingCallDialog(
+                callerName: call.peer.name,
+                isVideo: call.isVideo,
+                avatar: _resolvePeerAvatar(call.peer),
+              ));
+      _incomingCallRoute = route;
+      final answer = await navigator.push<bool>(route);
+      _incomingCallRoute = null;
+      _incomingDialogPending = false;
+      if (CallService().incomingCall.value != call) return;
+      if (answer == true) {
+        CallService().acceptPendingIncomingCall();
+      } else {
+        CallService().declinePendingIncomingCall();
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  DialogRoute<bool>? _wirelessAudioRoute;
+  bool _wirelessDialogPending = false;
+  void _onWirelessAudioChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final audio = widget.service.wirelessAudio;
+    if (!audio.needsApproval) {
+      final route = _wirelessAudioRoute;
+      if (route?.isActive == true) route!.navigator?.removeRoute(route);
+      return;
+    }
+    if (_wirelessDialogPending || !CallService().isAppInForeground) return;
+    _wirelessDialogPending = true;
+    final session = audio.session!;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || audio.session != session || !audio.needsApproval) {
+        _wirelessDialogPending = false; return;
+      }
+      final route = DialogRoute<bool>(context: context, barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          icon: Icon(session.offer == null ? Icons.mic_rounded : Icons.speaker_rounded),
+          title: Text(session.offer == null ? 'Share your microphone?' : 'Use this phone as a speaker?'),
+          content: Text(session.offer == null
+            ? '${session.peer.name} wants to receive your microphone audio. Your camera stays off. You can mute or stop from Streaming → Wi-Fi Audio.'
+            : '${session.peer.name} wants to play audio on this phone. Your microphone and camera stay off.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Decline')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Allow'))],
+        ));
+      _wirelessAudioRoute = route;
+      final allowed = await (rootNavigatorKey.currentState ?? Navigator.of(context)).push<bool>(route);
+      _wirelessAudioRoute = null; _wirelessDialogPending = false;
+      if (audio.session != session || !audio.needsApproval) return;
+      if (allowed == true) { await audio.approve(); } else { await audio.decline(); }
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -748,6 +850,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Future<void> _startCall(Peer peer, bool isVideoCall) async {
+    if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting a call'); return; }
     if (!_canCall(peer)) {
       _toast('Calls require a direct Nearby / P2P connection');
       return;
@@ -822,6 +925,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
+    widget.service.wirelessAudio.removeListener(_onWirelessAudioChanged);
+    unawaited(_closeBackgroundStream());
     CallService().incomingCall.removeListener(_onIncomingCallChanged);
     WidgetsBinding.instance.removeObserver(this);
     _peerStatusRefreshTimer?.cancel();
@@ -1575,6 +1680,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         child: Column(
           children: [
             if (!compact || peer == null) _topBar(),
+            if (widget.service.wirelessAudio.busy)
+              Material(color: Theme.of(context).colorScheme.primaryContainer,
+                child: ListTile(dense: true,
+                  leading: const Icon(Icons.graphic_eq_rounded),
+                  title: Text(widget.service.wirelessAudio.status, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  onTap: () => _openStreamingHubScreen(initialType: 'wireless'),
+                  trailing: IconButton(tooltip: 'Stop wireless audio', icon: const Icon(Icons.stop_circle_outlined),
+                    onPressed: () => widget.service.wirelessAudio.stop()),
+                )),
             Expanded(
               child: compact
                   ? _mobileBody()

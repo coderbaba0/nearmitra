@@ -6,6 +6,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/peer.dart';
 import '../services/call_service.dart';
+import '../services/call_video_session.dart';
 import '../services/nearby_service.dart';
 
 class ActiveCallScreen extends ConsumerStatefulWidget {
@@ -54,7 +55,8 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   RTCPeerConnection? _peerConnection;
   Completer<void>? _prepareCompleter;
   MediaStream? _localStream;
-  MediaStream? _screenStream;
+  CallVideoSession? _videoSession;
+  RTCRtpTransceiver? _videoTransceiver;
   MediaStream? _remoteStream;
   final List<RTCIceCandidate> _pendingCandidates = [];
 
@@ -80,10 +82,14 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     _initCallFlow();
   }
 
-  bool _matchesCallPeer(String id)=>id==widget.peer.id || id==widget.peer.ip || widget.service.peers.any((peer)=>peer.id==id && peer.ip==widget.peer.ip);
+  bool _matchesCallPeer(String id) =>
+      id == widget.peer.id ||
+      id == widget.peer.ip ||
+      widget.service.peers
+          .any((peer) => peer.id == id && peer.ip == widget.peer.ip);
   void _setupSignalListeners() {
     widget.service.onCallAcceptedByPeer = (peerId) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       if (!mounted) return;
       _ringTimeoutTimer?.cancel();
       _ringTimeoutTimer = null;
@@ -96,7 +102,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallDeclinedByPeer = (peerId) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       if (!mounted) return;
       setState(() {
         _statusText = 'Call Declined';
@@ -105,7 +111,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallEndedByPeer = (peerId) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       if (!mounted) return;
       setState(() {
         _statusText = 'Call Ended';
@@ -114,7 +120,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallVideoToggledByPeer = (peerId, isVideo) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       if (!mounted) return;
       setState(() {
         _peerVideoEnabled = isVideo;
@@ -122,17 +128,17 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onWebRtcOffer = (peerId, offer) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       unawaited(_handleOffer(offer));
     };
 
     widget.service.onWebRtcAnswer = (peerId, answer) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       unawaited(_handleAnswer(answer));
     };
 
     widget.service.onWebRtcIceCandidate = (peerId, candidate) {
-      if(!_matchesCallPeer(peerId))return;
+      if (!_matchesCallPeer(peerId)) return;
       unawaited(_handleRemoteCandidate(candidate));
     };
   }
@@ -140,11 +146,25 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   Future<void> _initCallFlow() async {
     await _prepareWebRtc();
     if (!mounted) return;
-    if(widget.isIncoming){
-      _ringTimeoutTimer=Timer(const Duration(seconds:40),(){if(mounted&&!_isCallConnected){setState(()=>_statusText='Nearby media connection timed out');widget.service.sendCallSignal(widget.peer,'call_ended');Future.delayed(const Duration(milliseconds:1200),_endCallLocal);}});
+    if (widget.isIncoming) {
+      _ringTimeoutTimer = Timer(const Duration(seconds: 40), () {
+        if (mounted && !_isCallConnected) {
+          setState(() => _statusText = 'Nearby media connection timed out');
+          widget.service.sendCallSignal(widget.peer, 'call_ended');
+          Future.delayed(const Duration(milliseconds: 1200), _endCallLocal);
+        }
+      });
     }
 
-    if(_peerConnection==null){if(mounted)setState(()=>_statusText='Could not initialize microphone/camera');if(widget.isIncoming)await widget.service.sendCallSignal(widget.peer,'call_declined');return;}
+    if (_peerConnection == null) {
+      if (mounted) {
+        setState(() => _statusText = 'Could not initialize microphone/camera');
+      }
+      if (widget.isIncoming) {
+        await widget.service.sendCallSignal(widget.peer, 'call_declined');
+      }
+      return;
+    }
     if (widget.isIncoming) {
       widget.service.sendCallSignal(widget.peer, 'call_accepted');
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -161,10 +181,19 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         _statusText = 'Connecting…';
       });
     } else {
-      if(_peerConnection==null){if(mounted)setState(()=>_statusText='Could not open microphone/camera');return;}
-      final sent=await widget.service.sendCallInvite(widget.peer,widget.isVideoCall);
-      if(!mounted)return;
-      if(!sent){setState(()=>_statusText='Could not reach Nearby device');return;}
+      if (_peerConnection == null) {
+        if (mounted) {
+          setState(() => _statusText = 'Could not open microphone/camera');
+        }
+        return;
+      }
+      final sent =
+          await widget.service.sendCallInvite(widget.peer, widget.isVideoCall);
+      if (!mounted) return;
+      if (!sent) {
+        setState(() => _statusText = 'Could not reach Nearby device');
+        return;
+      }
       setState(() {
         _statusText = 'Ringing…';
       });
@@ -234,15 +263,18 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         _localStream =
             await navigator.mediaDevices.getUserMedia(mediaConstraints);
       } catch (mediaError) {
-        debugPrint('[ActiveCall] Media capture error: $mediaError, attempting simplified constraints');
+        debugPrint(
+            '[ActiveCall] Media capture error: $mediaError, attempting simplified constraints');
         try {
           _localStream = await navigator.mediaDevices.getUserMedia({
             'audio': true,
             'video': widget.isVideoCall ? {'facingMode': 'user'} : false,
           });
         } catch (mediaError2) {
-          debugPrint('[ActiveCall] Secondary error: $mediaError2, attempting audio-only fallback');
-          _localStream = await navigator.mediaDevices.getUserMedia({'audio': true, 'video': false});
+          debugPrint(
+              '[ActiveCall] Secondary error: $mediaError2, attempting audio-only fallback');
+          _localStream = await navigator.mediaDevices
+              .getUserMedia({'audio': true, 'video': false});
           if (mounted) {
             setState(() {
               _isVideoEnabled = false;
@@ -272,9 +304,63 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
       if (_localStream != null) {
         for (final track in _localStream!.getTracks()) {
           track.enabled = true;
-          await pc.addTrack(track, _localStream!);
+          if (track.kind == 'audio') await pc.addTrack(track, _localStream!);
         }
       }
+
+      final camera = _localStream?.getVideoTracks().firstOrNull;
+      final videoInit = RTCRtpTransceiverInit(
+        direction: TransceiverDirection.SendRecv,
+        streams: [_localStream!],
+      );
+      _videoTransceiver = camera != null
+          ? await pc.addTransceiver(track: camera, init: videoInit)
+          : await pc.addTransceiver(
+              kind: RTCRtpMediaType.RTCRtpMediaTypeVideo, init: videoInit);
+      _videoSession = CallVideoSession(
+        localStream: _localStream!,
+        cameraEnabled:
+            _isVideoEnabled && _localStream!.getVideoTracks().isNotEmpty,
+        replaceVideo: _replaceVideoTrack,
+        openCamera: () async {
+          final permission = await Permission.camera.request();
+          if (!permission.isGranted) {
+            throw StateError('Camera permission is required');
+          }
+          return navigator.mediaDevices.getUserMedia({
+            'audio': false,
+            'video': {'facingMode': _isFrontCamera ? 'user' : 'environment'},
+          });
+        },
+        openScreen: () async {
+          _isRequestingScreenShare = true;
+          try {
+            if (Theme.of(context).platform == TargetPlatform.android) {
+              if (!await Helper.requestCapturePermission()) {
+                throw StateError('Screen sharing permission was declined');
+              }
+              if (!mounted) throw StateError('Call has ended');
+              await const MethodChannel('farmitra_nearby/network')
+                  .invokeMethod('startMediaProjectionService');
+            }
+            return await navigator.mediaDevices
+                .getDisplayMedia({'audio': false, 'video': true});
+          } catch (_) {
+            await _restoreProjectionService();
+            rethrow;
+          } finally {
+            _isRequestingScreenShare = false;
+          }
+        },
+        signalVideo: (enabled) => widget.service.sendCallSignal(
+          widget.peer,
+          'call_video_toggle',
+          isVideo: enabled,
+        ),
+        onChanged: _refreshLocalVideo,
+        onScreenStopped: _restoreProjectionService,
+        onError: (error) => _toast('Screen sharing: $error'),
+      );
 
       pc.onIceCandidate = (candidate) {
         if (candidate.candidate == null) return;
@@ -302,10 +388,16 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
       pc.onTrack = (event) async {
         event.track.enabled = true;
         if (event.streams.isNotEmpty) {
-          _remoteStream = event.streams.first;
-          _remoteRenderer.srcObject = event.streams.first;
+          _remoteStream ??= event.streams.first;
+          if (!_remoteStream!
+              .getTracks()
+              .any((track) => track.id == event.track.id)) {
+            await _remoteStream!.addTrack(event.track);
+          }
+          _remoteRenderer.srcObject = _remoteStream;
         } else {
-          _remoteStream ??= await createLocalMediaStream('remote_stream_${widget.peer.id}');
+          _remoteStream ??=
+              await createLocalMediaStream('remote_stream_${widget.peer.id}');
           _remoteStream!.addTrack(event.track);
           _remoteRenderer.srcObject = _remoteStream;
         }
@@ -340,6 +432,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
       };
 
       _peerConnection = pc;
+      _refreshLocalVideo();
       if (mounted) {
         setState(() => _renderersReady = true);
       }
@@ -375,10 +468,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     });
   }
 
-  bool _callerOfferStarted=false;
+  bool _callerOfferStarted = false;
   Future<void> _startCallerOffer() async {
     if (_isCallConnected || _callerOfferStarted || widget.isIncoming) return;
-    _callerOfferStarted=true;
+    _callerOfferStarted = true;
     await _prepareWebRtc();
     final pc = _peerConnection;
     if (pc == null) return;
@@ -386,7 +479,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     try {
       final offer = await pc.createOffer({
         'offerToReceiveAudio': true,
-        'offerToReceiveVideo': widget.isVideoCall,
+        'offerToReceiveVideo': true,
       });
       await pc.setLocalDescription(offer);
       await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_offer', {
@@ -395,7 +488,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         'is_video': widget.isVideoCall,
       });
     } catch (e) {
-      _callerOfferStarted=false;
+      _callerOfferStarted = false;
       debugPrint('Error creating WebRTC offer: $e');
     }
   }
@@ -413,14 +506,16 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
       await _drainPendingCandidates();
       final answer = await pc.createAnswer({
         'offerToReceiveAudio': true,
-        'offerToReceiveVideo': widget.isVideoCall,
+        'offerToReceiveVideo': true,
       });
       await pc.setLocalDescription(answer);
       await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_answer', {
         'sdp': answer.sdp,
         'sdp_type': answer.type,
       });
-      if(mounted)setState(()=>_statusText='Connecting media…');
+      if (mounted && !_isCallConnected) {
+        setState(() => _statusText = 'Connecting media…');
+      }
     } catch (e) {
       debugPrint('Error handling WebRTC offer: $e');
     }
@@ -432,11 +527,13 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     if (pc == null || sdp == null || sdp.isEmpty) return;
 
     try {
-      await pc.setRemoteDescription(
-          RTCSessionDescription(sdp, answer['sdp_type']?.toString() ?? 'answer'));
+      await pc.setRemoteDescription(RTCSessionDescription(
+          sdp, answer['sdp_type']?.toString() ?? 'answer'));
       _hasRemoteDescription = true;
       await _drainPendingCandidates();
-      if(mounted)setState(()=>_statusText='Connecting media…');
+      if (mounted && !_isCallConnected) {
+        setState(() => _statusText = 'Connecting media…');
+      }
     } catch (e) {
       debugPrint('Error handling WebRTC answer: $e');
     }
@@ -523,15 +620,66 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     } catch (_) {}
   }
 
-  void _toggleVideo() {
+  Future<void> _restoreProjectionService() async {
+    if (WebRTC.platformIsAndroid) {
+      try {
+        await const MethodChannel('farmitra_nearby/network')
+            .invokeMethod('stopMediaProjectionService');
+      } catch (_) {}
+    }
+  }
+
+  void _refreshLocalVideo() {
+    final video = _videoSession;
+    if (!mounted || video == null) return;
+    _localRenderer.srcObject = video.preview;
     setState(() {
-      _isVideoEnabled = !_isVideoEnabled;
+      _isVideoEnabled = video.cameraEnabled;
+      _isScreenSharing = video.sharing;
     });
-    _localStream?.getVideoTracks().forEach((track) {
-      track.enabled = _isVideoEnabled;
-    });
-    widget.service.sendCallSignal(widget.peer, 'call_video_toggle',
-        isVideo: _isVideoEnabled);
+  }
+
+  Future<void> _replaceVideoTrack(MediaStreamTrack? track) async {
+    final transceiver = _videoTransceiver;
+    final pc = _peerConnection;
+    if (transceiver == null || pc == null || !mounted) return;
+    final previous = transceiver.sender.track;
+    try {
+      await transceiver.sender.replaceTrack(track);
+      final direction = await transceiver.getCurrentDirection();
+      if (track != null &&
+          direction != TransceiverDirection.SendRecv &&
+          direction != TransceiverDirection.SendOnly) {
+        if (await pc.getSignalingState() !=
+            RTCSignalingState.RTCSignalingStateStable) {
+          throw StateError('Call negotiation is in progress; try again');
+        }
+        final offer = await pc.createOffer(
+            {'offerToReceiveAudio': true, 'offerToReceiveVideo': true});
+        await pc.setLocalDescription(offer);
+        await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_offer', {
+          'sdp': offer.sdp,
+          'sdp_type': offer.type,
+          'is_video': true,
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        try {
+          await transceiver.sender.replaceTrack(previous);
+        } catch (_) {}
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _toggleVideo() async {
+    if (!_isCallConnected) return;
+    try {
+      await _videoSession?.setCamera(!_isVideoEnabled);
+    } catch (error) {
+      _toast('Camera: $error');
+    }
   }
 
   Future<void> _switchCamera() async {
@@ -592,123 +740,11 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   bool _isRequestingScreenShare = false;
 
   Future<void> _toggleScreenShare() async {
-    if (_isScreenSharing) {
-      await _stopScreenShare();
-      return;
-    }
-
-    final pc = _peerConnection;
-    if (pc == null) {
-      _toast('Please wait for call to connect');
-      return;
-    }
-
-    _isRequestingScreenShare = true;
+    if (!_isCallConnected) return;
     try {
-      if (Theme.of(context).platform == TargetPlatform.android) {
-        try {
-          await const MethodChannel('farmitra_nearby/network')
-              .invokeMethod('startMediaProjectionService');
-          await Future.delayed(const Duration(milliseconds: 150));
-        } catch (_) {}
-      }
-
-      final screenStream = await navigator.mediaDevices.getDisplayMedia({
-        'audio': false,
-        'video': true,
-      });
-      _isRequestingScreenShare = false;
-
-      final screenTracks = screenStream.getVideoTracks();
-      if (screenTracks.isEmpty) {
-        _toast('Could not start screen capture');
-        return;
-      }
-
-      final screenTrack = screenTracks.first;
-      screenTrack.onEnded = () {
-        if (mounted && _isScreenSharing) {
-          _stopScreenShare();
-        }
-      };
-
-      final senders = await pc.getSenders();
-      bool replaced = false;
-      for (final sender in senders) {
-        if (sender.track?.kind == 'video') {
-          await sender.replaceTrack(screenTrack);
-          replaced = true;
-        }
-      }
-
-      if (!replaced) {
-        await pc.addTrack(screenTrack, screenStream);
-        final offer = await pc.createOffer({
-          'offerToReceiveAudio': 1,
-          'offerToReceiveVideo': 1,
-        });
-        await pc.setLocalDescription(offer);
-        await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_offer', {
-          'sdp': offer.sdp,
-          'sdp_type': offer.type,
-          'is_video': true,
-          'is_screen': true,
-        });
-      }
-
-      _screenStream = screenStream;
-      try {
-        await _localRenderer.initialize();
-      } catch (_) {}
-      try {
-        _localRenderer.srcObject = screenStream;
-      } catch (_) {}
-
-      setState(() {
-        _isScreenSharing = true;
-        _isVideoEnabled = true;
-      });
-
-      widget.service.sendCallSignal(widget.peer, 'call_video_toggle',
-          isVideo: true);
-      _toast('Screen sharing active');
-    } catch (e) {
-      _isRequestingScreenShare = false;
-      debugPrint('Screen sharing start error: $e');
-      _toast('Screen sharing cancelled');
-    }
-  }
-
-  Future<void> _stopScreenShare() async {
-    if (!_isScreenSharing) return;
-
-    try {
-      for (final track in _screenStream?.getTracks() ?? <MediaStreamTrack>[]) {
-        await track.stop();
-      }
-      await _screenStream?.dispose();
-      _screenStream = null;
-
-      final videoTracks = _localStream?.getVideoTracks() ?? <MediaStreamTrack>[];
-      final cameraTrack = videoTracks.isNotEmpty ? videoTracks.first : null;
-      final pc = _peerConnection;
-      if (pc != null && cameraTrack != null) {
-        final senders = await pc.getSenders();
-        for (final sender in senders) {
-          if (sender.track?.kind == 'video') {
-            await sender.replaceTrack(cameraTrack);
-          }
-        }
-      }
-
-      _localRenderer.srcObject = _localStream;
-
-      setState(() {
-        _isScreenSharing = false;
-      });
-      _toast('Screen sharing stopped');
-    } catch (e) {
-      debugPrint('Screen sharing stop error: $e');
+      await _videoSession?.setScreenSharing(!_isScreenSharing);
+    } catch (error) {
+      _toast('Screen sharing: $error');
     }
   }
 
@@ -746,17 +782,8 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
 
   Future<void> _closeWebRtc() async {
     try {
-      if (_screenStream != null) {
-        for (final track in _screenStream!.getTracks()) {
-          try {
-            await track.stop();
-          } catch (_) {}
-        }
-        try {
-          await _screenStream!.dispose();
-        } catch (_) {}
-        _screenStream = null;
-      }
+      await _videoSession?.dispose();
+      _videoSession = null;
 
       if (_localStream != null) {
         for (final track in _localStream!.getTracks()) {
@@ -796,7 +823,8 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
 
   @override
   Widget build(BuildContext context) {
-    final showVideoView = _isVideoEnabled || _peerVideoEnabled || _isScreenSharing;
+    final showVideoView =
+        _isVideoEnabled || _peerVideoEnabled || _isScreenSharing;
     final size = MediaQuery.of(context).size;
     final isSystemPip = size.height < 320 || size.width < 250;
 
@@ -814,7 +842,9 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             children: [
               // Main View: Video View or Audio Gradient (no AnimatedSwitcher to avoid SurfaceView/TextureView collisions)
               Positioned.fill(
-                child: showVideoView ? _buildVideoView(isSystemPip) : _buildAudioView(),
+                child: showVideoView
+                    ? _buildVideoView(isSystemPip)
+                    : _buildAudioView(),
               ),
 
               // Top Header: Peer Name & Call Status / Live Timer / Screen Share Indicator (hidden in system PiP)
@@ -936,7 +966,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
               ],
             ),
           ),
-          if (widget.isVideoCall && _isVideoEnabled && !_isScreenSharing)
+          if (_isVideoEnabled && !_isScreenSharing)
             IconButton(
               icon: const Icon(Icons.flip_camera_ios_rounded,
                   color: Colors.white, size: 22),
@@ -973,8 +1003,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
                 ? RTCVideoView(
                     mainRenderer,
                     key: const ValueKey('main_rtc_view'),
-                    mirror: _isViewSwapped && _isFrontCamera && !_isScreenSharing,
-                    objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    mirror:
+                        _isViewSwapped && _isFrontCamera && !_isScreenSharing,
+                    objectFit:
+                        RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                   )
                 : Center(
                     child: Column(
@@ -1018,10 +1050,14 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
           ),
 
           // 2. Interactive Draggable & Tap-to-Swap Floating PIP Window (only in full app mode)
-          if (!isSystemPip && _renderersReady && (_isVideoEnabled || _peerVideoEnabled || _isScreenSharing))
+          if (!isSystemPip &&
+              _renderersReady &&
+              (_isVideoEnabled || _peerVideoEnabled || _isScreenSharing))
             Positioned(
-              left: _pipPosition.dx.clamp(12.0, screenSize.width - pipWidth - 12.0),
-              top: _pipPosition.dy.clamp(70.0, screenSize.height - pipHeight - 120.0),
+              left: _pipPosition.dx
+                  .clamp(12.0, screenSize.width - pipWidth - 12.0),
+              top: _pipPosition.dy
+                  .clamp(70.0, screenSize.height - pipHeight - 120.0),
               child: GestureDetector(
                 onPanUpdate: (details) {
                   setState(() {
@@ -1076,7 +1112,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
                                           _isFrontCamera &&
                                           !_isScreenSharing,
                                       objectFit: RTCVideoViewObjectFit
-                                          .RTCVideoViewObjectFitCover,
+                                          .RTCVideoViewObjectFitContain,
                                     ),
                                   )
                                 : Container(
@@ -1168,12 +1204,12 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: const Color(0xFF10B981).withValues(
-                          alpha: _isCallConnected ? 0.12 : 0.25),
+                      color: const Color(0xFF10B981)
+                          .withValues(alpha: _isCallConnected ? 0.12 : 0.25),
                       boxShadow: [
                         BoxShadow(
-                          color: const Color(0xFF10B981).withValues(
-                              alpha: _isCallConnected ? 0.15 : 0.4),
+                          color: const Color(0xFF10B981)
+                              .withValues(alpha: _isCallConnected ? 0.15 : 0.4),
                           blurRadius: 36,
                           spreadRadius: _isCallConnected ? 4 : 12,
                         ),
@@ -1208,13 +1244,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             ),
             const SizedBox(height: 8),
             Text(
-              _isCallConnected
-                  ? _formatDuration(_secondsElapsed)
-                  : _statusText,
+              _isCallConnected ? _formatDuration(_secondsElapsed) : _statusText,
               style: TextStyle(
-                color: _isCallConnected
-                    ? const Color(0xFF10B981)
-                    : Colors.white70,
+                color:
+                    _isCallConnected ? const Color(0xFF10B981) : Colors.white70,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
@@ -1277,6 +1310,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             tooltip: _isVideoEnabled ? 'Turn off video' : 'Turn on video',
             isActive: _isVideoEnabled,
             activeColor: const Color(0xFF10B981),
+            isEnabled: _isCallConnected && !(_videoSession?.busy ?? false),
             onPressed: _toggleVideo,
           ),
 
@@ -1289,7 +1323,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
                 ? 'Screen share available when connected'
                 : (_isScreenSharing ? 'Stop Screen Share' : 'Share Screen'),
             isActive: _isScreenSharing,
-            isEnabled: _isCallConnected,
+            isEnabled: _isCallConnected && !(_videoSession?.busy ?? false),
             activeColor: const Color(0xFF3B82F6),
             onPressed: () {
               if (!_isCallConnected) {

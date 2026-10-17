@@ -20,6 +20,7 @@ import (
 	"nearmitra-windows-app/internal/network"
 	"nearmitra-windows-app/internal/streaming"
 	"nearmitra-windows-app/internal/transfer"
+	"nearmitra-windows-app/internal/wan"
 )
 
 // AppLauncher coordinates the backend services, local embedded HTTP server, and Windows 11 App Window.
@@ -147,7 +148,10 @@ func (al *AppLauncher) StartTray(appURL string) {
 								}
 								al.cfgMgr.SetThemeMode(theme)
 							},
-							func() { al.tray.Remove(); os.Exit(0) },
+							func() {
+								al.tray.Remove()
+								go func() { wan.GetWanService().Stop(); os.Exit(0) }()
+							},
 						)
 					}
 				} else if lParam == 0x0203 { // WM_LBUTTONDBLCLK
@@ -275,6 +279,15 @@ func (al *AppLauncher) setupCallbacks() {
 				}
 				return nil
 			},
+			OnIncomingReaction: func(id, emoji, peerID string) {
+				aliases := []string{peerID}
+				for _, p := range al.httpServer.discovery.GetPeers() {
+					if p.ID == peerID || p.InternetDeviceID == peerID {
+						aliases = append(aliases, p.ID, p.InternetDeviceID, p.IP)
+					}
+				}
+				al.chatMgr.SetPeerReaction(id, emoji, aliases...)
+			},
 			OnTypingStatus: func(peerID string, isTyping bool) {
 				al.httpServer.SetPeerTyping(peerID, isTyping)
 			},
@@ -292,7 +305,7 @@ func (al *AppLauncher) setupCallbacks() {
 				al.httpServer.mu.Lock()
 				updated := false
 				for i, t := range al.httpServer.transfers {
-					if t.FileName == prog.FileName {
+					if (prog.ID != "" && t.ID == prog.ID && t.PeerID == prog.PeerID) || (prog.ID == "" && t.ID == "" && t.FileName == prog.FileName && t.PeerIP == prog.PeerIP) {
 						al.httpServer.transfers[i] = prog
 						updated = true
 						break

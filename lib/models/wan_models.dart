@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'wan_presence.dart';
 import 'package:uuid/uuid.dart';
 
 enum WanDiscoveryMode {
@@ -25,6 +26,7 @@ class WanDevice {
   final String? avatarEmoji;
   final bool isOnline;
   final DateTime? lastSeen;
+  final int? presenceLeaseMs;
   final bool isTrusted;
   final int unreadCount;
 
@@ -35,26 +37,40 @@ class WanDevice {
     this.avatarEmoji,
     required this.isOnline,
     this.lastSeen,
+    this.presenceLeaseMs,
     this.isTrusted = false,
     this.unreadCount = 0,
   });
 
   factory WanDevice.fromMap(String id, Map<dynamic, dynamic> map,
-      {bool isTrusted = false, int unreadCount = 0}) {
+      {bool isTrusted = false, int unreadCount = 0, DateTime? now}) {
+    final platform = (map['platform'] as String?) ?? 'unknown';
+    final lastSeen = WanPresence.timestamp(map['lastSeen']);
+    final lease = WanPresence.lease(platform, map['presenceLeaseMs']);
     return WanDevice(
       id: id,
       name: (map['name'] as String?) ??
           (map['deviceName'] as String?) ??
           'Unknown Device',
-      platform: (map['platform'] as String?) ?? 'unknown',
+      platform: platform,
       avatarEmoji: (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?),
-      isOnline: (map['online'] as bool?) ?? false,
-      lastSeen: map['lastSeen'] != null
-          ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int)
-          : null,
+      isOnline: WanPresence.isAlive(
+        online: map['online'] == true, platform: platform, lastSeen: lastSeen,
+        leaseMs: lease, now: now ?? DateTime.now(),
+      ),
+      lastSeen: lastSeen,
+      presenceLeaseMs: lease,
       isTrusted: isTrusted,
       unreadCount: unreadCount,
     );
+  }
+
+  WanDevice presenceAt(DateTime now) {
+    final online = WanPresence.isAlive(
+      online: isOnline, platform: platform, lastSeen: lastSeen,
+      leaseMs: presenceLeaseMs, now: now,
+    );
+    return online == isOnline ? this : copyWith(isOnline: online);
   }
 
   Map<String, dynamic> toPresenceMap() {
@@ -75,6 +91,7 @@ class WanDevice {
     String? avatarEmoji,
     bool? isOnline,
     DateTime? lastSeen,
+    int? presenceLeaseMs,
     bool? isTrusted,
     int? unreadCount,
   }) {
@@ -85,6 +102,7 @@ class WanDevice {
       avatarEmoji: avatarEmoji ?? this.avatarEmoji,
       isOnline: isOnline ?? this.isOnline,
       lastSeen: lastSeen ?? this.lastSeen,
+      presenceLeaseMs: presenceLeaseMs ?? this.presenceLeaseMs,
       isTrusted: isTrusted ?? this.isTrusted,
       unreadCount: unreadCount ?? this.unreadCount,
     );

@@ -18,27 +18,37 @@
   state(value){if(this.o.onState)this.o.onState(value,this.session);}
   async open(peer,video,incoming,mode='duplex'){
    if(this.session)throw new Error('Another call is in progress');
-   const session={peer,video,incoming,mode,token:++this.sequence,pc:null,stream:null,candidates:[],offered:false};
+   const session={peer,video,incoming,mode,token:++this.sequence,pc:null,stream:null,remoteStream:null,screenStream:null,sharing:false,peerVideo:video,mediaBusy:false,candidates:[],offered:false};
    this.session=session;this.state('permissions');
    try{
     const stream=mode==='listen' ? this.o.createStream([]) : await this.o.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:video?{width:{ideal:1280},height:{ideal:720}}:false});
     if(this.session!==session){this.release(stream);return null;}
     session.stream=stream;
     const pc=this.o.createPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});session.pc=pc;
-    stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+    stream.getAudioTracks().forEach(track=>pc.addTrack(track,stream));
+    const camera=stream.getVideoTracks()[0];
+    // Reserve a bidirectional video slot even for audio calls. Later camera /
+    // display changes can replace its track without interrupting audio or ICE.
+    session.video=!!camera && video;
+    session.videoTransceiver=pc.addTransceiver(camera || 'video',{direction:'sendrecv',streams:[stream]});
     if(mode==='listen' || (mode!=='broadcast' && !stream.getAudioTracks().length))pc.addTransceiver('audio',{direction:'recvonly'});
-    if(video && !stream.getVideoTracks().length)pc.addTransceiver('video',{direction:'recvonly'});
+
     if(mode==='broadcast' && !stream.getAudioTracks().length)throw new Error('No PC microphone or shared audio is available to broadcast. Choose a working microphone or explicitly share system audio.');
     if(mode==='broadcast')for(const transceiver of pc.getTransceivers()){if(transceiver.sender.track?.kind==='audio')transceiver.direction='sendonly';}
     pc.onicecandidate=event=>{if(event.candidate && this.session===session)this.signal('webrtc_ice',{candidate:event.candidate.candidate,sdp_mid:event.candidate.sdpMid,sdp_mline_index:event.candidate.sdpMLineIndex}).catch(error=>this.fail(error));};
-    pc.ontrack=event=>{if(this.session===session && this.o.onRemote)this.o.onRemote(event.streams[0] || new MediaStream([event.track]),event.track);};
+    pc.ontrack=event=>{
+     if(this.session!==session)return;
+     session.remoteStream ||= this.o.createStream([]);
+     if(!session.remoteStream.getTracks().some(track=>track.id===event.track.id))session.remoteStream.addTrack(event.track);
+     if(this.o.onRemote)this.o.onRemote(session.remoteStream,event.track);
+    };
     pc.onconnectionstatechange=()=>{
      if(this.session!==session)return;
      if(pc.connectionState==='connected'){this.clearTimer(session);if(!session.connected){session.connected=true;this.state('connected');}}
      else if(pc.connectionState==='failed')this.fail(new Error('Call connection failed'));
      else if(pc.connectionState==='disconnected')this.armTimer(session,8000,'Connection lost');
     };
-    if(this.o.onLocal)this.o.onLocal(stream);
+    if(this.o.onLocal)this.o.onLocal(stream);this.mediaState(session);
     this.armTimer(session,this.o.timeoutMs || 40000,'Call timed out');return session;
    }catch(error){if(this.session===session)await this.stop(false);throw error;}
   }
@@ -50,9 +60,12 @@
   async handle(ip,header){
    const s=this.session;if(!s || s.peer.ip!==ip)return;
    if(['call_ended','call_declined'].includes(header.type)){await this.stop(false);return;}
+   if(header.type==='call_video_toggle'){
+    s.peerVideo=header.is_video===true;this.mediaState(s);return;
+   }
    if(header.type==='call_accepted'){
     if(s.incoming || s.offered)return;s.offered=true;this.state('connecting');
-    const offer=await s.pc.createOffer({offerToReceiveAudio:s.mode!=='broadcast',offerToReceiveVideo:s.video});
+    const offer=await s.pc.createOffer({offerToReceiveAudio:s.mode!=='broadcast',offerToReceiveVideo:true});
     if(this.session!==s)return;await s.pc.setLocalDescription(offer);
     await this.signal('webrtc_offer',{sdp:offer.sdp,sdp_type:offer.type,is_video:s.video});
    }else if(header.type==='webrtc_offer'){
@@ -69,15 +82,73 @@
    }
   }
   async drain(s){for(const candidate of s.candidates.splice(0)){if(this.session!==s)return;await s.pc.addIceCandidate(candidate);}}
-  async camera(enabled){const s=this.session;if(!s)return;
-   let track=s.stream.getVideoTracks()[0];
-   if(enabled && !track){const stream=await this.o.getUserMedia({video:true});track=stream.getVideoTracks()[0];
-    if(this.session!==s){stream.getTracks().forEach(t=>t.stop());return;}
-    s.stream.addTrack(track);s.pc.addTrack(track,s.stream);
-    const offer=await s.pc.createOffer();await s.pc.setLocalDescription(offer);await this.signal('webrtc_offer',{sdp:offer.sdp,sdp_type:offer.type,is_video:true});
-   }
-   if(track)track.enabled=enabled;s.video=enabled;await this.signal('call_video_toggle',{is_video:enabled});
+  mediaState(s){if(this.session===s && this.o.onMedia)this.o.onMedia(s);}
+  async videoChange(action){
+   const s=this.session;if(!s?.connected)throw new Error('Wait for the call to connect');
+   if(s.mediaBusy)throw new Error('A camera or screen change is already in progress');
+   s.mediaBusy=true;this.mediaState(s);
+   try{return await action(s);}finally{s.mediaBusy=false;this.mediaState(s);if(this.session===s && s.screenEnded && s.sharing){s.screenEnded=false;this.screen(false).catch(error=>this.o.onError?.(error));}}
   }
+  async publishVideo(s,track){
+   if(this.session!==s)return false;
+   const previous=s.videoTransceiver.sender.track;
+   try{
+   await s.videoTransceiver.sender.replaceTrack(track);
+   // A legacy audio-only peer may not have negotiated the reserved video slot.
+   const direction=s.videoTransceiver.currentDirection;
+   if(track && direction!=='sendrecv' && direction!=='sendonly'){
+    if(s.pc.signalingState!=='stable')throw new Error('Call negotiation is in progress; try again');
+    const offer=await s.pc.createOffer();
+    if(this.session!==s)return false;
+    await s.pc.setLocalDescription(offer);
+    await this.signal('webrtc_offer',{sdp:offer.sdp,sdp_type:offer.type,is_video:true});
+   }
+   return this.session===s;
+   }catch(error){if(this.session===s)await s.videoTransceiver.sender.replaceTrack(previous).catch(()=>{});throw error;}
+  }
+  async notifyVideo(s){if(this.session===s)await this.signal('call_video_toggle',{is_video:s.sharing || s.video});}
+  async camera(enabled){return this.videoChange(async s=>{
+   let camera=s.stream.getVideoTracks().find(track=>track.readyState!=='ended');
+   let acquired;const wasEnabled=camera?.enabled;
+   try{
+    if(enabled && !camera){
+     acquired=await this.o.getUserMedia({audio:false,video:true});camera=acquired.getVideoTracks()[0];
+     if(this.session!==s){this.release(acquired);return;}
+     if(!camera)throw new Error('No camera is available');
+    }
+    if(camera)camera.enabled=enabled;
+    if(!await this.publishVideo(s,enabled?camera:null)){if(acquired)this.release(acquired);return;}
+    if(acquired)s.stream.addTrack(camera);
+    const previous=s.screenStream;s.screenStream=null;s.sharing=false;s.video=enabled;
+    if(previous)this.releaseScreen(previous);
+    if(this.o.onLocal)this.o.onLocal(s.stream);
+    await this.notifyVideo(s);
+   }catch(error){if(camera && wasEnabled!==undefined)camera.enabled=wasEnabled;if(acquired && !s.stream.getVideoTracks().includes(camera))this.release(acquired);throw error;}
+  });}
+  releaseScreen(stream){stream.getTracks().forEach(track=>{track.onended=null;track.stop();});}
+  async screen(enabled){return this.videoChange(async s=>{
+   if(enabled){
+    let stream;
+    try{
+     // The display picker is called before awaiting any media operation, so it
+     // retains browser user activation and never requires a PC webcam.
+     stream=await this.o.getDisplayMedia({audio:false,video:true});
+     if(this.session!==s){this.releaseScreen(stream);return;}
+     const track=stream.getVideoTracks()[0];if(!track)throw new Error('No shared screen was selected');
+     if(!await this.publishVideo(s,track)){this.releaseScreen(stream);return;}
+     s.screenStream=stream;s.sharing=true;
+     track.onended=()=>{if(this.session!==s || !s.sharing)return;if(s.mediaBusy)s.screenEnded=true;else this.screen(false).catch(error=>this.o.onError?.(error));};
+     if(this.o.onLocal)this.o.onLocal(stream);
+    }catch(error){if(stream)this.releaseScreen(stream);throw error;}
+   }else{
+    const previous=s.screenStream;if(!previous)return;
+    const camera=s.video?s.stream.getVideoTracks().find(track=>track.readyState!=='ended'):null;
+    if(!await this.publishVideo(s,camera || null))return;
+    s.screenStream=null;s.sharing=false;this.releaseScreen(previous);
+    if(this.o.onLocal)this.o.onLocal(s.stream);
+   }
+   await this.notifyVideo(s);
+  });}
   release(stream){if(this.o.releaseMedia)this.o.releaseMedia(stream);else stream.getTracks().forEach(t=>t.stop());}
   mute(muted){if(this.session?.stream)this.session.stream.getAudioTracks().forEach(t=>t.enabled=!muted);}
   clearTimer(s){if(s.timer)(this.o.clearTimeout || clearTimeout)(s.timer);s.timer=null;}
@@ -85,7 +156,7 @@
   async fail(error){if(this.o.onError)this.o.onError(error);await this.stop(true);}
   async stop(notify=true){const s=this.session;if(!s)return;this.session=null;++this.sequence;this.clearTimer(s);
    if(s.pc){s.pc.ontrack=null;s.pc.onicecandidate=null;s.pc.onconnectionstatechange=null;s.pc.close();}
-   if(s.stream)this.release(s.stream);this.state('ended');
+   if(s.screenStream)this.releaseScreen(s.screenStream);if(s.stream)this.release(s.stream);this.state('ended');
    if(notify)await this.o.end(s.peer).catch(()=>{});
   }
  }

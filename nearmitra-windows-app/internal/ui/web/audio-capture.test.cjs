@@ -50,3 +50,38 @@ test('Missing Windows default can use an enumerated physical microphone',async()
 test('Permission denial never falls back as though capture hardware were missing',async()=>{
  const f=fixture();f.capture.o.media.getUserMedia=async()=>{const e=new Error('Permission denied');e.name='NotAllowedError';throw e;};await assert.rejects(f.capture.capture({audio:true},'mic'),{name:'NotAllowedError'});
 });
+test('Wireless music capture preserves the actual tab audio track without reconfiguring live capture',async()=>{
+ const f=fixture();let requested,applied;
+ f.capture.o.musicAudio=true;
+ f.desktop.applyConstraints=async c=>{applied=c;};
+ f.capture.o.media.getDisplayMedia=async c=>{requested=c;return stream([f.screen,f.desktop]);};
+ const output=await f.capture.capture({audio:true,video:false},'system');
+ assert.deepEqual(requested.audio,{suppressLocalAudioPlayback:false});
+ assert.equal(applied,undefined,'Do not restart an active display audio source with applyConstraints');
+ assert.equal(output.getAudioTracks()[0],f.desktop);assert.equal(f.desktop.contentHint,'music');assert.equal(output.getVideoTracks().length,0);assert.equal(f.events.length,0);
+ f.capture.release(output);assert.ok(f.desktop.stopped);assert.ok(f.screen.stopped);
+});
+
+test('Optional contentHint failure never aborts live music capture or releases its tracks',async()=>{
+ const f=fixture();f.capture.o.musicAudio=true;
+ Object.defineProperty(f.desktop,'contentHint',{set(){throw new Error('Unsupported content hint');}});
+ const output=await f.capture.capture({audio:true,video:false},'system');
+ assert.equal(output.getAudioTracks()[0],f.desktop);assert.equal(f.desktop.stopped,undefined);assert.match(f.capture.warnings.get(output)[0],/optional music/);
+ f.capture.release(output);assert.ok(f.desktop.stopped);
+});
+test('All-PC capture prefers Entire screen, while tab mode prefers this browser tabs',async()=>{
+ for(const scope of ['system','tab']){
+  const f=fixture();f.capture.o.musicAudio=true;f.capture.o.captureScope=()=>scope;let request;
+  f.capture.o.media.getDisplayMedia=async c=>{request=c;return stream([f.screen,f.desktop]);};
+  const out=await f.capture.capture({audio:true},'system');assert.equal(request.video.displaySurface,scope==='tab'?'browser':'monitor');assert.equal(request.systemAudio,'include');assert.equal(request.monitorTypeSurfaces,'include');assert.equal(request.windowAudio,'system');assert.equal(out.getVideoTracks().length,0);f.capture.release(out);
+ }
+});
+test('Native all-PC audio bypasses browser display picker and owns cleanup independently of calls',async()=>{
+ const f=fixture();let opened=0,released=0;
+ f.capture.o.musicAudio=true;f.capture.o.captureScope=()=> 'system';
+ f.capture.o.captureSystemAudio=async()=>{opened++;return stream([f.desktop]);};
+ f.capture.o.releaseSystemAudio=()=>released++;
+ const output=await f.capture.capture({audio:true,video:false},'system');
+ assert.equal(opened,1);assert.equal(f.events.length,0);assert.equal(output.getAudioTracks()[0],f.desktop);assert.equal(output.getVideoTracks().length,0);
+ f.capture.release(output);assert.equal(released,1);f.capture.release(output);assert.equal(released,1);
+});

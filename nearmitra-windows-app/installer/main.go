@@ -29,19 +29,13 @@ var appBinary []byte
 //go:embed nearmitra.ico
 var appIcon []byte
 
-//go:embed uninstall.ps1
-var uninstallerScript []byte
-
-//go:embed setup-network.ps1
-var networkScript []byte
-
 //go:embed assets/*
 var assetsFS embed.FS
 
 const (
 	AppName       = "NearMitra Desktop"
-	AppVersion    = "2.1.2"
-	Publisher     = "NearMitra Ecosystem"
+	AppVersion    = "2.1.17"
+	Publisher     = "flutterfever.com"
 	InstallerPort = 43899
 )
 
@@ -58,6 +52,9 @@ func UTF16Ptr(s string) *uint16 {
 }
 
 func main() {
+	if handleMaintenanceCommand() {
+		return
+	}
 	logDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "NearMitra")
 	_ = os.MkdirAll(logDir, 0755)
 	logFile, err := os.OpenFile(filepath.Join(logDir, "installer.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -150,22 +147,27 @@ func main() {
 			w.WriteHeader(500)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
 		}
-		if err := runInstallerScript("$ErrorActionPreference='Stop';$running=Get-Process -Name NearMitra,nearmitra-windows-app -ErrorAction SilentlyContinue;foreach($p in $running){Stop-Process -Id $p.Id -Force -ErrorAction Stop};exit 0"); err != nil {
+		if err := stopInstalledApps(); err != nil {
 			fail(err)
 			return
 		}
+
 		if err := writeInstallFiles(installDir); err != nil {
 			fail(err)
 			return
 		}
-		if err := runInstallerScript(registrationScript(installDir, options)); err != nil {
+		if err := registerInstallation(installDir, options); err != nil {
 			fail(err)
 			return
+		}
+		// Remove only obsolete installer-owned scripts after native registration succeeds.
+		for _, name := range []string{"uninstall.ps1", "setup-network.ps1"} {
+			_ = os.Remove(filepath.Join(installDir, name))
 		}
 		warning := ""
 		if options.PrivateNetwork {
 			if err := configurePrivateNetwork(installDir); err != nil {
-				warning = "App installed. Private-network access was not configured: " + err.Error()
+				warning = "NearMitra installed successfully. Private-network permission was skipped or could not be applied. Incoming Nearby discovery, files and calls may be blocked until allowed in Windows Firewall. " + err.Error()
 			}
 		}
 		installed = true

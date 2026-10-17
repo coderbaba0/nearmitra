@@ -35,3 +35,9 @@ test('Empty hardware scan shows missing camera and surfaces backend errors',()=>
 test('Request sensors uses selected phone and waits for an approved response',async()=>{
  const requests=[];const b=browser(async(path,options)=>{requests.push(path);if(path.endsWith('trigger')){assert.equal(JSON.parse(options.body).target_ip,'192.168.1.4');return new Response('{"sensors":{"location_status":"Location not shared"}}');}return new Response('{"sensors":{}}');});b.element('audioCastPeerSelect','192.168.1.4');const status=b.element('phoneSensorStatus');await b.run('fetchLiveGPS()');assert.equal(status.innerText,'Location not shared');assert.equal(requests.length,2);
 });
+test('Approved phone location failure explains provider status rather than hiding it behind generic GPS text',async()=>{
+ const sensors={device_ip:'192.168.1.4',last_seen:new Date().toISOString(),gps_locked:false,location_status:'Location allowed, but no fresh GPS/network fix arrived'};
+ const b=browser(async()=>new Response(JSON.stringify({sensors})));b.element('audioCastPeerSelect','192.168.1.4');const place=b.element('gpsLocName'),status=b.element('phoneSensorStatus'),badge=b.element('gpsLockBadge');
+ await b.run('pollRemoteSensors()');assert.equal(place.innerText,sensors.location_status);assert.equal(status.innerText,sensors.location_status);assert.equal(badge.innerText,'Location unavailable');
+ sensors.device_ip='192.168.1.8';await b.run('pollRemoteSensors()');assert.equal(place.innerText,'No recent location received');
+});

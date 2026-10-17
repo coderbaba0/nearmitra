@@ -14,6 +14,8 @@ async function fetchInstallerInfo() {
       if (installerInfo.app_version) {
         document.getElementById("sidebarVersion").textContent = `v${installerInfo.app_version} Standalone`;
       }
+      const publisher=document.getElementById("sidebarPublisher");
+      if(publisher && installerInfo.publisher) publisher.textContent=installerInfo.publisher;
       if (installerInfo.install_path) {
         document.getElementById("txtInstallPath").value = installerInfo.install_path;
       }
@@ -82,7 +84,7 @@ async function startInstallation() {
 
   const chkDesktop = document.getElementById("chkDesktop")?.checked ?? true;
   const chkStartMenu = document.getElementById("chkStartMenu")?.checked ?? true;
-  const chkAutostart = document.getElementById("chkAutostart")?.checked ?? false;
+  const chkAutostart = document.getElementById("chkAutostart")?.checked ?? true;
 
   appendLog("Starting NearMitra installation process...");
   updateProgress(15, "Stopping running NearMitra instances (if any)...");

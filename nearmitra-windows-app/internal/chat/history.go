@@ -33,12 +33,7 @@ func GetHistory() *HistoryManager {
 		dir := filepath.Join(appData, "NearMitra")
 		_ = os.MkdirAll(dir, 0755)
 
-		hm := &HistoryManager{
-			path:     filepath.Join(dir, "chat_history.json"),
-			messages: make([]models.ChatMessage, 0),
-		}
-		hm.load()
-		historyInstance = hm
+		historyInstance = NewHistory(filepath.Join(dir, "chat_history.json"))
 	})
 	return historyInstance
 }
@@ -49,7 +44,10 @@ func (hm *HistoryManager) load() {
 
 	data, err := os.ReadFile(hm.path)
 	if err == nil {
-		_ = json.Unmarshal(data, &hm.messages)
+		var messages []models.ChatMessage
+		if json.Unmarshal(data, &messages) == nil {
+			hm.messages = messages
+		}
 	}
 }
 
@@ -70,6 +68,9 @@ func (hm *HistoryManager) AddMessage(msg models.ChatMessage) error {
 	}
 	for i, previous := range hm.messages {
 		if previous.ID == msg.ID && msg.ID != "" {
+			// Delivery/status refreshes must not discard independent reaction updates.
+			msg.Reaction = previous.Reaction
+			msg.LocalReaction = previous.LocalReaction
 			hm.messages[i] = msg
 			return hm.saveUnsafe()
 		}
@@ -157,4 +158,48 @@ func (hm *HistoryManager) ClearAllChat() {
 	defer hm.mu.Unlock()
 	hm.messages = make([]models.ChatMessage, 0)
 	_ = hm.saveUnsafe()
+}
+
+// SetPeerReaction accepts updates only from the other participant in this chat.
+func (hm *HistoryManager) SetPeerReaction(id, emoji string, aliases ...string) bool {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	for i := range hm.messages {
+		m := &hm.messages[i]
+		if m.ID != id {
+			continue
+		}
+		for _, peer := range aliases {
+			if peer != "" && (m.PeerID == peer || m.PeerIP == peer) {
+				m.Reaction = emoji
+				_ = hm.saveUnsafe()
+				return true
+			}
+		}
+	}
+	return false
+}
+func (hm *HistoryManager) SetLocalReaction(id, emoji string) bool {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+	for i := range hm.messages {
+		if hm.messages[i].ID == id {
+			hm.messages[i].LocalReaction = emoji
+			_ = hm.saveUnsafe()
+			return true
+		}
+	}
+	return false
+}
+
+// NewHistory opens an independent history in an existing directory.
+func NewHistory(path string) *HistoryManager {
+	hm := &HistoryManager{path: path, messages: make([]models.ChatMessage, 0)}
+	hm.load()
+	return hm
+}
+
+// AttachmentDirectory stores browser-selected outgoing bytes for later forwarding.
+func (hm *HistoryManager) AttachmentDirectory() string {
+	return filepath.Join(filepath.Dir(hm.path), "SentAttachments")
 }

@@ -7,7 +7,7 @@ func PeerAllowed(cfg models.AIConfig, identities ...string) bool {
 	matches := func(entries []string) bool {
 		for _, entry := range entries {
 			for _, id := range identities {
-				if id != "" && entry == id {
+				if id != "" && id != "unknown_device_id" && entry == id {
 					return true
 				}
 			}

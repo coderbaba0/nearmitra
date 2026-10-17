@@ -11,3 +11,8 @@ test('Finish failure remains open with a visible error',async()=>{
 test('Cancel uses implemented endpoint and cannot interrupt extraction',async()=>{
  const f=setup();await vm.runInContext('closeInstaller()',f.ctx);assert.equal(f.calls[0].url,'/api/installer/cancel');const g=setup();vm.runInContext('currentStep=3',g.ctx);await vm.runInContext('closeInstaller()',g.ctx);assert.equal(g.calls.length,1);assert.match(g.calls[0],/wait/);
 });
+
+test('Autostart is selected by default while users can opt out',()=>{
+ const html=fs.readFileSync(__dirname+'/index.html','utf8');assert.match(html,/<input[^>]*id="chkAutostart"[^>]*checked/);
+ const source=fs.readFileSync(__dirname+'/app.js','utf8');assert.match(source,/chkAutostart.*checked \?\? true/);
+});
