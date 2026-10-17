@@ -19,6 +19,8 @@ import 'device_identity.dart';
 import 'firebase_presence_service.dart';
 import 'internet_device_identity_service.dart';
 import 'notification_service.dart';
+import 'socket_reader.dart';
+import 'history_service.dart';
 
 const int discoveryPort = 43888;
 const int transferPort = 43889;
@@ -87,7 +89,10 @@ class NearbyService extends ChangeNotifier {
   String _avatarEmoji;
   String get avatarEmoji => _avatarEmoji;
 
-  NearbyService({required this.deviceId, required String deviceName, String avatarEmoji = '📱'})
+  NearbyService(
+      {required this.deviceId,
+      required String deviceName,
+      String avatarEmoji = '📱'})
       : _deviceName = deviceName,
         _avatarEmoji = avatarEmoji {
     _instance = this;
@@ -95,7 +100,8 @@ class NearbyService extends ChangeNotifier {
   }
 
   /// Updates device display name & avatar emoji across all services (LAN, P2P, WAN)
-  Future<void> updateDeviceIdentity({required String name, required String emoji}) async {
+  Future<void> updateDeviceIdentity(
+      {required String name, required String emoji}) async {
     final cleanName = name.trim();
     final cleanEmoji = emoji.trim();
     if (cleanName.isNotEmpty) {
@@ -113,12 +119,15 @@ class NearbyService extends ChangeNotifier {
     await identity.setName(_deviceName);
     await identity.setAvatarEmoji(_avatarEmoji);
 
-    await InternetDeviceIdentityService().updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
-    await FirebasePresenceService().updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
+    await InternetDeviceIdentityService()
+        .updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
+    await FirebasePresenceService()
+        .updateDeviceIdentity(newName: _deviceName, newEmoji: _avatarEmoji);
 
     await announce();
     notifyListeners();
   }
+
   final AndroidNetworkBridge _bridge = AndroidNetworkBridge();
   final NotificationService _notificationService = NotificationService();
 
@@ -233,8 +242,7 @@ class NearbyService extends ChangeNotifier {
   Future<void> _loadNotificationsSetting() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _notificationsEnabled =
-          prefs.getBool(_kNotificationsEnabled) ?? true;
+      _notificationsEnabled = prefs.getBool(_kNotificationsEnabled) ?? true;
     } catch (_) {
       _notificationsEnabled = true;
     }
@@ -258,6 +266,7 @@ class NearbyService extends ChangeNotifier {
   Function(String itemId, String newStatus)? onOutboxItemStatusChanged;
   static const _kOutboxKey = 'nearby_outbox_queue_v1';
   bool _isFlushingQueue = false;
+  bool useUnifiedOutbox = false;
 
   Future<void> _loadOutbox() async {
     try {
@@ -308,9 +317,11 @@ class NearbyService extends ChangeNotifier {
   }
 
   Future<void> flushQueueForPeer(Peer peer) async {
-    if (_isFlushingQueue) return;
+    if (useUnifiedOutbox || _isFlushingQueue) return;
     final targetIp = _resolveTargetIp(peer);
-    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) {
+    if (targetIp.isEmpty ||
+        targetIp == '0.0.0.0' ||
+        targetIp.startsWith('127.')) {
       return;
     }
 
@@ -336,7 +347,7 @@ class NearbyService extends ChangeNotifier {
       if (item.kind == ChatKind.text &&
           item.text != null &&
           item.text!.isNotEmpty) {
-        success = await sendChat(peer, item.text!);
+        success = await sendChat(peer, item.text!, msgId: item.id);
       } else if (item.kind == ChatKind.file && item.filePath != null) {
         final file = File(item.filePath!);
         if (await file.exists()) {
@@ -415,16 +426,16 @@ class NearbyService extends ChangeNotifier {
   List<Peer> get peers {
     final uniquePeers = <Peer>{};
     for (final p in _peers.values) {
-      if (p.id != deviceId &&
-          p.name.toLowerCase() != deviceName.toLowerCase() &&
-          p.id != 'local_ai_assistant') {
+      if (p.id != deviceId && p.id != 'local_ai_assistant') {
         uniquePeers.add(p);
       }
     }
     final list = uniquePeers.toList();
     list.sort((a, b) {
-      final aPinned = _pinnedPeerIds.contains(a.id) || _pinnedPeerIds.contains(a.ip);
-      final bPinned = _pinnedPeerIds.contains(b.id) || _pinnedPeerIds.contains(b.ip);
+      final aPinned =
+          _pinnedPeerIds.contains(a.id) || _pinnedPeerIds.contains(a.ip);
+      final bPinned =
+          _pinnedPeerIds.contains(b.id) || _pinnedPeerIds.contains(b.ip);
       if (aPinned != bPinned) {
         return aPinned ? -1 : 1;
       }
@@ -469,13 +480,14 @@ class NearbyService extends ChangeNotifier {
   Function(String peerId, Map<String, dynamic> control)? onStreamControl;
   Function(String peerId, Map<String, dynamic> data)? onStreamRejected;
   Function(String peerId, Map<String, dynamic> data)? onStreamStopped;
-  void Function(String peerId, String msgId, String? reaction)? onReactionReceived;
+  void Function(String peerId, String msgId, String? reaction)?
+      onReactionReceived;
 
-  Future<void> sendCallInvite(Peer peer, bool isVideoCall) async {
+  Future<bool> sendCallInvite(Peer peer, bool isVideoCall) async {
     final targetIp = _resolveTargetIp(peer);
     if (targetIp.isEmpty) {
       log('[CallInvite] Cannot send invite: IP not resolved for ${peer.name} (${peer.id})');
-      return;
+      return false;
     }
     try {
       final socket = await Socket.connect(targetIp, transferPort,
@@ -484,14 +496,19 @@ class NearbyService extends ChangeNotifier {
         'type': 'call_invite',
         'sender': deviceName,
         'sender_id': deviceId,
+        'delivery_ack': true,
+        if (InternetDeviceIdentityService().isInitialized)
+          'internet_device_id': InternetDeviceIdentityService().deviceId,
         'is_video': isVideoCall,
       });
       socket.write('$payload\n');
       await socket.flush();
       socket.destroy();
       log('[CallInvite] Sent call_invite to ${peer.name} ($targetIp)');
+      return true;
     } catch (e) {
       log('Error sending call invite to ${peer.name} ($targetIp): $e');
+      return false;
     }
   }
 
@@ -499,24 +516,33 @@ class NearbyService extends ChangeNotifier {
     // 1. Check live _peers cache first by peer.id
     if (_peers.containsKey(peer.id)) {
       final liveIp = _peers[peer.id]!.ip.trim();
-      if (liveIp.isNotEmpty && liveIp != '0.0.0.0' && !liveIp.startsWith('127.')) {
+      if (liveIp.isNotEmpty &&
+          liveIp != '0.0.0.0' &&
+          !liveIp.startsWith('127.')) {
         return liveIp;
       }
     }
     // 2. Check live _peers cache by peer.name
     for (final p in _peers.values) {
-      if ((p.id == peer.id || p.name.toLowerCase() == peer.name.toLowerCase()) && p.ip.trim().isNotEmpty) {
+      if ((p.id == peer.id) && p.ip.trim().isNotEmpty) {
         final liveIp = p.ip.trim();
-        if (liveIp.isNotEmpty && liveIp != '0.0.0.0' && !liveIp.startsWith('127.')) {
+        if (liveIp.isNotEmpty &&
+            liveIp != '0.0.0.0' &&
+            !liveIp.startsWith('127.')) {
           return liveIp;
         }
       }
     }
     // 3. Fallback to peer.ip if valid
-    if (peer.ip.trim().isNotEmpty && peer.ip != '0.0.0.0' && !peer.ip.startsWith('127.')) {
+    if (peer.ip.trim().isNotEmpty &&
+        peer.ip != '0.0.0.0' &&
+        !peer.ip.startsWith('127.')) {
       return peer.ip.trim();
     }
-    if (peer.id.contains('.') && !peer.id.contains(':') && peer.id != '0.0.0.0' && !peer.id.startsWith('127.')) {
+    if (peer.id.contains('.') &&
+        !peer.id.contains(':') &&
+        peer.id != '0.0.0.0' &&
+        !peer.id.startsWith('127.')) {
       return peer.id.trim();
     }
     return peer.ip.trim();
@@ -536,6 +562,9 @@ class NearbyService extends ChangeNotifier {
         'type': signalType,
         'sender': deviceName,
         'sender_id': deviceId,
+        'delivery_ack': true,
+        if (InternetDeviceIdentityService().isInitialized)
+          'internet_device_id': InternetDeviceIdentityService().deviceId,
         if (isVideo != null) 'is_video': isVideo,
       });
       socket.write('$payload\n');
@@ -564,6 +593,9 @@ class NearbyService extends ChangeNotifier {
         'type': signalType,
         'sender': deviceName,
         'sender_id': deviceId,
+        'delivery_ack': true,
+        if (InternetDeviceIdentityService().isInitialized)
+          'internet_device_id': InternetDeviceIdentityService().deviceId,
         ...data,
       });
       socket.write('$payload\n');
@@ -708,11 +740,15 @@ class NearbyService extends ChangeNotifier {
           jsonDecode(utf8.decode(datagram.data)) as Map<String, dynamic>;
       final id = map['id']?.toString() ?? '';
       final name = map['name']?.toString() ?? 'Nearby device';
-      final avatar = map['avatar']?.toString() ?? map['avatarEmoji']?.toString();
+      final avatar =
+          map['avatar']?.toString() ?? map['avatarEmoji']?.toString();
       final platform = map['platform']?.toString();
       if (id.isEmpty || id == deviceId) return;
       _upsertPeer(id, name, datagram.address.address,
-          avatarEmoji: avatar, platform: platform);
+          avatarEmoji: avatar,
+          platform: platform,
+          internetDeviceId: map['internet_device_id']?.toString(),
+          supportsDeliveryAck: map['delivery_ack'] == true);
     } catch (_) {}
   }
 
@@ -722,6 +758,9 @@ class NearbyService extends ChangeNotifier {
     }
     final data = utf8.encode(jsonEncode({
       'id': deviceId,
+      'delivery_ack': true,
+      if (InternetDeviceIdentityService().isInitialized)
+        'internet_device_id': InternetDeviceIdentityService().deviceId,
       'name': deviceName,
       'avatar': avatarEmoji,
       'avatarEmoji': avatarEmoji,
@@ -818,6 +857,9 @@ class NearbyService extends ChangeNotifier {
             'type': 'hello',
             'sender': deviceName,
             'sender_id': deviceId,
+            'delivery_ack': true,
+            if (InternetDeviceIdentityService().isInitialized)
+              'internet_device_id': InternetDeviceIdentityService().deviceId,
             'avatar': avatarEmoji,
             'avatarEmoji': avatarEmoji,
             'platform': Platform.isWindows
@@ -837,7 +879,10 @@ class NearbyService extends ChangeNotifier {
         final platform = map['platform']?.toString();
         if (id != deviceId) {
           _upsertPeer(peerId, map['sender']?.toString() ?? 'Nearby device', ip,
-              avatarEmoji: avatar, platform: platform);
+              avatarEmoji: avatar,
+              platform: platform,
+              internetDeviceId: map['internet_device_id']?.toString(),
+              supportsDeliveryAck: map['delivery_ack'] == true);
           return peerId;
         }
       }
@@ -853,7 +898,7 @@ class NearbyService extends ChangeNotifier {
     try {
       _server = await ServerSocket.bind(InternetAddress.anyIPv4, transferPort,
           shared: true);
-      _server!.listen((socket) => _handleConnection(socket));
+      _server!.listen(handleIncomingConnection);
       log('Listening for chat/files on TCP $transferPort');
     } catch (e) {
       log('Could not open TCP $transferPort: $e');
@@ -882,11 +927,7 @@ class NearbyService extends ChangeNotifier {
     }
     for (final p in _peers.values) {
       if ((remoteIp.isNotEmpty && p.ip == remoteIp) ||
-          (senderId.isNotEmpty && p.id == senderId) ||
-          (senderName.isNotEmpty &&
-              (p.name == senderName ||
-                  p.name.contains(senderName) ||
-                  senderName.contains(p.name)))) {
+          (senderId.isNotEmpty && p.id == senderId)) {
         p.lastSeen = DateTime.now();
         if (remoteIp.isNotEmpty) {
           p.ip = remoteIp;
@@ -907,8 +948,10 @@ class NearbyService extends ChangeNotifier {
     return idToUse;
   }
 
-  Future<void> _handleConnection(Socket socket) async {
-    final reader = _SocketReader(socket);
+  /// Processes a connected Nearby TCP socket (also used by protocol regression tests).
+  @visibleForTesting
+  Future<void> handleIncomingConnection(Socket socket) async {
+    final reader = SocketReader(socket);
     try {
       final line = await reader.readLine();
       if (line == null) return;
@@ -922,6 +965,27 @@ class NearbyService extends ChangeNotifier {
       final senderPlatform = h['platform']?.toString();
       final remoteIp = socket.remoteAddress.address;
       final resolvedPeerId = _resolvePeerId(senderId, sender, remoteIp);
+      final resolvedPeer = _peers[resolvedPeerId];
+      if (resolvedPeer != null) {
+        resolvedPeer.internetDeviceId = h['internet_device_id']?.toString() ??
+            resolvedPeer.internetDeviceId;
+        resolvedPeer.supportsDeliveryAck =
+            h['delivery_ack'] == true || resolvedPeer.supportsDeliveryAck;
+      }
+
+      if (type == 'sensor_request') {
+        try {
+          if (!Platform.isAndroid) throw UnsupportedError('Sensor sharing requires Android');
+          final sensors = await AndroidNetworkBridge()
+              .requestPhoneTelemetry('$sender ($remoteIp)');
+          sensors['device_name'] = deviceName;
+          socket.write('${jsonEncode({'type': 'sensor_response', 'sensors': sensors})}\n');
+        } catch (error) {
+          socket.write('${jsonEncode({'type': 'sensor_response', 'error': error.toString()})}\n');
+        }
+        await socket.flush();
+        return;
+      }
 
       if (type == 'hello') {
         if (senderAvatar != null && senderAvatar.isNotEmpty) {
@@ -935,6 +999,9 @@ class NearbyService extends ChangeNotifier {
               'type': 'hello',
               'sender': deviceName,
               'sender_id': deviceId,
+              'delivery_ack': true,
+              if (InternetDeviceIdentityService().isInitialized)
+                'internet_device_id': InternetDeviceIdentityService().deviceId,
               'avatar': avatarEmoji,
               'avatarEmoji': avatarEmoji,
               'platform': Platform.isWindows
@@ -966,6 +1033,9 @@ class NearbyService extends ChangeNotifier {
             'type': 'ai_response',
             'sender': '$deviceName AI',
             'sender_id': deviceId,
+            'delivery_ack': true,
+            if (InternetDeviceIdentityService().isInitialized)
+              'internet_device_id': InternetDeviceIdentityService().deviceId,
             'status': 'disabled',
             'error_code': 'ai_disabled',
             'reply': 'Nearby AI access has not been granted by $deviceName.',
@@ -979,22 +1049,30 @@ class NearbyService extends ChangeNotifier {
 
         if (prompt.trim().isEmpty) {
           socket.write('${jsonEncode({
-            'type': 'ai_response',
-            'sender': '$deviceName AI',
-            'sender_id': deviceId,
-            'status': 'error',
-            'reply': 'Prompt was empty.',
-          })}\n');
+                'type': 'ai_response',
+                'sender': '$deviceName AI',
+                'sender_id': deviceId,
+                'delivery_ack': true,
+                if (InternetDeviceIdentityService().isInitialized)
+                  'internet_device_id':
+                      InternetDeviceIdentityService().deviceId,
+                'status': 'error',
+                'reply': 'Prompt was empty.',
+              })}\n');
           await socket.flush();
           socket.destroy();
           return;
         }
 
-        final aiReply = await aiService.generateAiResponse(prompt.trim(), senderId);
+        final aiReply =
+            await aiService.generateAiResponse(prompt.trim(), senderId);
         final resPayload = jsonEncode({
           'type': 'ai_response',
           'sender': '$deviceName AI',
           'sender_id': deviceId,
+          'delivery_ack': true,
+          if (InternetDeviceIdentityService().isInitialized)
+            'internet_device_id': InternetDeviceIdentityService().deviceId,
           'status': 'ok',
           'reply': aiReply,
           'message': aiReply,
@@ -1053,7 +1131,7 @@ class NearbyService extends ChangeNotifier {
       }
 
       if (type == 'call_invite') {
-        final isVideo = h['is_video'] == true;
+        final isVideo = h['is_video'] == true || h['call_type']=='video';
         final pId = resolvedPeerId.isNotEmpty
             ? resolvedPeerId
             : (senderId.isNotEmpty ? senderId : remoteIp);
@@ -1062,12 +1140,14 @@ class NearbyService extends ChangeNotifier {
             _peers[remoteIp] ??
             _upsertPeer(pId, pName, remoteIp);
 
-        CallService().showIncomingCall(
+        final ringing=await CallService().showIncomingCall(
           peerId: peerObj.id,
           peerName: peerObj.name,
           peerIp: peerObj.ip.isNotEmpty ? peerObj.ip : remoteIp,
           isVideoCall: isVideo,
         );
+        if(h['require_ack']==true){socket.write('${jsonEncode({'type':'call_ringing','status':ringing?'ringing':'busy'})}\n');await socket.flush();}
+        if(!ringing)unawaited(sendCallSignal(peerObj,'call_declined'));
         return;
       }
 
@@ -1145,7 +1225,9 @@ class NearbyService extends ChangeNotifier {
         return;
       }
 
-      if (type == 'stream_stopped' || type == 'stream_reset' || type == 'stream_ended') {
+      if (type == 'stream_stopped' ||
+          type == 'stream_reset' ||
+          type == 'stream_ended') {
         onStreamStopped?.call(resolvedPeerId, Map<String, dynamic>.from(h));
         return;
       }
@@ -1166,10 +1248,9 @@ class NearbyService extends ChangeNotifier {
         final originId = h['origin_id']?.toString() ?? '';
         final originName = h['origin_name']?.toString() ?? 'Remote Peer';
         final ttl = int.tryParse('${h['ttl']}') ?? 0;
-        final hops = (h['hops'] as List<dynamic>?)
-                ?.map((e) => e.toString())
-                .toList() ??
-            [];
+        final hops =
+            (h['hops'] as List<dynamic>?)?.map((e) => e.toString()).toList() ??
+                [];
         final payload = h['payload'] as Map<dynamic, dynamic>? ?? {};
         final payloadType = payload['type']?.toString() ?? 'chat';
         final payloadMsg = payload['message']?.toString() ?? '';
@@ -1309,6 +1390,15 @@ class NearbyService extends ChangeNotifier {
             replyToText: replyToText,
             isForwarded: isForwarded,
           ));
+          await HistoryService().addItems(List<ChatItem>.from(_incomingItems));
+          if (h['require_ack'] == true) {
+            socket.write('${jsonEncode({
+                  'type': 'delivery_ack',
+                  'msg_id': msgId,
+                  'status': 'delivered'
+                })}\n');
+            await socket.flush();
+          }
           log('Message received from $sender');
           if (notificationsEnabled && !isCurrentlyOpen) {
             _notificationService.showIncomingMessageNotification(
@@ -1336,8 +1426,11 @@ class NearbyService extends ChangeNotifier {
         final watch = Stopwatch()..start();
         var previous = 0;
         var previousMs = 0;
-        _setTransfer(
-            TransferState(active: true, peerId: resolvedPeerId, label: 'Receiving $name', progress: 0));
+        _setTransfer(TransferState(
+            active: true,
+            peerId: resolvedPeerId,
+            label: 'Receiving $name',
+            progress: 0));
         while (received < size) {
           final chunk = await reader
               .readBytes((size - received).clamp(1, 256 * 1024).toInt());
@@ -1372,7 +1465,10 @@ class NearbyService extends ChangeNotifier {
         if (folder) {
           try {
             _setTransfer(TransferState(
-                active: true, peerId: resolvedPeerId, label: 'Extracting $name…', progress: 1));
+                active: true,
+                peerId: resolvedPeerId,
+                label: 'Extracting $name…',
+                progress: 1));
             final extractParentPath = await _uniquePath('${dir.path}/$name');
             final extractDir = Directory(extractParentPath);
             await extractDir.create(recursive: true);
@@ -1386,12 +1482,14 @@ class NearbyService extends ChangeNotifier {
           }
         }
 
-        _setTransfer(TransferState(peerId: resolvedPeerId, label: 'Received $name', progress: 1));
+        _setTransfer(TransferState(
+            peerId: resolvedPeerId, label: 'Received $name', progress: 1));
         final isCurrentlyOpen = _isChatActive(resolvedPeerId, remoteIp);
         if (!isCurrentlyOpen && _peers.containsKey(resolvedPeerId)) {
           _peers[resolvedPeerId]!.unreadCount++;
         }
         _incomingItems.add(ChatItem(
+          id: h['msg_id']?.toString(),
           peerId: resolvedPeerId,
           sender: sender,
           mine: false,
@@ -1402,6 +1500,15 @@ class NearbyService extends ChangeNotifier {
           fileSize: size,
           status: 'Received',
         ));
+        await HistoryService().addItems(List<ChatItem>.from(_incomingItems));
+        if (h['require_ack'] == true) {
+          socket.write('${jsonEncode({
+                'type': 'delivery_ack',
+                'msg_id': h['msg_id'],
+                'status': 'delivered'
+              })}\n');
+          await socket.flush();
+        }
         log('Received $name from $sender');
         if (notificationsEnabled && !isCurrentlyOpen) {
           _notificationService.showIncomingFileNotification(
@@ -1424,7 +1531,11 @@ class NearbyService extends ChangeNotifier {
 
   Future<void> sendTypingStatus(Peer peer, bool isTyping) async {
     final targetIp = _resolveTargetIp(peer);
-    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) return;
+    if (targetIp.isEmpty ||
+        targetIp == '0.0.0.0' ||
+        targetIp.startsWith('127.')) {
+      return;
+    }
     try {
       final socket = await Socket.connect(targetIp, transferPort,
           timeout: const Duration(milliseconds: 1500));
@@ -1432,6 +1543,9 @@ class NearbyService extends ChangeNotifier {
             'type': 'typing',
             'sender': deviceName,
             'sender_id': deviceId,
+            'delivery_ack': true,
+            if (InternetDeviceIdentityService().isInitialized)
+              'internet_device_id': InternetDeviceIdentityService().deviceId,
             'is_typing': isTyping,
           })}\n');
       await socket.flush();
@@ -1451,6 +1565,9 @@ class NearbyService extends ChangeNotifier {
             'reaction': reaction,
             'sender': deviceName,
             'sender_id': deviceId,
+            'delivery_ack': true,
+            if (InternetDeviceIdentityService().isInitialized)
+              'internet_device_id': InternetDeviceIdentityService().deviceId,
           })}\n');
       await socket.flush();
       socket.destroy();
@@ -1483,6 +1600,9 @@ class NearbyService extends ChangeNotifier {
           'type': pType,
           'sender': deviceName,
           'sender_id': deviceId,
+          'delivery_ack': true,
+          if (InternetDeviceIdentityService().isInitialized)
+            'internet_device_id': InternetDeviceIdentityService().deviceId,
           'prompt': cleanPrompt,
           'message': cleanPrompt,
           'text': cleanPrompt,
@@ -1492,7 +1612,7 @@ class NearbyService extends ChangeNotifier {
         socket.write('$payload\n');
         await socket.flush();
 
-        final reader = _SocketReader(socket);
+        final reader = SocketReader(socket);
 
         while (true) {
           final line = await reader
@@ -1625,7 +1745,10 @@ class NearbyService extends ChangeNotifier {
     final targetIp = _resolveTargetIp(peer);
 
     // 1. Direct TCP attempt if peer has IP and is not purely a mesh peer
-    if (!peer.isMeshPeer && targetIp.isNotEmpty && targetIp != '0.0.0.0' && !targetIp.startsWith('127.')) {
+    if (!peer.isMeshPeer &&
+        targetIp.isNotEmpty &&
+        targetIp != '0.0.0.0' &&
+        !targetIp.startsWith('127.')) {
       for (var attempt = 1; attempt <= 3; attempt++) {
         Socket? socket;
         try {
@@ -1634,8 +1757,13 @@ class NearbyService extends ChangeNotifier {
           socket.write('${jsonEncode({
                 'type': 'chat',
                 'msg_id': resolvedMsgId,
+                'require_ack': peer.supportsDeliveryAck,
                 'sender': deviceName,
                 'sender_id': deviceId,
+                'delivery_ack': true,
+                if (InternetDeviceIdentityService().isInitialized)
+                  'internet_device_id':
+                      InternetDeviceIdentityService().deviceId,
                 'message': text.trim(),
                 if (replyToId != null) 'reply_to_id': replyToId,
                 if (replyToSender != null) 'reply_to_sender': replyToSender,
@@ -1643,6 +1771,12 @@ class NearbyService extends ChangeNotifier {
                 if (isForwarded) 'is_forwarded': true,
               })}\n');
           await socket.flush();
+          if (peer.supportsDeliveryAck &&
+              !await _deliveryAcknowledged(socket, resolvedMsgId)) {
+            throw const SocketException(
+                'Receiver did not confirm message delivery');
+          }
+          await socket.close();
           log('Direct message sent to ${peer.name} ($targetIp)');
           return true;
         } catch (e) {
@@ -1661,6 +1795,7 @@ class NearbyService extends ChangeNotifier {
       final meshPacket = jsonEncode({
         'type': 'mesh_relay',
         'msg_id': resolvedMsgId,
+        'require_ack': peer.supportsDeliveryAck,
         'origin_id': deviceId,
         'origin_name': deviceName,
         'target_id': peer.id,
@@ -1669,6 +1804,7 @@ class NearbyService extends ChangeNotifier {
         'payload': {
           'type': 'chat',
           'msg_id': resolvedMsgId,
+          'require_ack': peer.supportsDeliveryAck,
           'message': text.trim(),
           if (replyToId != null) 'reply_to_id': replyToId,
           if (replyToSender != null) 'reply_to_sender': replyToSender,
@@ -1694,12 +1830,16 @@ class NearbyService extends ChangeNotifier {
   }
 
   Future<bool> sendFile(Peer peer, File file,
-      {bool folderArchive = false, String? displayName}) async {
+      {bool folderArchive = false, String? displayName, String? msgId}) async {
     if (!await file.exists()) return false;
     final size = await file.length();
     final name = displayName ?? file.uri.pathSegments.last;
     final targetIp = _resolveTargetIp(peer);
-    if (targetIp.isEmpty || targetIp == '0.0.0.0' || targetIp.startsWith('127.')) return false;
+    if (targetIp.isEmpty ||
+        targetIp == '0.0.0.0' ||
+        targetIp.startsWith('127.')) {
+      return false;
+    }
 
     for (var attempt = 1; attempt <= 2; attempt++) {
       Socket? socket;
@@ -1711,6 +1851,11 @@ class NearbyService extends ChangeNotifier {
               'type': 'file',
               'sender': deviceName,
               'sender_id': deviceId,
+              'delivery_ack': true,
+              if (InternetDeviceIdentityService().isInitialized)
+                'internet_device_id': InternetDeviceIdentityService().deviceId,
+              'msg_id': msgId,
+              'require_ack': peer.supportsDeliveryAck,
               'name': name,
               'size': size,
               if (folderArchive) 'folder': true,
@@ -1722,8 +1867,11 @@ class NearbyService extends ChangeNotifier {
         var previous = 0;
         var previousMs = 0;
         double speed = 0;
-        _setTransfer(
-            TransferState(active: true, peerId: peer.id, label: 'Sending $name', progress: 0));
+        _setTransfer(TransferState(
+            active: true,
+            peerId: peer.id,
+            label: 'Sending $name',
+            progress: 0));
         while (sent < size) {
           final chunk =
               await raf.read((size - sent).clamp(1, 256 * 1024).toInt());
@@ -1750,13 +1898,20 @@ class NearbyService extends ChangeNotifier {
           if (sent % (1024 * 1024) < 256 * 1024) await socket.flush();
         }
         await socket.flush();
-        _setTransfer(TransferState(peerId: peer.id, label: 'Sent $name', progress: 1));
+        if (peer.supportsDeliveryAck &&
+            !await _deliveryAcknowledged(socket, msgId)) {
+          throw const SocketException('Receiver did not save the file');
+        }
+        await socket.close();
+        _setTransfer(
+            TransferState(peerId: peer.id, label: 'Sent $name', progress: 1));
         log('Sent $name to ${peer.name}');
         return sent == size;
       } catch (e) {
         log('Transfer attempt $attempt failed: $e');
         if (attempt == 2) {
-          _setTransfer(TransferState(peerId: peer.id, label: 'Transfer failed'));
+          _setTransfer(
+              TransferState(peerId: peer.id, label: 'Transfer failed'));
           return false;
         }
         await Future.delayed(const Duration(milliseconds: 300));
@@ -1772,14 +1927,18 @@ class NearbyService extends ChangeNotifier {
     final dir = Directory(folderPath);
     if (!await dir.exists()) return false;
 
-    final folderName = dir.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? 'Folder';
+    final folderName =
+        dir.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? 'Folder';
     final tempDir = await getTemporaryDirectory();
     final zipPath =
         '${tempDir.path}/${folderName}_${DateTime.now().millisecondsSinceEpoch}.zip';
 
     try {
       _setTransfer(TransferState(
-          active: true, peerId: peer.id, label: 'Compressing $folderName…', progress: 0));
+          active: true,
+          peerId: peer.id,
+          label: 'Compressing $folderName…',
+          progress: 0));
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
       await encoder.addDirectory(dir);
@@ -1802,13 +1961,17 @@ class NearbyService extends ChangeNotifier {
       return ok;
     } catch (e) {
       log('Error creating/sending folder archive: $e');
-      _setTransfer(TransferState(peerId: peer.id, label: 'Folder transfer failed'));
+      _setTransfer(
+          TransferState(peerId: peer.id, label: 'Folder transfer failed'));
       return false;
     }
   }
 
   Peer _upsertPeer(String id, String name, String ip,
-      {String? avatarEmoji, String? platform}) {
+      {String? avatarEmoji,
+      String? platform,
+      String? internetDeviceId,
+      bool supportsDeliveryAck = false}) {
     String? resolvedAvatar = avatarEmoji;
     if (resolvedAvatar == null || resolvedAvatar.trim().isEmpty) {
       final trimmed = name.trim();
@@ -1824,15 +1987,15 @@ class NearbyService extends ChangeNotifier {
       }
     }
 
-    if (id == deviceId ||
-        name.toLowerCase() == deviceName.toLowerCase() ||
-        id == 'local_ai_assistant') {
+    if (id == deviceId || id == 'local_ai_assistant') {
       return Peer(
           id: id,
           name: name,
           ip: ip,
           avatarEmoji: resolvedAvatar,
-          platform: platform);
+          platform: platform,
+          internetDeviceId: internetDeviceId,
+          supportsDeliveryAck: supportsDeliveryAck);
     }
 
     Peer? existing = _peers[id];
@@ -1841,9 +2004,7 @@ class NearbyService extends ChangeNotifier {
     }
     if (existing == null) {
       for (final p in _peers.values) {
-        if ((id.isNotEmpty && p.id == id) ||
-            (ip.isNotEmpty && p.ip == ip) ||
-            (name.isNotEmpty && p.name == name)) {
+        if ((id.isNotEmpty && p.id == id) || (ip.isNotEmpty && p.ip == ip)) {
           existing = p;
           break;
         }
@@ -1860,7 +2021,9 @@ class NearbyService extends ChangeNotifier {
           name: name,
           ip: ip,
           avatarEmoji: resolvedAvatar,
-          platform: platform);
+          platform: platform,
+          internetDeviceId: internetDeviceId,
+          supportsDeliveryAck: supportsDeliveryAck);
       _peers[p.id] = p;
       if (id.isNotEmpty) _peers[id] = p;
       if (ip.isNotEmpty) _peers[ip] = p;
@@ -1871,6 +2034,9 @@ class NearbyService extends ChangeNotifier {
         ..name = name.isNotEmpty ? name : existing.name
         ..ip = ip.isNotEmpty ? ip : existing.ip
         ..avatarEmoji = resolvedAvatar ?? existing.avatarEmoji
+        ..supportsDeliveryAck =
+            supportsDeliveryAck || existing.supportsDeliveryAck
+        ..internetDeviceId = internetDeviceId ?? existing.internetDeviceId
         ..platform = platform ?? existing.platform
         ..lastSeen = DateTime.now();
       _peers[existing.id] = existing;
@@ -1927,8 +2093,7 @@ class NearbyService extends ChangeNotifier {
     }
 
     if (Platform.isAndroid) {
-      final pubDownload =
-          Directory('/storage/emulated/0/Download/NearMitra');
+      final pubDownload = Directory('/storage/emulated/0/Download/NearMitra');
       try {
         if (!await pubDownload.exists()) {
           await pubDownload.create(recursive: true);
@@ -1965,9 +2130,23 @@ class NearbyService extends ChangeNotifier {
     return last.isEmpty || last == '.' || last == '..' ? 'received_file' : last;
   }
 
+  Future<bool> _deliveryAcknowledged(Socket socket, String? messageId) async {
+    final reader = SocketReader(socket);
+    try {
+      final line = await reader.readLine().timeout(const Duration(seconds: 60));
+      if (line == null) return false;
+      final reply = jsonDecode(line) as Map<String, dynamic>;
+      return reply['type'] == 'delivery_ack' &&
+          reply['status'] == 'delivered' &&
+          (messageId == null || reply['msg_id'] == messageId);
+    } finally {
+      await reader.cancel();
+    }
+  }
+
   Future<String?> _readLine(Socket socket,
       {Duration timeout = const Duration(seconds: 3)}) async {
-    final reader = _SocketReader(socket);
+    final reader = SocketReader(socket);
     return reader.readLine().timeout(timeout, onTimeout: () => null);
   }
 
@@ -1983,80 +2162,5 @@ class NearbyService extends ChangeNotifier {
     _logs.add('$stamp  $message');
     if (_logs.length > 160) _logs.removeRange(0, _logs.length - 160);
     notifyListeners();
-  }
-}
-
-class _SocketReader {
-  _SocketReader(this.socket) {
-    _subscription = socket.listen(
-      _onData,
-      onError: (Object e, StackTrace s) {
-        _error = e;
-        _done = true;
-        _wake();
-      },
-      onDone: () {
-        _done = true;
-        _wake();
-      },
-      cancelOnError: false,
-    );
-  }
-
-  final Socket socket;
-  late final StreamSubscription<Uint8List> _subscription;
-  final List<int> _buffer = [];
-  Completer<void>? _waiter;
-  bool _done = false;
-  Object? _error;
-
-  Future<void> cancel() async {
-    await _subscription.cancel();
-  }
-
-  void _onData(Uint8List data) {
-    _buffer.addAll(data);
-    _wake();
-  }
-
-  void _wake() {
-    if (_waiter != null && !_waiter!.isCompleted) _waiter!.complete();
-    _waiter = null;
-  }
-
-  Future<void> _wait() async {
-    if (_buffer.isNotEmpty || _done) return;
-    _waiter ??= Completer<void>();
-    await _waiter!.future;
-    if (_error != null) throw _error!;
-  }
-
-  Future<String?> readLine() async {
-    while (true) {
-      final i = _buffer.indexOf(10);
-      if (i >= 0) {
-        final bytes = _buffer.sublist(0, i);
-        _buffer.removeRange(0, i + 1);
-        return utf8.decode(bytes).trimRight();
-      }
-      if (_done) {
-        if (_buffer.isEmpty) return null;
-        final bytes = List<int>.from(_buffer);
-        _buffer.clear();
-        return utf8.decode(bytes).trimRight();
-      }
-      await _wait();
-    }
-  }
-
-  Future<List<int>> readBytes(int maxBytes) async {
-    while (_buffer.isEmpty && !_done) {
-      await _wait();
-    }
-    if (_buffer.isEmpty) return const [];
-    final count = _buffer.length < maxBytes ? _buffer.length : maxBytes;
-    final out = _buffer.sublist(0, count);
-    _buffer.removeRange(0, count);
-    return out;
   }
 }

@@ -80,8 +80,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     _initCallFlow();
   }
 
+  bool _matchesCallPeer(String id)=>id==widget.peer.id || id==widget.peer.ip || widget.service.peers.any((peer)=>peer.id==id && peer.ip==widget.peer.ip);
   void _setupSignalListeners() {
     widget.service.onCallAcceptedByPeer = (peerId) {
+      if(!_matchesCallPeer(peerId))return;
       if (!mounted) return;
       _ringTimeoutTimer?.cancel();
       _ringTimeoutTimer = null;
@@ -94,6 +96,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallDeclinedByPeer = (peerId) {
+      if(!_matchesCallPeer(peerId))return;
       if (!mounted) return;
       setState(() {
         _statusText = 'Call Declined';
@@ -102,6 +105,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallEndedByPeer = (peerId) {
+      if(!_matchesCallPeer(peerId))return;
       if (!mounted) return;
       setState(() {
         _statusText = 'Call Ended';
@@ -110,6 +114,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onCallVideoToggledByPeer = (peerId, isVideo) {
+      if(!_matchesCallPeer(peerId))return;
       if (!mounted) return;
       setState(() {
         _peerVideoEnabled = isVideo;
@@ -117,14 +122,17 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     };
 
     widget.service.onWebRtcOffer = (peerId, offer) {
+      if(!_matchesCallPeer(peerId))return;
       unawaited(_handleOffer(offer));
     };
 
     widget.service.onWebRtcAnswer = (peerId, answer) {
+      if(!_matchesCallPeer(peerId))return;
       unawaited(_handleAnswer(answer));
     };
 
     widget.service.onWebRtcIceCandidate = (peerId, candidate) {
+      if(!_matchesCallPeer(peerId))return;
       unawaited(_handleRemoteCandidate(candidate));
     };
   }
@@ -132,7 +140,11 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   Future<void> _initCallFlow() async {
     await _prepareWebRtc();
     if (!mounted) return;
+    if(widget.isIncoming){
+      _ringTimeoutTimer=Timer(const Duration(seconds:40),(){if(mounted&&!_isCallConnected){setState(()=>_statusText='Nearby media connection timed out');widget.service.sendCallSignal(widget.peer,'call_ended');Future.delayed(const Duration(milliseconds:1200),_endCallLocal);}});
+    }
 
+    if(_peerConnection==null){if(mounted)setState(()=>_statusText='Could not initialize microphone/camera');if(widget.isIncoming)await widget.service.sendCallSignal(widget.peer,'call_declined');return;}
     if (widget.isIncoming) {
       widget.service.sendCallSignal(widget.peer, 'call_accepted');
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -149,6 +161,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         _statusText = 'Connecting…';
       });
     } else {
+      if(_peerConnection==null){if(mounted)setState(()=>_statusText='Could not open microphone/camera');return;}
+      final sent=await widget.service.sendCallInvite(widget.peer,widget.isVideoCall);
+      if(!mounted)return;
+      if(!sent){setState(()=>_statusText='Could not reach Nearby device');return;}
       setState(() {
         _statusText = 'Ringing…';
       });
@@ -280,7 +296,6 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             _renderersReady = true;
           });
         }
-        _markCallConnected();
         Helper.setSpeakerphoneOn(_isSpeakerOn);
       };
 
@@ -299,7 +314,6 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
             _renderersReady = true;
           });
         }
-        _markCallConnected();
         Helper.setSpeakerphoneOn(_isSpeakerOn);
       };
 
@@ -361,8 +375,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
     });
   }
 
+  bool _callerOfferStarted=false;
   Future<void> _startCallerOffer() async {
-    if (_isCallConnected) return;
+    if (_isCallConnected || _callerOfferStarted || widget.isIncoming) return;
+    _callerOfferStarted=true;
     await _prepareWebRtc();
     final pc = _peerConnection;
     if (pc == null) return;
@@ -379,6 +395,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         'is_video': widget.isVideoCall,
       });
     } catch (e) {
+      _callerOfferStarted=false;
       debugPrint('Error creating WebRTC offer: $e');
     }
   }
@@ -403,7 +420,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         'sdp': answer.sdp,
         'sdp_type': answer.type,
       });
-      _markCallConnected();
+      if(mounted)setState(()=>_statusText='Connecting media…');
     } catch (e) {
       debugPrint('Error handling WebRTC offer: $e');
     }
@@ -419,7 +436,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
           RTCSessionDescription(sdp, answer['sdp_type']?.toString() ?? 'answer'));
       _hasRemoteDescription = true;
       await _drainPendingCandidates();
-      _markCallConnected();
+      if(mounted)setState(()=>_statusText='Connecting media…');
     } catch (e) {
       debugPrint('Error handling WebRTC answer: $e');
     }

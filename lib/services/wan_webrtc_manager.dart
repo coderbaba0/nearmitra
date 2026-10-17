@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path_provider/path_provider.dart';
@@ -27,6 +28,9 @@ class WanWebRtcManager extends ChangeNotifier {
   String? _activePeerId;
   WanDevice? _activePeer;
   bool _isCaller = false;
+  bool _remoteDeliveryAck = false;
+  Completer<void>? _handshakeReceived;
+  final Map<String, Completer<bool>> _deliveryWaiters = {};
   bool _isManuallyDisconnected = false;
 
   WanConnectionState _state = WanConnectionState.disconnected;
@@ -61,6 +65,7 @@ class WanWebRtcManager extends ChangeNotifier {
   DateTime? _transferStartTime;
   String? _currentSavedFilePath;
   bool _isCurrentTransferCancelled = false;
+  bool _currentReceivingFolder = false;
 
   // Direct chat history (Rich ChatItems)
   final List<ChatItem> _directChatItems = [];
@@ -69,6 +74,7 @@ class WanWebRtcManager extends ChangeNotifier {
   final List<QueuedOutboxItem> _outbox = [];
   static const _kWanOutboxKey = 'nearmitra_wan_outbox_queue_v1';
   bool _isFlushingOutbox = false;
+  bool useUnifiedOutbox = false;
 
   // Typing Indicator
   bool _peerIsTyping = false;
@@ -82,11 +88,15 @@ class WanWebRtcManager extends ChangeNotifier {
   WanDevice? get activePeer => _activePeer;
   bool get isCaller => _isCaller;
   String? get activePeerId => _activePeerId;
-  List<WanFileTransferProgress> get activeTransfers => _activeTransfers.values.toList();
+  List<WanFileTransferProgress> get activeTransfers =>
+      _activeTransfers.values.toList();
   List<ChatItem> get directChatItems => List.unmodifiable(_directChatItems);
   List<QueuedOutboxItem> get outbox => List.unmodifiable(_outbox);
-  List<Map<String, dynamic>> get directMessages => _directChatItems.map((e) => e.toJson()).toList();
-  bool get isConnected => _state == WanConnectionState.connected && _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
+  List<Map<String, dynamic>> get directMessages =>
+      _directChatItems.map((e) => e.toJson()).toList();
+  bool get isConnected =>
+      _state == WanConnectionState.connected &&
+      _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
 
   void init() {
     _wanService.onIncomingSessionRequest = _handleIncomingSession;
@@ -117,6 +127,8 @@ class WanWebRtcManager extends ChangeNotifier {
 
     _activePeer = peer;
     _activePeerId = peer.id;
+    _remoteDeliveryAck = false;
+    _handshakeReceived = Completer<void>();
     _isCaller = true;
     _isManuallyDisconnected = false;
     _reconnectAttempts = 0;
@@ -130,6 +142,7 @@ class WanWebRtcManager extends ChangeNotifier {
     _setState(WanConnectionState.connecting);
 
     try {
+      await loadChatHistory(_activePeerId!);
       // 1. Create RTCPeerConnection with centralized STUN/TURN config
       _peerConnection = await createPeerConnection(
         IceConfig.getRtcConfiguration(),
@@ -140,7 +153,8 @@ class WanWebRtcManager extends ChangeNotifier {
       // 2. Set up local candidate gathering handler IMMEDIATELY before setting local description
       _peerConnection!.onIceCandidate = (candidate) {
         if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
-          debugPrint('[WanWebRtc] Local ICE candidate gathered: ${candidate.candidate}');
+          debugPrint(
+              '[WanWebRtc] Local ICE candidate gathered: ${candidate.candidate}');
           if (_isSessionPublished && _activeSessionId != null) {
             _wanService.addIceCandidate(
               sessionId: _activeSessionId!,
@@ -161,12 +175,14 @@ class WanWebRtcManager extends ChangeNotifier {
       final dcInit = RTCDataChannelInit()
         ..ordered = true
         ..maxRetransmits = 30;
-      _dataChannel = await _peerConnection!.createDataChannel('nearmitra_wan_dc', dcInit);
+      _dataChannel =
+          await _peerConnection!.createDataChannel('nearmitra_wan_dc', dcInit);
       _setupDataChannelListeners();
 
       // 4. Create WebRTC Offer
       _setState(WanConnectionState.signaling);
-      final offer = await _peerConnection!.createOffer(IceConfig.offerConstraints);
+      final offer =
+          await _peerConnection!.createOffer(IceConfig.offerConstraints);
       await _peerConnection!.setLocalDescription(offer);
 
       // 5. Write Offer to Firebase RTDB: sessions/{sessionId}
@@ -225,6 +241,8 @@ class WanWebRtcManager extends ChangeNotifier {
   Future<void> acceptIncomingSession(WanSignalingSession session) async {
     _activeSessionId = session.sessionId;
     _activePeerId = session.callerId;
+    _remoteDeliveryAck = false;
+    _handshakeReceived = Completer<void>();
     _isCaller = false;
     _isManuallyDisconnected = false;
     _reconnectAttempts = 0;
@@ -248,6 +266,7 @@ class WanWebRtcManager extends ChangeNotifier {
     _setState(WanConnectionState.connecting);
 
     try {
+      await loadChatHistory(_activePeerId!);
       // 1. Create RTCPeerConnection
       _peerConnection = await createPeerConnection(
         IceConfig.getRtcConfiguration(),
@@ -265,7 +284,8 @@ class WanWebRtcManager extends ChangeNotifier {
       // Set up local candidate gathering handler IMMEDIATELY
       _peerConnection!.onIceCandidate = (candidate) {
         if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
-          debugPrint('[WanWebRtc] Local receiver ICE candidate gathered: ${candidate.candidate}');
+          debugPrint(
+              '[WanWebRtc] Local receiver ICE candidate gathered: ${candidate.candidate}');
           if (_isSessionPublished && _activeSessionId != null) {
             _wanService.addIceCandidate(
               sessionId: _activeSessionId!,
@@ -290,7 +310,8 @@ class WanWebRtcManager extends ChangeNotifier {
       if (offerMap == null || offerMap['sdp'] == null) {
         throw Exception('Invalid offer SDP in signaling session');
       }
-      final offerSdp = RTCSessionDescription(offerMap['sdp'] as String, offerMap['type'] as String? ?? 'offer');
+      final offerSdp = RTCSessionDescription(
+          offerMap['sdp'] as String, offerMap['type'] as String? ?? 'offer');
       await _peerConnection!.setRemoteDescription(offerSdp);
       _hasRemoteDescription = true;
 
@@ -298,7 +319,8 @@ class WanWebRtcManager extends ChangeNotifier {
       for (final cand in _pendingRemoteCandidates) {
         try {
           await _peerConnection!.addCandidate(cand);
-          debugPrint('[WanWebRtc] Added queued remote ICE candidate on receiver');
+          debugPrint(
+              '[WanWebRtc] Added queued remote ICE candidate on receiver');
         } catch (e) {
           debugPrint('[WanWebRtc] Error adding queued remote candidate: $e');
         }
@@ -356,9 +378,12 @@ class WanWebRtcManager extends ChangeNotifier {
   void _listenToCallerSessionUpdates(String sessionId) {
     _answerSub?.cancel();
     _answerSub = _wanService.listenToAnswer(sessionId, (answerMap) async {
-      if (_peerConnection == null || _state == WanConnectionState.connected) return;
+      if (_peerConnection == null || _state == WanConnectionState.connected) {
+        return;
+      }
       try {
-        final answerSdp = RTCSessionDescription(answerMap['sdp'] as String, answerMap['type'] as String? ?? 'answer');
+        final answerSdp = RTCSessionDescription(answerMap['sdp'] as String,
+            answerMap['type'] as String? ?? 'answer');
         await _peerConnection!.setRemoteDescription(answerSdp);
         _hasRemoteDescription = true;
         _setState(WanConnectionState.negotiating);
@@ -368,7 +393,8 @@ class WanWebRtcManager extends ChangeNotifier {
         for (final cand in _pendingRemoteCandidates) {
           try {
             await _peerConnection!.addCandidate(cand);
-            debugPrint('[WanWebRtc] Added queued remote ICE candidate on caller');
+            debugPrint(
+                '[WanWebRtc] Added queued remote ICE candidate on caller');
           } catch (e) {
             debugPrint('[WanWebRtc] Error adding queued remote candidate: $e');
           }
@@ -409,7 +435,8 @@ class WanWebRtcManager extends ChangeNotifier {
   void _listenToIceCandidates(String sessionId, {required bool isCaller}) {
     // Receive remote candidates from Firebase
     _candidatesSub?.cancel();
-    _candidatesSub = _wanService.listenToCandidates(sessionId, isCaller, (candMap) async {
+    _candidatesSub =
+        _wanService.listenToCandidates(sessionId, isCaller, (candMap) async {
       if (_peerConnection == null) return;
       final candStr = candMap['candidate'] as String?;
       final sdpMid = (candMap['sdpMid'] as String?) ?? '0';
@@ -419,7 +446,9 @@ class WanWebRtcManager extends ChangeNotifier {
               : int.tryParse(candMap['sdpMLineIndex'].toString()) ?? 0)
           : 0;
 
-      if (candStr != null && candStr.isNotEmpty && !_processedCandidates.contains(candStr)) {
+      if (candStr != null &&
+          candStr.isNotEmpty &&
+          !_processedCandidates.contains(candStr)) {
         _processedCandidates.add(candStr);
         final iceCandidate = RTCIceCandidate(candStr, sdpMid, sdpMLineIndex);
 
@@ -432,7 +461,8 @@ class WanWebRtcManager extends ChangeNotifier {
           }
         } else {
           _pendingRemoteCandidates.add(iceCandidate);
-          debugPrint('[WanWebRtc] Queued remote ICE candidate (waiting for remote description)');
+          debugPrint(
+              '[WanWebRtc] Queued remote ICE candidate (waiting for remote description)');
         }
       }
     });
@@ -458,7 +488,8 @@ class WanWebRtcManager extends ChangeNotifier {
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _iceDisconnectTimer?.cancel();
         _handleConnectionFailure();
-      } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+      } else if (state ==
+          RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
         // Transient cellular/Wi-Fi route change grace period (8 seconds)
         _iceDisconnectTimer?.cancel();
         _iceDisconnectTimer = Timer(const Duration(seconds: 8), () {
@@ -478,13 +509,16 @@ class WanWebRtcManager extends ChangeNotifier {
       } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         _iceDisconnectTimer?.cancel();
         _handleConnectionFailure();
-      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-                 state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+      } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
         _iceDisconnectTimer?.cancel();
         _handleConnectionDisconnected();
       }
     };
   }
+
+  Future<void> _incomingMessages = Future<void>.value();
 
   void _setupDataChannelListeners() {
     if (_dataChannel == null) return;
@@ -501,7 +535,11 @@ class WanWebRtcManager extends ChangeNotifier {
         // Send application-level handshake sync to guarantee both sides are connected
         try {
           _dataChannel!.send(RTCDataChannelMessage(
-            jsonEncode({'type': 'handshake_syn', 'senderId': _wanService.deviceId}),
+            jsonEncode({
+              'type': 'handshake_syn',
+              'senderId': _wanService.deviceId,
+              'deliveryAck': true
+            }),
           ));
         } catch (_) {}
 
@@ -514,12 +552,18 @@ class WanWebRtcManager extends ChangeNotifier {
       }
     };
 
+    final channel = _dataChannel;
     _dataChannel!.onMessage = (RTCDataChannelMessage message) {
-      if (message.isBinary) {
-        _handleBinaryMessage(message.binary);
-      } else {
-        _handleTextMessage(message.text);
-      }
+      _incomingMessages = _incomingMessages.then((_) async {
+        if (channel != _dataChannel) return;
+        if (message.isBinary) {
+          _handleBinaryMessage(message.binary);
+        } else {
+          await _handleTextMessage(message.text);
+        }
+      }).catchError((Object error, StackTrace stack) {
+        debugPrint('[WanWebRtc] Incoming message error: $error');
+      });
     };
   }
 
@@ -528,7 +572,8 @@ class WanWebRtcManager extends ChangeNotifier {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
         try {
-          _dataChannel!.send(RTCDataChannelMessage(WanDataMessage.ping().toJsonString()));
+          _dataChannel!.send(
+              RTCDataChannelMessage(WanDataMessage.ping().toJsonString()));
         } catch (_) {}
       }
     });
@@ -552,18 +597,23 @@ class WanWebRtcManager extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
-    if (_isManuallyDisconnected || _activePeer == null || !_activePeer!.isOnline) {
+    if (_isManuallyDisconnected ||
+        _activePeer == null ||
+        !_activePeer!.isOnline) {
       return;
     }
 
     if (_reconnectAttempts < _maxReconnectAttempts) {
       _reconnectAttempts++;
       final delaySeconds = _reconnectAttempts * 3;
-      debugPrint('[WanWebRtc] Scheduling auto-reconnect attempt $_reconnectAttempts in $delaySeconds seconds...');
+      debugPrint(
+          '[WanWebRtc] Scheduling auto-reconnect attempt $_reconnectAttempts in $delaySeconds seconds...');
 
       _reconnectTimer?.cancel();
       _reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
-        if (!_isManuallyDisconnected && _activePeer != null && _state != WanConnectionState.connected) {
+        if (!_isManuallyDisconnected &&
+            _activePeer != null &&
+            _state != WanConnectionState.connected) {
           connectToPeer(_activePeer!);
         }
       });
@@ -598,7 +648,8 @@ class WanWebRtcManager extends ChangeNotifier {
     _outbox.add(item);
     await _saveOutbox();
     notifyListeners();
-    debugPrint('[WanWebRtc] Queued outbox item ${item.id} (${item.kind.name}) for ${item.peerName}');
+    debugPrint(
+        '[WanWebRtc] Queued outbox item ${item.id} (${item.kind.name}) for ${item.peerName}');
   }
 
   Future<bool> cancelQueuedItem(String itemId) async {
@@ -625,8 +676,11 @@ class WanWebRtcManager extends ChangeNotifier {
   }
 
   Future<void> flushQueueForPeer(String peerId) async {
-    if (_isFlushingOutbox) return;
-    if (_dataChannel == null || _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+    if (useUnifiedOutbox || _isFlushingOutbox || _activePeerId != peerId) {
+      return;
+    }
+    if (_dataChannel == null ||
+        _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
       return;
     }
 
@@ -634,14 +688,15 @@ class WanWebRtcManager extends ChangeNotifier {
     if (pending.isEmpty) return;
 
     _isFlushingOutbox = true;
-    debugPrint('[WanWebRtc] Flushing ${pending.length} pending items to $peerId');
+    debugPrint(
+        '[WanWebRtc] Flushing ${pending.length} pending items to $peerId');
 
     for (final q in pending) {
       if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) break;
 
       if (q.kind == ChatKind.text && q.text != null && q.text!.isNotEmpty) {
         try {
-          final msg = WanDataMessage.text(q.text!);
+          final msg = WanDataMessage.text(q.text!, id: q.id);
           await _dataChannel!.send(RTCDataChannelMessage(msg.toJsonString()));
           _outbox.removeWhere((x) => x.id == q.id);
           await _saveOutbox();
@@ -655,7 +710,8 @@ class WanWebRtcManager extends ChangeNotifier {
           }
           await saveChatHistory(peerId);
           notifyListeners();
-          debugPrint('[WanWebRtc] Successfully flushed queued text message ${q.id}');
+          debugPrint(
+              '[WanWebRtc] Successfully flushed queued text message ${q.id}');
         } catch (e) {
           debugPrint('[WanWebRtc] Error sending queued message: $e');
           break;
@@ -705,15 +761,21 @@ class WanWebRtcManager extends ChangeNotifier {
 
   /// Load persistent chat history for a specific peer
   Future<void> loadChatHistory(String peerId) async {
-    _activePeerId = peerId;
+    if (_activePeerId != peerId) return;
     _directChatItems.clear();
     try {
+      _directChatItems.addAll((await HistoryService().load())
+          .where((item) => item.peerId == peerId));
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString('nearmitra_wan_chat_history_$peerId');
       if (raw != null && raw.isNotEmpty) {
         final list = jsonDecode(raw) as List<dynamic>;
         for (final item in list) {
-          _directChatItems.add(ChatItem.fromJson(Map<String, dynamic>.from(item as Map)));
+          final parsed =
+              ChatItem.fromJson(Map<String, dynamic>.from(item as Map));
+          if (!_directChatItems.any((existing) => existing.id == parsed.id)) {
+            _directChatItems.add(parsed);
+          }
         }
       }
     } catch (e) {
@@ -728,9 +790,10 @@ class WanWebRtcManager extends ChangeNotifier {
     if (targetId == null || targetId.isEmpty) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final trimmed = _directChatItems.length > 500
-          ? _directChatItems.sublist(_directChatItems.length - 500)
-          : _directChatItems;
+      final items =
+          _directChatItems.where((item) => item.peerId == targetId).toList();
+      final trimmed =
+          items.length > 500 ? items.sublist(items.length - 500) : items;
       await prefs.setString(
         'nearmitra_wan_chat_history_$targetId',
         jsonEncode(trimmed.map((e) => e.toJson()).toList()),
@@ -742,7 +805,7 @@ class WanWebRtcManager extends ChangeNotifier {
 
   /// Clear persistent chat history for a specific peer
   Future<void> clearChatHistory(String peerId) async {
-    _directChatItems.clear();
+    if (_activePeerId == peerId) _directChatItems.clear();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('nearmitra_wan_chat_history_$peerId');
@@ -762,7 +825,9 @@ class WanWebRtcManager extends ChangeNotifier {
       List<ChatItem> items = [];
       if (raw != null && raw.isNotEmpty) {
         final list = jsonDecode(raw) as List<dynamic>;
-        items = list.map((e) => ChatItem.fromJson(Map<String, dynamic>.from(e as Map))).toList();
+        items = list
+            .map((e) => ChatItem.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
       }
       final idx = items.indexWhere((e) => e.id == item.id);
       if (idx != -1) {
@@ -770,8 +835,10 @@ class WanWebRtcManager extends ChangeNotifier {
       } else {
         items.add(item);
       }
-      final trimmed = items.length > 500 ? items.sublist(items.length - 500) : items;
-      await prefs.setString(key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+      final trimmed =
+          items.length > 500 ? items.sublist(items.length - 500) : items;
+      await prefs.setString(
+          key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
     } catch (e) {
       debugPrint('[WanWebRtc] _appendItemToPeerHistory error: $e');
     }
@@ -785,10 +852,12 @@ class WanWebRtcManager extends ChangeNotifier {
     String? replyToSender,
     String? replyToText,
     bool isForwarded = false,
+    String? messageId,
   ]) async {
-    final effectivePeerId = (overridePeerId != null && overridePeerId.isNotEmpty)
-        ? overridePeerId
-        : (_activePeerId ?? WanService().activeChatPeerId ?? '');
+    final effectivePeerId =
+        (overridePeerId != null && overridePeerId.isNotEmpty)
+            ? overridePeerId
+            : (_activePeerId ?? WanService().activeChatPeerId ?? '');
     if (effectivePeerId.isEmpty) {
       debugPrint('[WanWebRtc] sendDirectMessage: effectivePeerId is empty!');
       return;
@@ -797,13 +866,13 @@ class WanWebRtcManager extends ChangeNotifier {
     // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
     if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
         (_state == WanConnectionState.connecting ||
-         _state == WanConnectionState.signaling ||
-         _state == WanConnectionState.negotiating)) {
+            _state == WanConnectionState.signaling ||
+            _state == WanConnectionState.negotiating)) {
       final watch = Stopwatch()..start();
       while (watch.elapsedMilliseconds < 1500 &&
-             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
-             _state != WanConnectionState.failed &&
-             _state != WanConnectionState.disconnected) {
+          _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+          _state != WanConnectionState.failed &&
+          _state != WanConnectionState.disconnected) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
     }
@@ -812,12 +881,11 @@ class WanWebRtcManager extends ChangeNotifier {
         _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
         (overridePeerId == null ||
             overridePeerId == _activePeerId ||
-            overridePeerId == _activePeer?.id ||
-            _activePeerId == null);
+            overridePeerId == _activePeer?.id);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing
-      final itemId = const Uuid().v4();
+      final itemId = messageId ?? const Uuid().v4();
       final item = ChatItem(
         id: itemId,
         peerId: effectivePeerId,
@@ -832,7 +900,8 @@ class WanWebRtcManager extends ChangeNotifier {
         replyToText: replyToText,
         isForwarded: isForwarded,
       );
-      if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+      if (effectivePeerId == _activePeerId ||
+          effectivePeerId == WanService().activeChatPeerId) {
         _directChatItems.removeWhere((e) => e.id == item.id);
         _directChatItems.add(item);
         await saveChatHistory(effectivePeerId);
@@ -843,7 +912,16 @@ class WanWebRtcManager extends ChangeNotifier {
 
       final peerName = _activePeerId == effectivePeerId
           ? (_activePeer?.name ?? 'Peer')
-          : (WanService().trustedDevicesList.firstWhere((d) => d.id == effectivePeerId, orElse: () => WanDevice(id: effectivePeerId, name: 'Peer', platform: '', isOnline: false, isTrusted: true)).name);
+          : (WanService()
+              .trustedDevicesList
+              .firstWhere((d) => d.id == effectivePeerId,
+                  orElse: () => WanDevice(
+                      id: effectivePeerId,
+                      name: 'Peer',
+                      platform: '',
+                      isOnline: false,
+                      isTrusted: true))
+              .name);
 
       await queueOutboxItem(QueuedOutboxItem(
         id: itemId,
@@ -859,12 +937,13 @@ class WanWebRtcManager extends ChangeNotifier {
 
     final msg = WanDataMessage.text(
       text,
+      id: messageId,
       replyToId: replyToId,
       replyToSender: replyToSender,
       replyToText: replyToText,
       isForwarded: isForwarded,
     );
-    await _dataChannel!.send(RTCDataChannelMessage(msg.toJsonString()));
+    await _sendConfirmed(msg, msg.id);
 
     final item = ChatItem(
       id: msg.id,
@@ -880,7 +959,8 @@ class WanWebRtcManager extends ChangeNotifier {
       replyToText: replyToText,
       isForwarded: isForwarded,
     );
-    if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+    if (effectivePeerId == _activePeerId ||
+        effectivePeerId == WanService().activeChatPeerId) {
       _directChatItems.removeWhere((e) => e.id == item.id);
       _directChatItems.add(item);
       await saveChatHistory(effectivePeerId);
@@ -895,7 +975,7 @@ class WanWebRtcManager extends ChangeNotifier {
   Future<void> sendReaction(String messageId, String emoji) async {
     for (final item in _directChatItems) {
       if (item.id == messageId) {
-        item.reaction = item.reaction == emoji ? null : emoji;
+        item.reaction = emoji.isEmpty ? null : emoji;
         break;
       }
     }
@@ -908,7 +988,8 @@ class WanWebRtcManager extends ChangeNotifier {
           'messageId': messageId,
           'reaction': emoji,
         });
-        await _dataChannel!.send(RTCDataChannelMessage(controlMsg.toJsonString()));
+        await _dataChannel!
+            .send(RTCDataChannelMessage(controlMsg.toJsonString()));
       } catch (_) {}
     }
   }
@@ -920,31 +1001,37 @@ class WanWebRtcManager extends ChangeNotifier {
         final controlMsg = WanDataMessage.control('typing', {
           'isTyping': isTyping,
         });
-        await _dataChannel!.send(RTCDataChannelMessage(controlMsg.toJsonString()));
+        await _dataChannel!
+            .send(RTCDataChannelMessage(controlMsg.toJsonString()));
       } catch (_) {}
     }
   }
 
   /// Send a file directly (or queue to Outbox if offline)
-  Future<void> sendDirectFile(File file, [String? overridePeerId, bool isForwarded = false]) async {
+  Future<void> sendDirectFile(File file,
+      [String? overridePeerId,
+      bool isForwarded = false,
+      String? messageId,
+      bool folder = false]) async {
     final fileName = file.uri.pathSegments.last;
     final fileSize = await file.length();
-    final fileId = const Uuid().v4();
-    final effectivePeerId = (overridePeerId != null && overridePeerId.isNotEmpty)
-        ? overridePeerId
-        : (_activePeerId ?? WanService().activeChatPeerId ?? '');
+    final fileId = messageId ?? const Uuid().v4();
+    final effectivePeerId =
+        (overridePeerId != null && overridePeerId.isNotEmpty)
+            ? overridePeerId
+            : (_activePeerId ?? WanService().activeChatPeerId ?? '');
     if (effectivePeerId.isEmpty) return;
 
     // If WebRTC is currently negotiating/connecting, allow a brief grace period (up to 1500ms)
     if (_dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
         (_state == WanConnectionState.connecting ||
-         _state == WanConnectionState.signaling ||
-         _state == WanConnectionState.negotiating)) {
+            _state == WanConnectionState.signaling ||
+            _state == WanConnectionState.negotiating)) {
       final watch = Stopwatch()..start();
       while (watch.elapsedMilliseconds < 1500 &&
-             _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
-             _state != WanConnectionState.failed &&
-             _state != WanConnectionState.disconnected) {
+          _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen &&
+          _state != WanConnectionState.failed &&
+          _state != WanConnectionState.disconnected) {
         await Future.delayed(const Duration(milliseconds: 100));
       }
     }
@@ -953,8 +1040,7 @@ class WanWebRtcManager extends ChangeNotifier {
         _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen &&
         (overridePeerId == null ||
             overridePeerId == _activePeerId ||
-            overridePeerId == _activePeer?.id ||
-            _activePeerId == null);
+            overridePeerId == _activePeer?.id);
 
     if (!isChannelOpen) {
       // Offline Outbox Queuing for File
@@ -971,7 +1057,8 @@ class WanWebRtcManager extends ChangeNotifier {
         status: 'Queued',
         isForwarded: isForwarded,
       );
-      if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+      if (effectivePeerId == _activePeerId ||
+          effectivePeerId == WanService().activeChatPeerId) {
         _directChatItems.removeWhere((e) => e.id == fileChatItem.id);
         _directChatItems.add(fileChatItem);
         await saveChatHistory(effectivePeerId);
@@ -982,7 +1069,16 @@ class WanWebRtcManager extends ChangeNotifier {
 
       final peerName = _activePeerId == effectivePeerId
           ? (_activePeer?.name ?? 'Peer')
-          : (WanService().trustedDevicesList.firstWhere((d) => d.id == effectivePeerId, orElse: () => WanDevice(id: effectivePeerId, name: 'Peer', platform: '', isOnline: false, isTrusted: true)).name);
+          : (WanService()
+              .trustedDevicesList
+              .firstWhere((d) => d.id == effectivePeerId,
+                  orElse: () => WanDevice(
+                      id: effectivePeerId,
+                      name: 'Peer',
+                      platform: '',
+                      isOnline: false,
+                      isTrusted: true))
+              .name);
 
       await queueOutboxItem(QueuedOutboxItem(
         id: fileId,
@@ -1011,7 +1107,8 @@ class WanWebRtcManager extends ChangeNotifier {
       status: 'sending',
       isForwarded: isForwarded,
     );
-    if (effectivePeerId == _activePeerId || effectivePeerId == WanService().activeChatPeerId) {
+    if (effectivePeerId == _activePeerId ||
+        effectivePeerId == WanService().activeChatPeerId) {
       _directChatItems.removeWhere((e) => e.id == fileChatItem.id);
       _directChatItems.add(fileChatItem);
       await saveChatHistory(effectivePeerId);
@@ -1021,11 +1118,20 @@ class WanWebRtcManager extends ChangeNotifier {
     await HistoryService().addItem(fileChatItem);
     notifyListeners();
 
-    await _streamFileInternal(file, fileId: fileId, fileName: fileName, existingItem: fileChatItem);
+    await _streamFileInternal(file,
+        fileId: fileId,
+        fileName: fileName,
+        existingItem: fileChatItem,
+        folder: folder);
   }
 
-  Future<void> _streamFileInternal(File file, {required String fileId, required String fileName, ChatItem? existingItem}) async {
-    if (_dataChannel == null || _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+  Future<void> _streamFileInternal(File file,
+      {required String fileId,
+      required String fileName,
+      ChatItem? existingItem,
+      bool folder = false}) async {
+    if (_dataChannel == null ||
+        _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
       return;
     }
 
@@ -1038,6 +1144,7 @@ class WanWebRtcManager extends ChangeNotifier {
       fileId: fileId,
       fileName: fileName,
       fileSize: fileSize,
+      folder: folder,
       mimeType: 'application/octet-stream',
       chunkSize: chunkSize,
       totalChunks: totalChunks,
@@ -1064,7 +1171,8 @@ class WanWebRtcManager extends ChangeNotifier {
     DateTime lastNotifyTime = DateTime.now();
 
     await for (final chunk in reader) {
-      if (_state != WanConnectionState.connected || _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
+      if (_state != WanConnectionState.connected ||
+          _dataChannel?.state != RTCDataChannelState.RTCDataChannelOpen) {
         break;
       }
 
@@ -1075,19 +1183,25 @@ class WanWebRtcManager extends ChangeNotifier {
 
       // Backpressure check: if bufferedAmount is high, pause briefly to drain
       while ((_dataChannel?.bufferedAmount ?? 0) > 1024 * 1024) {
+        if (!isConnected || (_activeTransfers[fileId]?.isCancelled ?? false)) {
+          throw StateError('File transfer interrupted');
+        }
         await Future.delayed(const Duration(milliseconds: 2));
       }
 
-      await _dataChannel!.send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(chunk)));
+      await _dataChannel!
+          .send(RTCDataChannelMessage.fromBinary(Uint8List.fromList(chunk)));
       bytesSent += chunk.length;
 
       final now = DateTime.now();
-      if (now.difference(lastNotifyTime).inMilliseconds >= 250 || bytesSent == fileSize) {
+      if (now.difference(lastNotifyTime).inMilliseconds >= 250 ||
+          bytesSent == fileSize) {
         lastNotifyTime = now;
         final elapsed = now.difference(startTime).inMilliseconds / 1000.0;
         final speed = elapsed > 0 ? (bytesSent / (1024 * 1024)) / elapsed : 0.0;
         final remainingBytes = fileSize - bytesSent;
-        final eta = speed > 0 ? (remainingBytes / (speed * 1024 * 1024)).ceil() : 0;
+        final eta =
+            speed > 0 ? (remainingBytes / (speed * 1024 * 1024)).ceil() : 0;
 
         _activeTransfers[fileId] = WanFileTransferProgress(
           fileId: fileId,
@@ -1103,12 +1217,18 @@ class WanWebRtcManager extends ChangeNotifier {
       }
     }
 
-    final targetItem = existingItem ?? _directChatItems.firstWhere((x) => x.id == fileId);
+    final targetItem =
+        existingItem ?? _directChatItems.firstWhere((x) => x.id == fileId);
 
     if (!(_activeTransfers[fileId]?.isCancelled ?? false)) {
+      if (bytesSent != fileSize || !isConnected) {
+        targetItem.status = 'Queued';
+        await HistoryService().addItem(targetItem);
+        throw StateError('File transfer interrupted');
+      }
       // 3. Send File End
       final endMsg = WanDataMessage.fileEnd(fileId: fileId);
-      await _dataChannel!.send(RTCDataChannelMessage(endMsg.toJsonString()));
+      await _sendConfirmed(endMsg, fileId);
 
       _activeTransfers[fileId] = WanFileTransferProgress(
         fileId: fileId,
@@ -1159,8 +1279,10 @@ class WanWebRtcManager extends ChangeNotifier {
 
     if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
-        final cancelMsg = WanDataMessage.fileCancel(fileId: fileId, reason: 'User cancelled');
-        await _dataChannel!.send(RTCDataChannelMessage(cancelMsg.toJsonString()));
+        final cancelMsg =
+            WanDataMessage.fileCancel(fileId: fileId, reason: 'User cancelled');
+        await _dataChannel!
+            .send(RTCDataChannelMessage(cancelMsg.toJsonString()));
       } catch (_) {}
     }
 
@@ -1169,20 +1291,66 @@ class WanWebRtcManager extends ChangeNotifier {
     }
   }
 
-  void _handleTextMessage(String rawJson) {
+  Future<void> _sendConfirmed(WanDataMessage message, String id) async {
+    if (_handshakeReceived != null) {
+      await _handshakeReceived!.future
+          .timeout(const Duration(seconds: 2), onTimeout: () {});
+    }
+    final requiresAck = _remoteDeliveryAck;
+    final confirmation = Completer<bool>();
+    if (requiresAck) _deliveryWaiters[id] = confirmation;
+    try {
+      await _dataChannel!.send(RTCDataChannelMessage(message.toJsonString()));
+      if (requiresAck &&
+          !await confirmation.future.timeout(const Duration(seconds: 60))) {
+        throw StateError('Receiver could not save the message or file');
+      }
+    } finally {
+      _deliveryWaiters.remove(id);
+    }
+  }
+
+  Future<void> _sendDeliveryAck(String id, bool delivered) async {
+    await _dataChannel?.send(RTCDataChannelMessage(jsonEncode({
+      'type': 'delivery_ack',
+      'id': id,
+      'status': delivered ? 'delivered' : 'failed',
+    })));
+  }
+
+  Future<void> _handleTextMessage(String rawJson) async {
     try {
       final map = jsonDecode(rawJson) as Map<String, dynamic>;
       final type = map['type'] as String?;
+      if (type == 'delivery_ack') {
+        final pending = _deliveryWaiters[map['id']];
+        if (pending != null && !pending.isCompleted) {
+          pending.complete(map['status'] == 'delivered');
+        }
+        return;
+      }
       if (type == 'handshake_syn') {
+        _remoteDeliveryAck = map['deliveryAck'] == true;
+        if (_handshakeReceived != null && !_handshakeReceived!.isCompleted) {
+          _handshakeReceived!.complete();
+        }
         _sessionTimeoutTimer?.cancel();
         _setState(WanConnectionState.connected);
         try {
           _dataChannel?.send(RTCDataChannelMessage(
-            jsonEncode({'type': 'handshake_ack', 'senderId': _wanService.deviceId}),
+            jsonEncode({
+              'type': 'handshake_ack',
+              'senderId': _wanService.deviceId,
+              'deliveryAck': true
+            }),
           ));
         } catch (_) {}
         return;
       } else if (type == 'handshake_ack') {
+        _remoteDeliveryAck = map['deliveryAck'] == true;
+        if (_handshakeReceived != null && !_handshakeReceived!.isCompleted) {
+          _handshakeReceived!.complete();
+        }
         _sessionTimeoutTimer?.cancel();
         _setState(WanConnectionState.connected);
         return;
@@ -1198,6 +1366,10 @@ class WanWebRtcManager extends ChangeNotifier {
         final replyToText = msg.payload?['replyToText'] as String?;
         final isForwarded = msg.payload?['isForwarded'] == true;
 
+        if (_directChatItems.any((item) => item.id == msg.id)) {
+          await _sendDeliveryAck(msg.id, true);
+          return;
+        }
         final item = ChatItem(
           id: msg.id,
           peerId: _activePeerId ?? '',
@@ -1214,7 +1386,8 @@ class WanWebRtcManager extends ChangeNotifier {
         );
         _directChatItems.add(item);
         saveChatHistory();
-        HistoryService().addItem(item);
+        await HistoryService().addItem(item);
+        await _sendDeliveryAck(msg.id, true);
 
         final isChatOpen = _wanService.isAppInForeground &&
             _activePeerId != null &&
@@ -1233,22 +1406,37 @@ class WanWebRtcManager extends ChangeNotifier {
         break;
 
       case WanDataMessageType.fileMeta:
+        if (_currentReceivingFileId != null) {
+          await _closeCurrentFileSink(isComplete: false);
+        }
+        _currentSavedFilePath = null;
+        _currentReceivingFolder = msg.payload?['folder'] == true;
         _currentReceivingFileId = msg.payload?['transferId'] as String?;
-        _currentReceivingFileName = msg.payload?['fileName'] as String? ?? 'received_file';
+        _currentReceivingFileName =
+            msg.payload?['fileName'] as String? ?? 'received_file';
         _currentReceivingFileSize = msg.payload?['fileSize'] as int? ?? 0;
         _currentReceivingBytes = 0;
         _isCurrentTransferCancelled = false;
         _transferStartTime = DateTime.now();
 
-        _prepareFileSink(_currentReceivingFileName!);
+        await _prepareFileSink(_currentReceivingFileName!);
         break;
 
       case WanDataMessageType.fileEnd:
-        _closeCurrentFileSink(isComplete: true);
+        final receivedFileId = _currentReceivingFileId;
+        await _closeCurrentFileSink(
+            isComplete: _currentFileSink != null &&
+                _currentReceivingBytes == _currentReceivingFileSize);
+        if (receivedFileId != null) {
+          await _sendDeliveryAck(receivedFileId,
+              _activeTransfers[receivedFileId]?.isCompleted == true);
+        }
         break;
 
       case WanDataMessageType.fileCancel:
-        final cancelId = msg.payload?['transferId'] as String? ?? msg.payload?['fileId'] as String? ?? _currentReceivingFileId;
+        final cancelId = msg.payload?['transferId'] as String? ??
+            msg.payload?['fileId'] as String? ??
+            _currentReceivingFileId;
         if (cancelId != null && _activeTransfers.containsKey(cancelId)) {
           final t = _activeTransfers[cancelId]!;
           _activeTransfers[cancelId] = WanFileTransferProgress(
@@ -1277,7 +1465,8 @@ class WanWebRtcManager extends ChangeNotifier {
       case WanDataMessageType.ping:
         if (_dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
           try {
-            _dataChannel!.send(RTCDataChannelMessage(WanDataMessage.pong().toJsonString()));
+            _dataChannel!.send(
+                RTCDataChannelMessage(WanDataMessage.pong().toJsonString()));
           } catch (_) {}
         }
         break;
@@ -1291,6 +1480,7 @@ class WanWebRtcManager extends ChangeNotifier {
             for (final item in _directChatItems) {
               if (item.id == targetId) {
                 item.reaction = item.reaction == emoji ? null : emoji;
+                await HistoryService().addItem(item);
                 saveChatHistory();
                 notifyListeners();
                 break;
@@ -1322,7 +1512,12 @@ class WanWebRtcManager extends ChangeNotifier {
 
   Future<void> _prepareFileSink(String fileName) async {
     try {
-      final dir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+      fileName = fileName.replaceAll('\\', '/').split('/').last;
+      if (fileName.isEmpty || fileName == '.' || fileName == '..') {
+        fileName = 'received_file';
+      }
+      final dir = await getExternalStorageDirectory() ??
+          await getApplicationDocumentsDirectory();
       final downloadDir = Directory('${dir.path}/NearMitra/Downloads');
       if (!await downloadDir.exists()) {
         await downloadDir.create(recursive: true);
@@ -1332,9 +1527,11 @@ class WanWebRtcManager extends ChangeNotifier {
       var savePath = '${downloadDir.path}/$fileName';
       if (await File(savePath).exists()) {
         final extIndex = fileName.lastIndexOf('.');
-        final nameWithoutExt = extIndex != -1 ? fileName.substring(0, extIndex) : fileName;
+        final nameWithoutExt =
+            extIndex != -1 ? fileName.substring(0, extIndex) : fileName;
         final ext = extIndex != -1 ? fileName.substring(extIndex) : '';
-        savePath = '${downloadDir.path}/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext';
+        savePath =
+            '${downloadDir.path}/${nameWithoutExt}_${DateTime.now().millisecondsSinceEpoch}$ext';
       }
 
       _currentSavedFilePath = savePath;
@@ -1381,12 +1578,15 @@ class WanWebRtcManager extends ChangeNotifier {
       _currentReceivingBytes += binary.length;
 
       final now = DateTime.now();
-      if (now.difference(_lastReceiverNotifyTime).inMilliseconds >= 250 || _currentReceivingBytes == _currentReceivingFileSize) {
+      if (now.difference(_lastReceiverNotifyTime).inMilliseconds >= 250 ||
+          _currentReceivingBytes == _currentReceivingFileSize) {
         _lastReceiverNotifyTime = now;
         final elapsed = _transferStartTime != null
             ? now.difference(_transferStartTime!).inMilliseconds / 1000.0
             : 1.0;
-        final speed = elapsed > 0 ? (_currentReceivingBytes / (1024 * 1024)) / elapsed : 0.0;
+        final speed = elapsed > 0
+            ? (_currentReceivingBytes / (1024 * 1024)) / elapsed
+            : 0.0;
         final remaining = _currentReceivingFileSize - _currentReceivingBytes;
         final eta = speed > 0 ? (remaining / (speed * 1024 * 1024)).ceil() : 0;
 
@@ -1412,8 +1612,39 @@ class WanWebRtcManager extends ChangeNotifier {
       try {
         await _currentFileSink!.flush();
         await _currentFileSink!.close();
-      } catch (_) {}
+      } catch (error) {
+        isComplete = false;
+        debugPrint('[WanWebRtc] File write failed: $error');
+      }
       _currentFileSink = null;
+    }
+
+    if (isComplete &&
+        _currentReceivingFolder &&
+        _currentSavedFilePath != null) {
+      final archive = File(_currentSavedFilePath!);
+      final name = (_currentReceivingFileName ?? 'Folder')
+          .replaceFirst(RegExp(r'\.zip$'), '');
+      final destination =
+          '${archive.parent.path}/${name}_${DateTime.now().millisecondsSinceEpoch}';
+      try {
+        await Directory(destination).create(recursive: true);
+        await extractFileToDisk(archive.path, destination);
+        await archive.delete();
+        _currentSavedFilePath = destination;
+        final index = _directChatItems
+            .indexWhere((item) => item.id == _currentReceivingFileId);
+        if (index >= 0) {
+          _directChatItems[index] = ChatItem.fromJson({
+            ..._directChatItems[index].toJson(),
+            'filePath': destination,
+            'kind': 'folder',
+          });
+        }
+      } catch (error) {
+        isComplete = false;
+        debugPrint('[WanWebRtc] Folder extraction failed: $error');
+      }
     }
 
     if (!isComplete && _currentSavedFilePath != null) {
@@ -1451,19 +1682,20 @@ class WanWebRtcManager extends ChangeNotifier {
       saveChatHistory();
 
       if (isComplete) {
-        final itemToSave = receivedItem ?? ChatItem(
-          id: _currentReceivingFileId ?? const Uuid().v4(),
-          peerId: _activePeerId ?? '',
-          sender: _activePeer?.name ?? 'WAN Peer',
-          mine: false,
-          createdAt: DateTime.now(),
-          kind: ChatKind.file,
-          fileName: _currentReceivingFileName,
-          filePath: _currentSavedFilePath,
-          fileSize: _currentReceivingFileSize,
-          status: 'received',
-        );
-        HistoryService().addItem(itemToSave);
+        final itemToSave = receivedItem ??
+            ChatItem(
+              id: _currentReceivingFileId ?? const Uuid().v4(),
+              peerId: _activePeerId ?? '',
+              sender: _activePeer?.name ?? 'WAN Peer',
+              mine: false,
+              createdAt: DateTime.now(),
+              kind: ChatKind.file,
+              fileName: _currentReceivingFileName,
+              filePath: _currentSavedFilePath,
+              fileSize: _currentReceivingFileSize,
+              status: 'received',
+            );
+        await HistoryService().addItem(itemToSave);
 
         final isChatOpen = _wanService.isAppInForeground &&
             _activePeerId != null &&
@@ -1490,18 +1722,25 @@ class WanWebRtcManager extends ChangeNotifier {
     if (bytes <= 0) return '0 B';
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   /// Disconnect active WebRTC session and free all resources
   Future<void> disconnect({bool notifyRemote = true}) async {
     _isManuallyDisconnected = true;
+    for (final pending in _deliveryWaiters.values) {
+      if (!pending.isCompleted) pending.complete(false);
+    }
+    _deliveryWaiters.clear();
     _reconnectTimer?.cancel();
     _sessionTimeoutTimer?.cancel();
     _stopHeartbeat();
 
-    if (notifyRemote && _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
+    if (notifyRemote &&
+        _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
         final msg = WanDataMessage.control('disconnect');
         await _dataChannel!.send(RTCDataChannelMessage(msg.toJsonString()));

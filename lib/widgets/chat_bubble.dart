@@ -12,12 +12,14 @@ class ChatBubble extends StatefulWidget {
     super.key,
     required this.item,
     this.onCancel,
+    this.compact = false,
     this.onReact,
     this.onReply,
     this.onForward,
   });
 
   final ChatItem item;
+  final bool compact;
   final VoidCallback? onCancel;
   final ValueChanged<String>? onReact;
   final ValueChanged<ChatItem>? onReply;
@@ -27,7 +29,8 @@ class ChatBubble extends StatefulWidget {
   State<ChatBubble> createState() => _ChatBubbleState();
 }
 
-class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateMixin {
+class _ChatBubbleState extends State<ChatBubble>
+    with SingleTickerProviderStateMixin {
   double _dragOffset = 0.0;
   static const double _replyThreshold = 48.0;
   static const double _maxDragOffset = 70.0;
@@ -61,7 +64,8 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
     if (details.primaryDelta == null) return;
 
     // Only allow swiping to the right (WhatsApp standard)
-    final newOffset = (_dragOffset + details.primaryDelta!).clamp(0.0, _maxDragOffset);
+    final newOffset =
+        (_dragOffset + details.primaryDelta!).clamp(0.0, _maxDragOffset);
     if (newOffset != _dragOffset) {
       if (_dragOffset < _replyThreshold && newOffset >= _replyThreshold) {
         HapticFeedback.lightImpact();
@@ -129,7 +133,8 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                         icon: const Icon(Icons.close_rounded, size: 22),
                         color: isDark ? Colors.white70 : Colors.black54,
                         padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        constraints:
+                            const BoxConstraints(minWidth: 36, minHeight: 36),
                         splashRadius: 20,
                         onPressed: () => Navigator.pop(ctx),
                         tooltip: 'Close',
@@ -141,10 +146,14 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                 // Floating Reactions Row
                 if (widget.onReact != null)
                   Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    margin:
+                        const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF111B21) : const Color(0xFFF1F5F9),
+                      color: isDark
+                          ? const Color(0xFF111B21)
+                          : const Color(0xFFF1F5F9),
                       borderRadius: BorderRadius.circular(28),
                     ),
                     child: Row(
@@ -164,9 +173,13 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                 // Reply Option
                 if (widget.onReply != null)
                   ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
-                    leading: const Icon(Icons.reply_rounded, color: Color(0xFF25D366), size: 24),
-                    title: const Text('Reply', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
+                    leading: const Icon(Icons.reply_rounded,
+                        color: Color(0xFF25D366), size: 24),
+                    title: const Text('Reply',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16)),
                     onTap: () {
                       Navigator.pop(ctx);
                       widget.onReply?.call(item);
@@ -176,9 +189,13 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                 // Forward Option
                 if (widget.onForward != null)
                   ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
-                    leading: const Icon(Icons.shortcut_rounded, color: Color(0xFF3B82F6), size: 24),
-                    title: const Text('Forward', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
+                    leading: const Icon(Icons.shortcut_rounded,
+                        color: Color(0xFF3B82F6), size: 24),
+                    title: const Text('Forward',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16)),
                     onTap: () {
                       Navigator.pop(ctx);
                       widget.onForward?.call(item);
@@ -187,11 +204,15 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
 
                 // Copy Option (Text or File Name/Path)
                 ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
-                  leading: Icon(Icons.copy_rounded, color: isDark ? Colors.white70 : Colors.black87, size: 24),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
+                  leading: Icon(Icons.copy_rounded,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                      size: 24),
                   title: Text(
                     item.kind == ChatKind.text ? 'Copy Text' : 'Copy File Name',
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 16),
                   ),
                   onTap: () {
                     Navigator.pop(ctx);
@@ -202,7 +223,9 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                       Clipboard.setData(ClipboardData(text: textToCopy));
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(item.kind == ChatKind.text ? 'Message copied to clipboard' : 'File info copied'),
+                          content: Text(item.kind == ChatKind.text
+                              ? 'Message copied to clipboard'
+                              : 'File info copied'),
                           duration: const Duration(seconds: 2),
                           behavior: SnackBarBehavior.floating,
                         ),
@@ -213,13 +236,20 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
 
                 // Share Option (Text or File)
                 ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
-                  leading: Icon(Icons.share_rounded, color: isDark ? Colors.white70 : Colors.black87, size: 24),
-                  title: const Text('Share…', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
+                  leading: Icon(Icons.share_rounded,
+                      color: isDark ? Colors.white70 : Colors.black87,
+                      size: 24),
+                  title: const Text('Share…',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
                   onTap: () async {
                     Navigator.pop(ctx);
                     try {
-                      if (item.kind == ChatKind.text && item.text != null && item.text!.isNotEmpty) {
+                      if (item.kind == ChatKind.text &&
+                          item.text != null &&
+                          item.text!.isNotEmpty) {
                         await Share.share(item.text!);
                       } else if (item.filePath != null) {
                         final file = File(item.filePath!);
@@ -236,9 +266,15 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                 // Cancel Queued Option
                 if (widget.onCancel != null)
                   ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
-                    leading: const Icon(Icons.close_rounded, color: Colors.redAccent, size: 24),
-                    title: const Text('Cancel message', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600, fontSize: 16)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 22, vertical: 2),
+                    leading: const Icon(Icons.close_rounded,
+                        color: Colors.redAccent, size: 24),
+                    title: const Text('Cancel message',
+                        style: TextStyle(
+                            color: Colors.redAccent,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16)),
                     onTap: () {
                       Navigator.pop(ctx);
                       widget.onCancel?.call();
@@ -291,7 +327,9 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isDark ? Colors.black.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.06),
+        color: isDark
+            ? Colors.black.withValues(alpha: 0.25)
+            : Colors.black.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
@@ -349,7 +387,7 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
 
     // WhatsApp-style Color Palette + AI Mode Colors
     final bg = mine
-        ? (isDark ? const Color(0xFF005C4B) : const Color(0xFFDCF8C6))
+        ? (isDark ? const Color(0xFF005C4B) : const Color(0xFFD9FDD3))
         : (item.isAi
             ? (isAiWarning
                 ? (isDark ? const Color(0xFF3F2A1D) : const Color(0xFFFFF3E0))
@@ -367,10 +405,10 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
         : (isDark ? Colors.white54 : Colors.black45);
 
     final radius = BorderRadius.only(
-      topLeft: const Radius.circular(16),
-      topRight: const Radius.circular(16),
-      bottomLeft: Radius.circular(mine ? 16 : 4),
-      bottomRight: Radius.circular(mine ? 4 : 16),
+      topLeft: Radius.circular(mine ? 10 : 3),
+      topRight: Radius.circular(mine ? 3 : 10),
+      bottomLeft: const Radius.circular(10),
+      bottomRight: const Radius.circular(10),
     );
 
     final swipeProgress = (_dragOffset / _replyThreshold).clamp(0.0, 1.0);
@@ -394,12 +432,15 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                     width: 32,
                     height: 32,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF25D366).withValues(alpha: 0.2 + (0.8 * (swipeProgress == 1.0 ? 1 : 0))),
+                      color: const Color(0xFF25D366).withValues(
+                          alpha: 0.2 + (0.8 * (swipeProgress == 1.0 ? 1 : 0))),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
                       Icons.reply_rounded,
-                      color: swipeProgress >= 1.0 ? Colors.white : const Color(0xFF25D366),
+                      color: swipeProgress >= 1.0
+                          ? Colors.white
+                          : const Color(0xFF25D366),
                       size: 18,
                     ),
                   ),
@@ -421,9 +462,10 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                     ),
                     margin: EdgeInsets.only(
                       top: 4,
-                      bottom: (item.reaction != null && item.reaction!.isNotEmpty)
-                          ? 12
-                          : 4,
+                      bottom:
+                          (item.reaction != null && item.reaction!.isNotEmpty)
+                              ? 12
+                              : 4,
                       left: 8,
                       right: 8,
                     ),
@@ -434,13 +476,16 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                       border: item.isAi && !mine
                           ? Border.all(
                               color: isAiWarning
-                                  ? const Color(0xFFFFA726).withValues(alpha: 0.5)
-                                  : const Color(0xFF10B981).withValues(alpha: 0.4),
+                                  ? const Color(0xFFFFA726)
+                                      .withValues(alpha: 0.5)
+                                  : const Color(0xFF10B981)
+                                      .withValues(alpha: 0.4),
                             )
                           : null,
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
+                          color: Colors.black
+                              .withValues(alpha: isDark ? 0.2 : 0.05),
                           blurRadius: 3,
                           offset: const Offset(0, 1.5),
                         ),
@@ -466,7 +511,8 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontStyle: FontStyle.italic,
-                                  color: isDark ? Colors.white54 : Colors.black45,
+                                  color:
+                                      isDark ? Colors.white54 : Colors.black45,
                                 ),
                               ),
                             ],
@@ -475,15 +521,19 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                         ],
 
                         // Sender Name (if incoming)
-                        if (!mine) ...[
+                        if (!mine && (!widget.compact || item.isAi)) ...[
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               if (item.isAi) ...[
                                 Icon(
-                                  isAiWarning ? Icons.info_outline_rounded : Icons.auto_awesome_rounded,
+                                  isAiWarning
+                                      ? Icons.info_outline_rounded
+                                      : Icons.auto_awesome_rounded,
                                   size: 14,
-                                  color: isAiWarning ? const Color(0xFFFB8C00) : const Color(0xFF10B981),
+                                  color: isAiWarning
+                                      ? const Color(0xFFFB8C00)
+                                      : const Color(0xFF10B981),
                                 ),
                                 const SizedBox(width: 4),
                               ],
@@ -495,21 +545,29 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                       senderName = 'System Notice';
                                     } else {
                                       senderName = senderName.replaceAll(
-                                        RegExp(r'\b(AI|Ai)\s+(AI|Ai)\b', caseSensitive: false),
+                                        RegExp(r'\b(AI|Ai)\s+(AI|Ai)\b',
+                                            caseSensitive: false),
                                         'AI',
                                       );
                                     }
                                   }
-                                  return Text(
+                                  return Flexible(
+                                      child: Text(
                                     senderName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontSize: 12.5,
                                       fontWeight: FontWeight.bold,
                                       color: item.isAi
-                                          ? (isAiWarning ? const Color(0xFFFB8C00) : const Color(0xFF10B981))
-                                          : (isDark ? const Color(0xFF53BDEB) : const Color(0xFF075E54)),
+                                          ? (isAiWarning
+                                              ? const Color(0xFFFB8C00)
+                                              : const Color(0xFF10B981))
+                                          : (isDark
+                                              ? const Color(0xFF53BDEB)
+                                              : const Color(0xFF075E54)),
                                     ),
-                                  );
+                                  ));
                                 },
                               ),
                             ],
@@ -529,16 +587,27 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                     data: item.text ?? '',
                                     selectable: true,
                                     styleSheet: MarkdownStyleSheet(
-                                      p: TextStyle(color: textColor, fontSize: 14.5, height: 1.38),
-                                      strong: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+                                      p: TextStyle(
+                                          color: textColor,
+                                          fontSize: 14.5,
+                                          height: 1.38),
+                                      strong: TextStyle(
+                                          color: textColor,
+                                          fontWeight: FontWeight.bold),
                                       code: TextStyle(
-                                        color: isDark ? const Color(0xFF818CF8) : const Color(0xFF3730A3),
-                                        backgroundColor: isDark ? Colors.black38 : const Color(0xFFEEF2FF),
+                                        color: isDark
+                                            ? const Color(0xFF818CF8)
+                                            : const Color(0xFF3730A3),
+                                        backgroundColor: isDark
+                                            ? Colors.black38
+                                            : const Color(0xFFEEF2FF),
                                         fontFamily: 'monospace',
                                         fontSize: 13,
                                       ),
                                       codeblockDecoration: BoxDecoration(
-                                        color: isDark ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+                                        color: isDark
+                                            ? const Color(0xFF0F172A)
+                                            : const Color(0xFFF1F5F9),
                                         borderRadius: BorderRadius.circular(8),
                                       ),
                                     ),
@@ -547,7 +616,7 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                     item.text ?? '',
                                     style: TextStyle(
                                       color: textColor,
-                                      fontSize: 15,
+                                      fontSize: 15.5,
                                       height: 1.35,
                                     ),
                                   ),
@@ -559,7 +628,9 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
 
                         // Footer (Time, Copy, Share, Mesh, Status)
                         Row(
-                          mainAxisSize: MainAxisSize.max,
+                          mainAxisSize: widget.compact
+                              ? MainAxisSize.min
+                              : MainAxisSize.max,
                           mainAxisAlignment: MainAxisAlignment.end,
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
@@ -567,11 +638,14 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                               InkWell(
                                 borderRadius: BorderRadius.circular(6),
                                 onTap: () {
-                                  if (item.text != null && item.text!.isNotEmpty) {
-                                    Clipboard.setData(ClipboardData(text: item.text!));
+                                  if (item.text != null &&
+                                      item.text!.isNotEmpty) {
+                                    Clipboard.setData(
+                                        ClipboardData(text: item.text!));
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
-                                        content: Text('AI response copied to clipboard'),
+                                        content: Text(
+                                            'AI response copied to clipboard'),
                                         duration: Duration(seconds: 2),
                                         behavior: SnackBarBehavior.floating,
                                       ),
@@ -579,12 +653,18 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                   }
                                 },
                                 child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 2),
                                   child: Row(
                                     children: [
-                                      Icon(Icons.copy_rounded, size: 13, color: timeColor),
+                                      Icon(Icons.copy_rounded,
+                                          size: 13, color: timeColor),
                                       const SizedBox(width: 3),
-                                      Text('Copy', style: TextStyle(fontSize: 10.5, color: timeColor, fontWeight: FontWeight.w600)),
+                                      Text('Copy',
+                                          style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: timeColor,
+                                              fontWeight: FontWeight.w600)),
                                     ],
                                   ),
                                 ),
@@ -593,18 +673,22 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                               InkWell(
                                 borderRadius: BorderRadius.circular(6),
                                 onTap: () async {
-                                  if (item.text != null && item.text!.isNotEmpty) {
+                                  if (item.text != null &&
+                                      item.text!.isNotEmpty) {
                                     try {
                                       await Share.share(
                                         item.text!,
                                         subject: 'NearMitra AI Response',
                                       );
                                     } catch (_) {
-                                      Clipboard.setData(ClipboardData(text: item.text!));
+                                      Clipboard.setData(
+                                          ClipboardData(text: item.text!));
                                       if (context.mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
                                           const SnackBar(
-                                            content: Text('AI response copied to clipboard'),
+                                            content: Text(
+                                                'AI response copied to clipboard'),
                                             duration: Duration(seconds: 2),
                                             behavior: SnackBarBehavior.floating,
                                           ),
@@ -614,12 +698,18 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                   }
                                 },
                                 child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 2),
                                   child: Row(
                                     children: [
-                                      Icon(Icons.share_rounded, size: 13, color: timeColor),
+                                      Icon(Icons.share_rounded,
+                                          size: 13, color: timeColor),
                                       const SizedBox(width: 3),
-                                      Text('Share', style: TextStyle(fontSize: 10.5, color: timeColor, fontWeight: FontWeight.w600)),
+                                      Text('Share',
+                                          style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: timeColor,
+                                              fontWeight: FontWeight.w600)),
                                     ],
                                   ),
                                 ),
@@ -627,18 +717,22 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                             ],
                             if (item.isMeshRelay) ...[
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 1.5),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                                  color: const Color(0xFF10B981)
+                                      .withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(6),
                                 ),
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.hub_rounded, size: 11, color: Color(0xFF10B981)),
+                                    const Icon(Icons.hub_rounded,
+                                        size: 11, color: Color(0xFF10B981)),
                                     const SizedBox(width: 3),
                                     Text(
-                                      item.relayHops != null && item.relayHops!.length > 1
+                                      item.relayHops != null &&
+                                              item.relayHops!.length > 1
                                           ? 'Mesh (${item.relayHops!.length - 1} hops)'
                                           : 'Mesh',
                                       style: const TextStyle(
@@ -652,7 +746,7 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                               ),
                               const SizedBox(width: 6),
                             ],
-                            const Spacer(),
+                            if (!widget.compact) const Spacer(),
                             Text(
                               item.formattedTime,
                               style: TextStyle(
@@ -665,16 +759,21 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                               const SizedBox(width: 4),
                               if (item.status == 'Queued') ...[
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 1.5),
                                   decoration: BoxDecoration(
-                                    color: const Color(0xFFF59E0B).withValues(alpha: 0.2),
+                                    color: const Color(0xFFF59E0B)
+                                        .withValues(alpha: 0.2),
                                     borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.5)),
+                                    border: Border.all(
+                                        color: const Color(0xFFF59E0B)
+                                            .withValues(alpha: 0.5)),
                                   ),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.schedule_rounded, size: 11, color: Color(0xFFF59E0B)),
+                                      const Icon(Icons.schedule_rounded,
+                                          size: 11, color: Color(0xFFF59E0B)),
                                       const SizedBox(width: 3),
                                       const Text(
                                         'Queued',
@@ -688,8 +787,11 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                         const SizedBox(width: 4),
                                         InkWell(
                                           onTap: widget.onCancel,
-                                          borderRadius: BorderRadius.circular(4),
-                                          child: const Icon(Icons.close_rounded, size: 12, color: Color(0xFFEF4444)),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                          child: const Icon(Icons.close_rounded,
+                                              size: 12,
+                                              color: Color(0xFFEF4444)),
                                         ),
                                       ],
                                     ],
@@ -699,7 +801,8 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                 const Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    Icon(Icons.block_rounded, size: 13, color: Color(0xFFEF4444)),
+                                    Icon(Icons.block_rounded,
+                                        size: 13, color: Color(0xFFEF4444)),
                                     SizedBox(width: 3),
                                     Text('Cancelled',
                                         style: TextStyle(
@@ -708,12 +811,15 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                                             fontWeight: FontWeight.bold)),
                                   ],
                                 ),
-                              ] else if (item.kind != ChatKind.text && (item.status == 'Sending…' || item.status == 'sending' || item.status == 'downloading')) ...[
-                                const SizedBox(
+                              ] else if (item.kind != ChatKind.text &&
+                                  (item.status == 'Sending…' ||
+                                      item.status == 'sending' ||
+                                      item.status == 'downloading')) ...[
+                                SizedBox(
                                   width: 11,
                                   height: 11,
                                   child: CircularProgressIndicator(
-                                      strokeWidth: 1.5, color: Colors.white70),
+                                      strokeWidth: 1.5, color: timeColor),
                                 ),
                               ] else ...[
                                 const Icon(
@@ -738,9 +844,11 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                       child: GestureDetector(
                         onTap: () => _showContextMenu(context),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF1E293B) : Colors.white,
+                            color:
+                                isDark ? const Color(0xFF1E293B) : Colors.white,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                               color: isDark ? Colors.white24 : Colors.black12,
@@ -770,50 +878,77 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
     );
   }
 
-  Future<void> _openFileOrCopyPath(BuildContext context, String filePath) async {
+  Future<void> _openFileOrCopyPath(
+      BuildContext context, String filePath) async {
     await FileOpenerService.openOrInstallFile(context, filePath);
   }
 
   Widget _buildFileCard(BuildContext context, bool isDark, Color textColor) {
     final item = widget.item;
     final isFolder = item.kind == ChatKind.folder;
-    final fileName = item.fileName ?? item.filePath?.split(RegExp(r'[/\\]')).last ?? 'Attachment';
+    final fileName = item.fileName ??
+        item.filePath?.split(RegExp(r'[/\\]')).last ??
+        'Attachment';
     final isApk = FileOpenerService.isApkFile(fileName);
-    final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+    final ext =
+        fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
 
     IconData fileIcon = Icons.insert_drive_file_rounded;
-    Color iconBgColor = item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54);
+    Color iconBgColor =
+        item.mine ? const Color(0xFF169B62) : const Color(0xFF075E54);
 
     if (isApk) {
       fileIcon = Icons.android_rounded;
       iconBgColor = const Color(0xFF10B981);
-    } else if (isFolder || ext == 'zip' || ext == 'rar' || ext == '7z' || ext == 'tar' || ext == 'gz') {
+    } else if (isFolder ||
+        ext == 'zip' ||
+        ext == 'rar' ||
+        ext == '7z' ||
+        ext == 'tar' ||
+        ext == 'gz') {
       fileIcon = isFolder ? Icons.folder_rounded : Icons.folder_zip_rounded;
       iconBgColor = const Color(0xFFF59E0B);
-    } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].contains(ext)) {
+    } else if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg']
+        .contains(ext)) {
       fileIcon = Icons.image_rounded;
       iconBgColor = const Color(0xFF3B82F6);
     } else if (['mp4', 'mkv', 'mov', 'avi', 'webm', '3gp'].contains(ext)) {
       fileIcon = Icons.video_file_rounded;
       iconBgColor = const Color(0xFF8B5CF6);
-    } else if (['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus'].contains(ext)) {
+    } else if (['mp3', 'm4a', 'wav', 'aac', 'flac', 'ogg', 'opus']
+        .contains(ext)) {
       fileIcon = Icons.audiotrack_rounded;
       iconBgColor = const Color(0xFFEC4899);
     } else if (ext == 'pdf') {
       fileIcon = Icons.picture_as_pdf_rounded;
       iconBgColor = const Color(0xFFEF4444);
-    } else if (['doc', 'docx', 'txt', 'rtf', 'pdf', 'csv', 'xls', 'xlsx', 'ppt', 'pptx'].contains(ext)) {
+    } else if ([
+      'doc',
+      'docx',
+      'txt',
+      'rtf',
+      'pdf',
+      'csv',
+      'xls',
+      'xlsx',
+      'ppt',
+      'pptx'
+    ].contains(ext)) {
       fileIcon = Icons.description_rounded;
       iconBgColor = const Color(0xFF0EA5E9);
     }
 
     return InkWell(
-      onTap: item.filePath == null ? null : () => _openFileOrCopyPath(context, item.filePath!),
+      onTap: item.filePath == null
+          ? null
+          : () => _openFileOrCopyPath(context, item.filePath!),
       borderRadius: BorderRadius.circular(14),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         decoration: BoxDecoration(
-          color: isDark ? Colors.black.withValues(alpha: 0.25) : Colors.black.withValues(alpha: 0.04),
+          color: isDark
+              ? Colors.black.withValues(alpha: 0.25)
+              : Colors.black.withValues(alpha: 0.04),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: isDark ? Colors.white12 : Colors.black12,
@@ -873,7 +1008,9 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                       ),
                       Text(
                         ' • ',
-                        style: TextStyle(color: textColor.withValues(alpha: 0.5), fontSize: 11),
+                        style: TextStyle(
+                            color: textColor.withValues(alpha: 0.5),
+                            fontSize: 11),
                       ),
                       Text(
                         isApk
@@ -884,7 +1021,9 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
                               ? const Color(0xFF10B981)
                               : textColor.withValues(alpha: 0.7),
                           fontSize: 11,
-                          fontWeight: isApk && !item.mine ? FontWeight.bold : FontWeight.w500,
+                          fontWeight: isApk && !item.mine
+                              ? FontWeight.bold
+                              : FontWeight.w500,
                         ),
                       ),
                     ],
@@ -896,13 +1035,21 @@ class _ChatBubbleState extends State<ChatBubble> with SingleTickerProviderStateM
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
+                color: isDark
+                    ? Colors.white10
+                    : Colors.black.withValues(alpha: 0.05),
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                isApk ? Icons.install_mobile_rounded : (item.mine ? Icons.file_present_rounded : Icons.open_in_new_rounded),
+                isApk
+                    ? Icons.install_mobile_rounded
+                    : (item.mine
+                        ? Icons.file_present_rounded
+                        : Icons.open_in_new_rounded),
                 size: 16,
-                color: isApk ? const Color(0xFF10B981) : textColor.withValues(alpha: 0.7),
+                color: isApk
+                    ? const Color(0xFF10B981)
+                    : textColor.withValues(alpha: 0.7),
               ),
             ),
           ],

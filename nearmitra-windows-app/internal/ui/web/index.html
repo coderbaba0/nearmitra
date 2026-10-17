@@ -955,29 +955,44 @@
         <div id="voiceDashboardView" style="padding:16px; display:flex; flex-direction:column; gap:16px; width:100%; box-sizing:border-box;">
           
           <!-- Target Peer Selector Banner -->
-          <div style="background:rgba(15,23,42,0.85); border:1px solid rgba(56,189,248,0.25); border-radius:12px; padding:14px 18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div style="background:var(--bg-card); border:1px solid rgba(56,189,248,0.25); border-radius:12px; padding:14px 18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
             <div style="display:flex; align-items:center; gap:10px;">
               <div style="width:36px; height:36px; border-radius:8px; background:rgba(16,185,129,0.15); display:flex; align-items:center; justify-content:center; color:var(--primary-emerald);">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><line x1="12" x2="12.01" y1="18" y2="18"/></svg>
               </div>
               <div>
-                <strong style="font-size:13.5px; color:#FFF;">Select Target Device for Audio / Call:</strong>
+                <strong style="font-size:13.5px; color:var(--text-title);">Select Target Device for Audio / Call:</strong>
                 <div style="font-size:11px; color:var(--text-muted);">Choose a discovered phone, laptop or audio speaker on your local Wi-Fi</div>
               </div>
             </div>
 
             <div style="min-width:280px;">
-              <select id="audioPeerSelect" class="form-select" onchange="onAudioTargetPeerChanged(this.value)" style="background:#090d16; border:1px solid rgba(255,255,255,0.15); color:#FFF; font-size:12.5px; padding:8px 12px; border-radius:6px; width:100%;">
+              <select id="audioPeerSelect" class="form-select" onchange="onAudioTargetPeerChanged(this.value)" style="background:var(--bg-card); border:1px solid var(--border-color); color:var(--text-title); font-size:12.5px; padding:8px 12px; border-radius:6px; width:100%;">
                 <!-- Populated dynamically -->
               </select>
             </div>
           </div>
 
+          <div class="audio-source-settings" style="padding:14px 18px; border:1px solid var(--border-color); border-radius:12px; display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+            <label>PC audio broadcast source
+              <select id="pcAudioSource" class="form-select">
+                <option value="mic" selected>PC microphone only</option>
+                <option value="both">PC microphone + system audio</option>
+                <option value="system">System audio only (music / YouTube)</option>
+              </select>
+            </label>
+            <label>Microphone
+              <select id="pcMicrophoneDevice" class="form-select"><option value="">Windows default microphone</option></select>
+            </label>
+            <span style="font-size:12px; color:var(--text-muted);">Normal voice/video calls use your microphone and camera. The source above applies only to Broadcast Selected Audio; system sound needs Share audio in the picker.</span>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><button class="btn btn-secondary" onclick="loadPcMicrophones()">Refresh PC microphone list</button><span id="pcMediaStatus" role="status" style="font-size:12px;color:var(--text-muted);">If a PC capture device is unavailable, incoming audio/video can still be received.</span></div>
           <!-- 4 Core Functional Action Cards Grid -->
-          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap:14px;">
             
             <!-- Card 1: Two-Way HD Voice Call (Walkie-Talkie) -->
-            <div class="voice-feature-card" style="background:rgba(15,23,42,0.7); border:1px solid rgba(16,185,129,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
+            <div class="voice-feature-card" style="background:var(--bg-card); border:1px solid rgba(16,185,129,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                   <div style="width:40px; height:40px; border-radius:10px; background:rgba(16,185,129,0.15); display:flex; align-items:center; justify-content:center; color:var(--primary-emerald);">
@@ -985,7 +1000,7 @@
                   </div>
                   <span class="badge badge-emerald">Full-Duplex</span>
                 </div>
-                <h3 style="font-size:15px; font-weight:700; color:#FFF; margin-bottom:4px;">Two-Way Voice Intercom</h3>
+                <h3 style="font-size:15px; font-weight:700; color:var(--text-title); margin-bottom:4px;">Two-Way Voice Intercom</h3>
                 <p style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:14px;">Direct bidirectional encrypted voice call with low-latency Opus 48kHz codec. Talk and listen simultaneously.</p>
               </div>
               <button class="btn btn-primary" onclick="startSelectedAudioAction('voice_call')" style="width:100%; justify-content:center; padding:10px; font-weight:700;">
@@ -995,54 +1010,54 @@
             </div>
 
             <!-- Card 2: Remote Mic Room Listener -->
-            <div class="voice-feature-card" style="background:rgba(15,23,42,0.7); border:1px solid rgba(56,189,248,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
+            <div class="voice-feature-card" style="background:var(--bg-card); border:1px solid rgba(56,189,248,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(56,189,248,0.15); display:flex; align-items:center; justify-content:center; color:#38BDF8;">
+                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(56,189,248,0.15); display:flex; align-items:center; justify-content:center; color:var(--feature-blue);">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
                   </div>
                   <span class="badge badge-blue">Surveillance</span>
                 </div>
-                <h3 style="font-size:15px; font-weight:700; color:#FFF; margin-bottom:4px;">Listen Remote Room Mic</h3>
+                <h3 style="font-size:15px; font-weight:700; color:var(--text-title); margin-bottom:4px;">Listen Remote Room Mic</h3>
                 <p style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:14px;">Listen to the remote device's live microphone in background. Perfect for baby monitoring or field audio surveillance.</p>
               </div>
-              <button class="btn btn-secondary" onclick="startSelectedAudioAction('listen_mic')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:#38BDF8; border-color:rgba(56,189,248,0.4);">
+              <button class="btn btn-secondary" onclick="startSelectedAudioAction('listen_mic')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:var(--feature-blue); border-color:rgba(56,189,248,0.4);">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
                 <span>Listen Remote Mic</span>
               </button>
             </div>
 
             <!-- Card 3: PA Intercom Broadcast -->
-            <div class="voice-feature-card" style="background:rgba(15,23,42,0.7); border:1px solid rgba(245,158,11,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
+            <div class="voice-feature-card" style="background:var(--bg-card); border:1px solid rgba(245,158,11,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(245,158,11,0.15); display:flex; align-items:center; justify-content:center; color:#F59E0B;">
+                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(245,158,11,0.15); display:flex; align-items:center; justify-content:center; color:var(--feature-amber);">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                   </div>
                   <span class="badge badge-purple" style="color:#FCD34D;">PA Speaker</span>
                 </div>
-                <h3 style="font-size:15px; font-weight:700; color:#FFF; margin-bottom:4px;">Broadcast Voice to Speaker</h3>
-                <p style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:14px;">Speak through PC mic to broadcast live announcement directly out of the remote phone or connected PA speaker.</p>
+                <h3 style="font-size:15px; font-weight:700; color:var(--text-title); margin-bottom:4px;">Broadcast PC Audio to Phone</h3>
+                <p style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:14px;">Send the selected microphone, system audio, or both to the phone after it accepts the call.</p>
               </div>
-              <button class="btn btn-secondary" onclick="startSelectedAudioAction('broadcast_voice')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:#F59E0B; border-color:rgba(245,158,11,0.4);">
+              <button class="btn btn-secondary" onclick="startSelectedAudioAction('broadcast_voice')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:var(--feature-amber); border-color:rgba(245,158,11,0.4);">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-                <span>Broadcast on Remote Speaker</span>
+                <span>Broadcast Selected Audio</span>
               </button>
             </div>
 
             <!-- Card 4: Two-Way HD Video Call -->
-            <div class="voice-feature-card" style="background:rgba(15,23,42,0.7); border:1px solid rgba(168,85,247,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
+            <div class="voice-feature-card" style="background:var(--bg-card); border:1px solid rgba(168,85,247,0.3); border-radius:12px; padding:18px; display:flex; flex-direction:column; justify-content:space-between; transition:all 0.2s ease;">
               <div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(168,85,247,0.15); display:flex; align-items:center; justify-content:center; color:#A855F7;">
+                  <div style="width:40px; height:40px; border-radius:10px; background:rgba(168,85,247,0.15); display:flex; align-items:center; justify-content:center; color:var(--feature-purple);">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
                   </div>
                   <span class="badge badge-purple">1080P 60FPS</span>
                 </div>
-                <h3 style="font-size:15px; font-weight:700; color:#FFF; margin-bottom:4px;">Two-Way HD Video Call</h3>
+                <h3 style="font-size:15px; font-weight:700; color:var(--text-title); margin-bottom:4px;">Two-Way HD Video Call</h3>
                 <p style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:14px;">High-definition WebRTC video calling with camera switching, PiP preview, and crystal-clear audio.</p>
               </div>
-              <button class="btn btn-secondary" onclick="startSelectedAudioAction('video_call')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:#A855F7; border-color:rgba(168,85,247,0.4);">
+              <button class="btn btn-secondary" onclick="startSelectedAudioAction('video_call')" style="width:100%; justify-content:center; padding:10px; font-weight:700; color:var(--feature-purple); border-color:rgba(168,85,247,0.4);">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
                 <span>Start HD Video Call</span>
               </button>
@@ -1051,21 +1066,21 @@
           </div>
 
           <!-- Audio Engine Hardware Settings & Mic Level Meter -->
-          <div style="background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:12px; padding:14px 18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:12px; padding:14px 18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
             <div style="display:flex; align-items:center; gap:12px; min-width:240px;">
               <button class="btn btn-sm btn-secondary" id="btnTestLocalMic" onclick="testLocalMicInput()" style="font-size:11.5px; padding:6px 12px;">
                 <span>🎙️ Test PC Mic Level</span>
               </button>
-              <div style="width:120px; height:8px; background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden;">
+              <div style="width:120px; height:8px; background:var(--bg-card); border-radius:4px; overflow:hidden;">
                 <div id="localMicVuBar" style="width:0%; height:100%; background:linear-gradient(90deg, #10B981, #EF4444); transition:width 0.1s ease;"></div>
               </div>
               <span style="font-size:10.5px; font-family:monospace; color:var(--text-muted);" id="localMicVuText">0 dB</span>
             </div>
 
             <div style="display:flex; gap:12px; font-size:11.5px; color:var(--text-muted); font-family:monospace; flex-wrap:wrap;">
-              <span style="color:#10B981;">✓ Echo Cancellation (AEC)</span>
-              <span style="color:#38BDF8;">✓ Noise Suppression (DNS)</span>
-              <span style="color:#A855F7;">✓ Auto-Gain Control (AGC)</span>
+              <span style="color:var(--feature-green);">✓ Echo Cancellation (AEC)</span>
+              <span style="color:var(--feature-blue);">✓ Noise Suppression (DNS)</span>
+              <span style="color:var(--feature-purple);">✓ Auto-Gain Control (AGC)</span>
             </div>
           </div>
 
@@ -1647,12 +1662,12 @@
 
         <!-- Live Diagnostics Chips Bar -->
         <div class="hw-diag-chips-bar" id="hwDiagChipsBar">
-          <div class="hw-chip active"><span class="status-dot-pulse"></span> Wi-Fi Direct: Active</div>
-          <div class="hw-chip active"><span class="status-dot-pulse"></span> Bluetooth BLE: 5.3 Ready</div>
+          <div class="hw-chip standby" id="chipNetworkStatus">Network: checking…</div>
+          <div class="hw-chip standby" id="chipBluetoothStatus">Bluetooth: checking…</div>
           <div class="hw-chip active" id="chipUsbBus"><span class="status-dot-pulse"></span> USB Bus: Scanning...</div>
           <div class="hw-chip standby" id="chipNfcStatus">NFC Proximity: Standby</div>
           <div class="hw-chip active" id="chipAudioStatus">🔊 Audio Engine: Ready</div>
-          <div class="hw-chip active">Local P2P Mesh: Online</div>
+          <div class="hw-chip active">Nearby devices required</div>
         </div>
 
         <!-- Subview Navigation Switcher -->
@@ -1671,35 +1686,46 @@
           </button>
         </div>
 
+        <p id="hwScanStatus" class="hw-card-desc" role="status" aria-live="polite">Scan connected Windows devices to check availability.</p>
         <div class="hw-hub-container">
+          <details class="hw-card iot-device-settings">
+            <summary class="hw-card-title">Device connections & compatibility</summary>
+            <p class="hw-card-desc">Configure your LAN device or HTTP gateway. Relays, sensors and scales use the JSON protocol below. USB/Bluetooth devices need a compatible gateway. NFC can use a local Windows PC/SC reader without a URL.</p>
+            <div class="iot-settings-grid">
+<label>Relay channel 1 URL<input id="iotRelayURL1" class="form-control" type="url" placeholder="http://device/relay/1"></label><label>Relay channel 2 URL<input id="iotRelayURL2" class="form-control" type="url" placeholder="http://device/relay/2"></label><label>Relay channel 3 URL<input id="iotRelayURL3" class="form-control" type="url" placeholder="http://device/relay/3"></label><label>Relay channel 4 URL<input id="iotRelayURL4" class="form-control" type="url" placeholder="http://device/relay/4"></label>
+              <label>Soil telemetry URL<input id="iotSensorURL" class="form-control" type="url" placeholder="http://device/sensors"></label>
+              <label>NFC gateway URL (optional)<input id="iotNFCURL" class="form-control" type="url" placeholder="Leave empty for local PC/SC reader"></label>
+              <label>Weighing scale URL<input id="iotScaleURL" class="form-control" type="url" placeholder="http://device/scale"></label>
+            </div>
+            <p class="hw-card-desc">Relay: POST {"power":true/false}, response must confirm "power". Sensor GET: {"moisture_pct":42,"temp_c":28,"humidity_pct":62}. NFC GET: {"tag_id":"UID","ndef_data":"..."}. Scale GET: {"weight_kg":125.5}; tare POST {"action":"tare"}, response must confirm weight_kg:0.</p>
+            <div><button class="btn btn-primary" onclick="saveIotConfiguration()">Save device connections</button></div>
+            <p id="iotConfigStatus" class="hw-card-desc" role="status"></p>
+          </details>
           <!-- ============================================================= -->
           <!-- SUBVIEW 1: VIRTUAL DEVICE SHARING & AUDIO CAST               -->
           <!-- ============================================================= -->
-          <div id="hwSubViewVirtual" class="hw-grid-2col">
+          <div id="hwSubViewVirtual" class="hw-grid-2col"><p id="phoneSensorStatus" class="iot-status-notice" role="status">Keep the updated mobile app open. Approve battery/location sharing on the phone when requested.</p>
             <!-- Card 1: Wireless Live PC Audio & YouTube Sound Mirror -->
             <div class="hw-card" style="border-top: 3px solid var(--primary-emerald); grid-column: 1 / -1;">
               <div class="hw-card-header">
                 <div class="hw-card-title-group">
                   <div class="hw-icon-box bg-emerald-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></div>
                   <div>
-                    <div class="hw-card-title">Live PC Audio & YouTube Sound Mirror (Virtual Speaker Sink)</div>
+                    <div class="hw-card-title">Live PC Audio & YouTube Sound Mirror </div>
                     <div class="hw-card-desc">Play PC YouTube, Music, or System Sound live on remote Phone/Speaker over Wi-Fi without PC speakers</div>
                   </div>
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
-                  <span class="badge badge-emerald" id="audioCastStreamStats">128 kbps Opus • Latency: ~14ms</span>
+                  <span class="badge badge-emerald" id="audioCastStreamStats">No active stream</span>
                   <span class="badge badge-slate" id="audioCastLiveBadge">Standby</span>
                 </div>
               </div>
-
-              <!-- Real-time 32-Band FFT Audio Spectrum Visualizer Canvas -->
-              <canvas id="audioSpectrumCanvas" class="audio-spectrum-canvas" width="600" height="60"></canvas>
 
               <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px;">
                 <!-- Destination Peer Selector -->
                 <div class="form-row" style="margin-bottom:0;">
                   <label class="form-label" style="font-size:11px;">Target Phone / Speaker Device:</label>
-                  <select id="audioCastPeerSelect" class="form-select" style="padding:6px 10px; font-size:12.5px;">
+                  <select id="audioCastPeerSelect" class="form-select" onchange="pollRemoteSensors()" style="padding:6px 10px; font-size:12.5px;">
                     <!-- Populated dynamically -->
                   </select>
                 </div>
@@ -1708,33 +1734,13 @@
                 <div class="form-row" style="margin-bottom:0;">
                   <label class="form-label" style="font-size:11px;">Audio Source Mode:</label>
                   <select id="audioCastSourceMode" class="form-select" onchange="onAudioSourceModeChanged(this.value)" style="padding:6px 10px; font-size:12.5px;">
-                    <option value="system_mirror">Live PC Sound / YouTube Tab Mirror (System Audio)</option>
-                    <option value="preset_tone">Preset Indian Melodies & Security Alarms</option>
-                    <option value="local_file">Select MP3 / WAV Song from PC...</option>
+                    <option value="system">PC system sound / YouTube</option>
+                    <option value="both">PC microphone + system sound</option>
+                    <option value="mic">PC microphone</option>
                   </select>
-                </div>
-
-                <!-- Track selector (Visible for preset tone) -->
-                <div class="form-row" id="wrapCastTrackSelect" style="margin-bottom:0; display:none;">
-                  <label class="form-label" style="font-size:11px;">Select Track / Tone:</label>
-                  <select id="audioCastTrackSelect" class="form-select" style="padding:6px 10px; font-size:12.5px;">
-                    <option value="Kisan Mandi Gate Sound">Kisan Mandi Gate Arrival Chime</option>
-                    <option value="Loud Intruder Siren">High-Decibel Security Alert Siren</option>
-                    <option value="Village Flute Raga">Indian Classical Flute Melody</option>
-                    <option value="Irrigation Pump Complete">Irrigation Flow Cutoff Notification</option>
-                  </select>
-                </div>
-
-                <!-- Volume Slider -->
-                <div class="form-row" style="margin-bottom:0;">
-                  <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
-                    <span style="color:var(--text-muted);">Broadcast Gain / Volume:</span>
-                    <span id="audioCastVolumeLabel" style="font-weight:700; color:var(--primary-emerald);">85%</span>
-                  </div>
-                  <input type="range" id="audioCastVolume" min="0" max="100" value="85" style="width:100%; accent-color:var(--primary-emerald);" oninput="updateAudioCastVolume(this.value)">
                 </div>
               </div>
-
+              <p class="hw-card-desc">Choose a screen or tab with Share audio enabled. Answer the call on the phone and turn on Speaker. Control volume on the phone.</p>
               <!-- Action Controls -->
               <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:4px;">
                 <button class="btn btn-primary" id="btnStartLiveAudioMirror" onclick="toggleLiveAudioMirror()" style="flex:1; padding:10px; font-weight:700;">
@@ -1754,8 +1760,8 @@
                 <div class="hw-card-title-group">
                   <div class="hw-icon-box bg-blue-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg></div>
                   <div>
-                    <div class="hw-card-title">Wireless PC Microphone Bridge</div>
-                    <div class="hw-card-desc">Stream phone's microphone to PC when PC has no mic</div>
+                    <div class="hw-card-title">Listen to Phone Microphone</div>
+                    <div class="hw-card-desc">Listen in NearMitra after the phone accepts the call</div>
                   </div>
                 </div>
                 <span class="badge badge-slate" id="remoteMicBadge">Offline</span>
@@ -1768,10 +1774,10 @@
                 </select>
               </div>
 
-              <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border-color); border-radius:8px; padding:10px;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px;">
                 <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:4px;">
                   <span style="color:var(--text-muted);">Mic Input Level:</span>
-                  <span id="remoteMicLevelText" style="color:#3B82F6; font-weight:700;">0 dB</span>
+                  <span id="remoteMicLevelText" style="color:var(--feature-blue); font-weight:700;">No audio</span>
                 </div>
                 <div style="height:8px; background:var(--bg-input); border-radius:4px; overflow:hidden;">
                   <div id="remoteMicLevelBar" style="width:0%; height:100%; background:#3B82F6; transition:width 0.15s ease;"></div>
@@ -1780,7 +1786,7 @@
 
               <button class="btn btn-secondary" id="btnToggleRemoteMic" onclick="toggleRemoteMicBridge()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
-                <span id="btnRemoteMicLabel">Connect Phone as Wireless PC Mic</span>
+                <span id="btnRemoteMicLabel">Listen to phone microphone</span>
               </button>
             </div>
 
@@ -1791,20 +1797,20 @@
                   <div class="hw-icon-box bg-purple-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg></div>
                   <div>
                     <div class="hw-card-title">Remote Phone Camera & CCTV Viewfinder</div>
-                    <div class="hw-card-desc">Stream phone's back/front camera lens live as virtual PC webcam</div>
+                    <div class="hw-card-desc">View the phone camera inside NearMitra CCTV</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald" id="remoteCamBadge">1080p 60fps</span>
+                <span class="badge badge-emerald" id="remoteCamBadge">CCTV viewer</span>
               </div>
 
-              <div style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                   <span style="color:var(--text-muted);">Lens Stream:</span>
-                  <strong style="color:var(--text-title);">DirectShow Virtual Camera Link</strong>
+                  <strong style="color:var(--text-title);">NearMitra CCTV viewer</strong>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--text-muted);">
                   <span>Format: <strong>H.264 / WebRTC</strong></span>
-                  <span>Latency: <strong style="color:var(--primary-emerald);">~18ms</strong></span>
+                  <span>Latency: <strong style="color:var(--primary-emerald);">Not measured</strong></span>
                 </div>
               </div>
 
@@ -1826,21 +1832,21 @@
                   <div class="hw-icon-box bg-cyan-dim"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></div>
                   <div>
                     <div class="hw-card-title">Remote Phone GPS & Location Sensor</div>
-                    <div class="hw-card-desc">High-Precision Satellite Coordinates & Geofencing</div>
+                    <div class="hw-card-desc">One-time location snapshot, approved on the Android phone</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald" id="gpsLockBadge">GPS Locked (4.2m)</span>
+                <span class="badge badge-emerald" id="gpsLockBadge">Awaiting phone location</span>
               </div>
 
-              <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                   <span style="color:var(--text-muted);">Location:</span>
-                  <strong id="gpsLocName" style="color:var(--text-title);">New Delhi (Mandi Sector-4)</strong>
+                  <strong id="gpsLocName" style="color:var(--text-title);">No location received</strong>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:11.5px;">
-                  <span>Lat: <strong id="gpsLatVal" style="color:#06B6D4;">28.6139° N</strong></span>
-                  <span>Lng: <strong id="gpsLngVal" style="color:#06B6D4;">77.2090° E</strong></span>
-                  <span>Alt: <strong id="gpsAltVal">216m</strong></span>
+                  <span>Lat: <strong id="gpsLatVal" style="color:var(--feature-cyan);">—</strong></span>
+                  <span>Lng: <strong id="gpsLngVal" style="color:var(--feature-cyan);">—</strong></span>
+                  <span>Alt: <strong id="gpsAltVal">—</strong></span>
                 </div>
               </div>
 
@@ -1849,7 +1855,7 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
                   <span>Refresh GPS Coordinates</span>
                 </button>
-                <a id="gpsMapLink" href="https://www.google.com/maps?q=28.6139,77.2090" target="_blank" class="btn btn-secondary">
+                <a id="gpsMapLink" aria-disabled="true" rel="noopener noreferrer" target="_blank" class="btn btn-secondary">
                   <span>View Map ↗</span>
                 </a>
               </div>
@@ -1862,23 +1868,23 @@
                   <div class="hw-icon-box bg-emerald-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/></svg></div>
                   <div>
                     <div class="hw-card-title">Remote Phone Power & Battery Health</div>
-                    <div class="hw-card-desc">Real-time Battery Level, Thermal Temp & Voltage</div>
+                    <div class="hw-card-desc">One-time battery snapshot, approved on the Android phone</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald" id="phoneBatBadge">86% Normal</span>
+                <span class="badge badge-emerald" id="phoneBatBadge">Awaiting phone telemetry</span>
               </div>
 
               <div class="battery-meter-container">
-                <span style="font-weight:700; font-size:16px; color:#10B981;" id="phoneBatLevelText">86%</span>
+                <span style="font-weight:700; font-size:16px; color:var(--feature-green);" id="phoneBatLevelText">—</span>
                 <div class="battery-meter-bar">
-                  <div class="battery-fill" id="phoneBatFill" style="width:86%;"></div>
+                  <div class="battery-fill" id="phoneBatFill" style="width:0%;"></div>
                 </div>
-                <span style="font-size:11px; color:var(--text-muted);" id="phoneBatHealthText">31.4°C • Good</span>
+                <span style="font-size:11px; color:var(--text-muted);" id="phoneBatHealthText">No recent reading</span>
               </div>
 
-              <button class="btn btn-secondary" onclick="pollRemoteSensors()">
+              <button class="btn btn-secondary" onclick="fetchLiveGPS()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-                <span>Poll Phone Telemetry</span>
+                <span>Request Phone Sensors</span>
               </button>
             </div>
 
@@ -1889,16 +1895,16 @@
                   <div class="hw-icon-box bg-amber-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.93 4.93a10 10 0 0 1 14.14 0"/><path d="M7.76 7.76a6 6 0 0 1 8.48 0"/><circle cx="12" cy="12" r="2"/></svg></div>
                   <div>
                     <div class="hw-card-title">NFC & SmartCard Station</div>
-                    <div class="hw-card-desc">Read/Write Farmer Mandi Passes & RFID tags via Mobile NFC antenna</div>
+                    <div class="hw-card-desc">Windows PC/SC contactless UID or a configured LAN NFC gateway</div>
                   </div>
                 </div>
-                <span class="badge badge-amber" id="nfcStatusBadge">Ready</span>
+                <span class="badge badge-amber" id="nfcStatusBadge">Not connected</span>
               </div>
 
-              <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:10px;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px;">
                 <div style="font-size:11px; color:var(--text-muted); margin-bottom:2px;">Last NFC Tag UID:</div>
-                <div style="font-family:var(--font-mono); font-size:13px; font-weight:700; color:#F59E0B;" id="nfcLastTagUID">04:A2:88:5A:19:6C:80 (MIFARE 1K)</div>
-                <div style="font-size:11.5px; color:var(--text-body); margin-top:4px;" id="nfcLastDataPreview">Farmer e-Mandi Pass: KM-88492 • Produce: Basmati Grade A</div>
+                <div style="font-family:var(--font-mono); font-size:13px; font-weight:700; color:var(--feature-amber);" id="nfcLastTagUID">No tag received</div>
+                <div style="font-size:11.5px; color:var(--text-body); margin-top:4px;" id="nfcLastDataPreview">Place a contactless tag on the reader, then scan</div>
               </div>
 
               <button class="btn btn-secondary" onclick="triggerNFCRead()">
@@ -1979,35 +1985,18 @@
                     <div class="hw-card-desc">High-Speed Land Deed, Invoice & KCC Scanner Engine</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald" id="scannerStatusBadge">WIA Ready</span>
+                <span class="badge badge-emerald" id="scannerStatusBadge">Windows scanner</span>
               </div>
 
-              <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
-                <div class="form-row" style="margin-bottom:0;">
-                  <label class="form-label" style="font-size:11px;">Resolution (DPI):</label>
-                  <select id="docScanDpiSelect" class="form-select" style="padding:5px 8px; font-size:12px;">
-                    <option value="150">150 DPI (Fast Draft)</option>
-                    <option value="300" selected>300 DPI (Standard Document)</option>
-                    <option value="600">600 DPI (High Resolution Archive)</option>
-                  </select>
-                </div>
-                <div class="form-row" style="margin-bottom:0;">
-                  <label class="form-label" style="font-size:11px;">Color Mode:</label>
-                  <select id="docScanColorSelect" class="form-select" style="padding:5px 8px; font-size:12px;">
-                    <option value="color" selected>Full Color (24-bit)</option>
-                    <option value="gray">Grayscale (8-bit)</option>
-                    <option value="bw">Black & White (1-bit OCR)</option>
-                  </select>
-                </div>
-              </div>
+              <p class="hw-card-desc">Choose resolution, color and save location in the Windows scanning window.</p>
 
               <div style="display:flex; gap:8px;">
                 <button class="btn btn-primary" onclick="triggerDocScan()" style="flex:1;">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
-                  <span>Scan Document (WIA)</span>
+                  <span>Open Windows Scanner</span>
                 </button>
-                <button class="btn btn-secondary" onclick="triggerDocOcr()">
-                  <span>OCR Extract</span>
+                <button class="btn btn-secondary" onclick="triggerDocOcr()" disabled>
+                  <span>OCR unavailable</span>
                 </button>
               </div>
             </div>
@@ -2034,6 +2023,7 @@
           <!-- SUBVIEW 3: AGRICULTURAL IOT & POS PRINTERS                   -->
           <!-- ============================================================= -->
           <div id="hwSubViewAgri" class="hw-grid-2col" style="display:none;">
+            <p class="iot-status-notice" role="status">Configure device URLs above to control compatible LAN gateways. Commands show success only after the device confirms them. Scheduled relays require NearMitra to remain running; pending OFF commands are saved for recovery after restart.</p>
             <!-- 4-Channel Smart Irrigation & Agricultural Relays -->
             <div class="hw-card" style="border-top: 3px solid var(--primary-emerald); grid-column: 1 / -1;">
               <div class="hw-card-header">
@@ -2041,71 +2031,82 @@
                   <div class="hw-icon-box bg-emerald-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg></div>
                   <div>
                     <div class="hw-card-title">Kisan 4-Channel Smart Relays & Irrigation Controller</div>
-                    <div class="hw-card-desc">Wi-Fi / RS485 Modbus Smart Relay Matrix • 192.168.1.120</div>
+                    <div class="hw-card-desc">Four relay endpoints • status shows the latest device acknowledgement</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald" id="pumpBadgeOnline">Relay Hub Online</span>
+                <span class="badge badge-emerald" id="pumpBadgeOnline">Controller not configured</span>
               </div>
 
               <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
                 <!-- Channel 1: Submersible Pump -->
-                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
+                <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
                   <div>
                     <div style="font-weight:700; font-size:13px; color:var(--text-title);">CH-1: Main Submersible Pump</div>
-                    <div style="font-size:11px; color:var(--text-muted);">220V AC • 10A Heavy Relay</div>
+                    <div style="font-size:11px; color:var(--text-muted);">LAN relay channel 1</div>
                   </div>
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span id="pumpStatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ OFF ]</span>
-                    <button class="btn btn-sm btn-primary" id="btnPumpToggle" onclick="togglePumpRelay()">Turn ON</button>
+                  <div class="iot-relay-controls" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                    <span id="pumpStatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ Unknown ]</span>
+                    <button class="btn btn-sm btn-primary" id="btnPumpToggle" onclick="setAgriRelay(1,true)" disabled>Turn ON</button> <button id="btnRelayOff1" class="btn btn-sm btn-secondary" onclick="setAgriRelay(1,false)" disabled>Turn OFF</button>
                   </div>
                 </div>
 
                 <!-- Channel 2: Drip Irrigation Valve -->
-                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
+                <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
                   <div>
                     <div style="font-weight:700; font-size:13px; color:var(--text-title);">CH-2: Drip Solenoid Valve</div>
                     <div style="font-size:11px; color:var(--text-muted);">12V DC • Micro-Drip Sector-B</div>
                   </div>
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span id="relay2StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ OFF ]</span>
-                    <button class="btn btn-sm btn-secondary" id="btnRelay2Toggle" onclick="toggleAgriRelay(2)">Turn ON</button>
+                  <div class="iot-relay-controls" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                    <span id="relay2StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ Unknown ]</span>
+                    <button class="btn btn-sm btn-secondary" id="btnRelay2Toggle" onclick="setAgriRelay(2,true)" disabled>Turn ON</button> <button id="btnRelayOff2" class="btn btn-sm btn-secondary" onclick="setAgriRelay(2,false)" disabled>Turn OFF</button>
                   </div>
                 </div>
 
                 <!-- Channel 3: Greenhouse Ventilation Fan -->
-                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
+                <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
                   <div>
                     <div style="font-weight:700; font-size:13px; color:var(--text-title);">CH-3: Greenhouse Exhaust Fan</div>
-                    <div style="font-size:11px; color:var(--text-muted);">220V AC • Thermal Auto-Vent</div>
+                    <div style="font-size:11px; color:var(--text-muted);">LAN relay channel 3</div>
                   </div>
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span id="relay3StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ OFF ]</span>
-                    <button class="btn btn-sm btn-secondary" id="btnRelay3Toggle" onclick="toggleAgriRelay(3)">Turn ON</button>
+                  <div class="iot-relay-controls" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                    <span id="relay3StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ Unknown ]</span>
+                    <button class="btn btn-sm btn-secondary" id="btnRelay3Toggle" onclick="setAgriRelay(3,true)" disabled>Turn ON</button> <button id="btnRelayOff3" class="btn btn-sm btn-secondary" onclick="setAgriRelay(3,false)" disabled>Turn OFF</button>
                   </div>
                 </div>
 
                 <!-- Channel 4: Perimeter Security Light -->
-                <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
+                <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; gap:8px;">
                   <div>
                     <div style="font-weight:700; font-size:13px; color:var(--text-title);">CH-4: Solar Perimeter Light</div>
-                    <div style="font-size:11px; color:var(--text-muted);">24V DC • Night Auto-Trigger</div>
+                    <div style="font-size:11px; color:var(--text-muted);">LAN relay channel 4</div>
                   </div>
-                  <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <span id="relay4StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ OFF ]</span>
-                    <button class="btn btn-sm btn-secondary" id="btnRelay4Toggle" onclick="toggleAgriRelay(4)">Turn ON</button>
+                  <div class="iot-relay-controls" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px;">
+                    <span id="relay4StatusText" style="font-weight:700; font-size:12px; color:var(--text-muted);">[ Unknown ]</span>
+                    <button class="btn btn-sm btn-secondary" id="btnRelay4Toggle" onclick="setAgriRelay(4,true)" disabled>Turn ON</button> <button id="btnRelayOff4" class="btn btn-sm btn-secondary" onclick="setAgriRelay(4,false)" disabled>Turn OFF</button>
                   </div>
                 </div>
               </div>
 
               <!-- Live Pump Telemetry Stats -->
-              <div style="background:rgba(0,0,0,0.25); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;" id="pumpTelemetry">
-                <span>Voltage: <strong style="color:var(--primary-emerald);">228.4V</strong></span>
-                <span>Current: <strong id="pumpCurrentText">0.0 A</strong></span>
-                <span>Flow Rate: <strong id="pumpFlowText">0.0 L/min</strong></span>
-                <span>Water Consumed: <strong id="pumpTotalWater">1,450 Liters</strong></span>
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;" id="pumpTelemetry">
+                <span>Voltage: <strong id="pumpVoltageText" style="color:var(--primary-emerald);">—</strong></span>
+                <span>Current: <strong id="pumpCurrentText">—</strong></span>
+                <span>Flow Rate: <strong id="pumpFlowText">—</strong></span>
+                <span>Water Consumed: <strong id="pumpTotalWater">—</strong></span>
               </div>
             </div>
 
+            <div class="hw-card" style="grid-column:1 / -1;">
+              <div class="hw-card-title">Relay timer</div>
+              <p class="hw-card-desc">One-time start and stop. Keep NearMitra open. If it was closed at the start time, an overdue start is skipped; stop commands are retried until acknowledged.</p>
+              <div class="iot-settings-grid">
+                <label>Channel<select id="relayScheduleChannel" class="form-select"><option value="1">Channel 1</option><option value="2">Channel 2</option><option value="3">Channel 3</option><option value="4">Channel 4</option></select></label>
+                <label>Start (local time)<input id="relayScheduleTime" type="datetime-local" class="form-control"></label>
+                <label>Run for (minutes)<input id="relayScheduleMinutes" type="number" min="1" max="1440" value="15" class="form-control"></label>
+              </div>
+              <div><button class="btn btn-primary" onclick="addRelaySchedule()">Schedule relay</button> <button class="btn btn-secondary" onclick="loadRelaySchedules().catch(e=>showToast(e.message))">Refresh timers</button></div>
+              <div id="relayScheduleList" class="hw-device-list" role="status">No relay schedules</div>
+            </div>
             <!-- Soil Moisture & Agro-Climatic Node -->
             <div class="hw-card">
               <div class="hw-card-header">
@@ -2113,19 +2114,19 @@
                   <div class="hw-icon-box bg-cyan-dim"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
                   <div>
                     <div class="hw-card-title">Field Sector-A Soil & Climate Node</div>
-                    <div class="hw-card-desc">Bluetooth BLE Telemetry • C4:4F:33:1A:89:BC</div>
+                    <div class="hw-card-desc">Configured LAN / HTTP sensor gateway</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald">BLE Active</span>
+                <span class="badge badge-emerald"><span id="soilSensorStatus">No reading</span></span>
               </div>
-              <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;" id="soilTelemetry">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:10px; font-size:12px;" id="soilTelemetry">
                 <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                  <span>Moisture: <strong id="soilMoistVal" style="color:var(--primary-emerald); font-size:14px;">34.8%</strong></span>
-                  <span>Soil Temp: <strong style="color:#06B6D4;">28.5°C</strong></span>
+                  <span>Moisture: <strong id="soilMoistVal" style="color:var(--primary-emerald); font-size:14px;">—</strong></span>
+                  <span>Soil Temp: <strong id="soilTempVal" style="color:var(--feature-cyan);">—</strong></span>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--text-muted);">
-                  <span>Humidity: <strong>62%</strong></span>
-                  <span>NPK Fertility: <strong style="color:#10B981;">Optimal (Good)</strong></span>
+                  <span>Humidity: <strong id="soilHumidityVal">—</strong></span>
+                  <span>NPK Fertility: <strong style="color:var(--feature-green);">No reading</strong></span>
                 </div>
               </div>
               <button class="btn btn-secondary" onclick="pollSensorData()">
@@ -2141,15 +2142,15 @@
                   <div class="hw-icon-box bg-purple-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h18"/></svg></div>
                   <div>
                     <div class="hw-card-title">Mandi Digital Weighing Scale</div>
-                    <div class="hw-card-desc">RS-232 / USB Serial Real-time Tare & Weight Capture</div>
+                    <div class="hw-card-desc">Weight capture and tare through a configured LAN gateway</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald">Scale Connected</span>
+                <span class="badge badge-emerald">LAN scale gateway</span>
               </div>
-              <div style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:8px; padding:12px; text-align:center;">
+              <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:12px; text-align:center;">
                 <div style="font-size:11px; color:var(--text-muted); margin-bottom:2px;">Gross Weight:</div>
-                <div style="font-family:var(--font-mono); font-size:24px; font-weight:800; color:var(--primary-emerald);" id="weighScaleValue">2,450.00 KG</div>
-                <div style="font-size:12px; color:var(--text-body); margin-top:2px;">(24.50 Quintals • Stable)</div>
+                <div style="font-family:var(--font-mono); font-size:24px; font-weight:800; color:var(--primary-emerald);" id="weighScaleValue">No reading</div>
+                <div style="font-size:12px; color:var(--text-body); margin-top:2px;">Enter measured weight manually</div>
               </div>
               <div style="display:flex; gap:8px;">
                 <button class="btn btn-secondary" onclick="tareWeighScale()" style="flex:1;">Tare / Zero</button>
@@ -2164,10 +2165,10 @@
                   <div class="hw-icon-box bg-amber-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/></svg></div>
                   <div>
                     <div class="hw-card-title">Mandi Gate Pass & Receipt Printer</div>
-                    <div class="hw-card-desc">Raw ESC/POS Thermal Print via LAN (Port 9100) or USB Thermal Printer</div>
+                    <div class="hw-card-desc">ESC/POS thermal printing via LAN, port 9100</div>
                   </div>
                 </div>
-                <span class="badge badge-emerald">Printer Ready</span>
+                <span class="badge badge-emerald">LAN printer setup</span>
               </div>
 
               <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px;">
@@ -2189,6 +2190,7 @@
                 </div>
               </div>
 
+              <div class="form-row"><label class="form-label" for="gatePassPrinterIP">LAN printer IP address</label><input id="gatePassPrinterIP" class="form-control" placeholder="e.g. 192.168.1.188" inputmode="decimal"></div>
               <!-- Thermal Receipt Preview -->
               <div class="receipt-preview-box" id="gatePassReceiptPreview">
 ================================
@@ -2724,6 +2726,9 @@ TOTAL:    Rs. 94,325.00
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+  <script src="chat-routing.js"></script>
+  <script src="nearby-call.js"></script>
+  <script src="audio-capture.js"></script>
   <script src="app.js"></script>
 
   </body>

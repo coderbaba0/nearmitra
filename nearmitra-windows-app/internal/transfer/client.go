@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"archive/zip"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"nearmitra-windows-app/internal/config"
 	"nearmitra-windows-app/internal/models"
+	"nearmitra-windows-app/internal/network"
 )
 
 // SendTextMessage transmits chat text over TCP port 43889 to peer.
@@ -152,6 +154,7 @@ func SendFile(targetIP string, filePath string, onProgress func(models.TransferP
 		Size:     stat.Size(),
 	}
 
+	configureDelivery(&header, targetIP)
 	hData, err := json.Marshal(header)
 	if err != nil {
 		return err
@@ -199,6 +202,9 @@ func SendFile(targetIP string, filePath string, onProgress func(models.TransferP
 		}
 	}
 
+	if err := awaitDelivery(conn, header); err != nil {
+		return err
+	}
 	if onProgress != nil {
 		onProgress(models.TransferProgress{
 			Active:     false,
@@ -248,6 +254,7 @@ func SendFolder(targetIP string, folderPath string, onProgress func(models.Trans
 		Folder:   true,
 	}
 
+	configureDelivery(&header, targetIP)
 	hData, err := json.Marshal(header)
 	if err != nil {
 		return err
@@ -294,6 +301,9 @@ func SendFolder(targetIP string, folderPath string, onProgress func(models.Trans
 		}
 	}
 
+	if err := awaitDelivery(conn, header); err != nil {
+		return err
+	}
 	if onProgress != nil {
 		onProgress(models.TransferProgress{
 			Active:     false,
@@ -314,12 +324,16 @@ func sendJSONHeaderOnly(targetIP string, header models.WireHeader) error {
 	}
 	defer conn.Close()
 
+	configureDelivery(&header, targetIP)
 	data, err := json.Marshal(header)
 	if err != nil {
 		return err
 	}
 	_, err = conn.Write(append(data, '\n'))
-	return err
+	if err != nil {
+		return err
+	}
+	return awaitDelivery(conn, header)
 }
 
 func zipFolder(src, destZip string) error {
@@ -344,14 +358,14 @@ func zipFolder(src, destZip string) error {
 			return nil
 		}
 		if info.IsDir() {
-			_, err = w.Create(relPath + "/")
+			_, err = w.Create(filepath.ToSlash(relPath) + "/")
 			return err
 		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
 		}
-		header.Name = relPath
+		header.Name = filepath.ToSlash(relPath)
 		header.Method = zip.Deflate
 
 		writer, err := w.CreateHeader(header)
@@ -367,3 +381,34 @@ func zipFolder(src, destZip string) error {
 		return err
 	})
 }
+
+func configureDelivery(header *models.WireHeader, ip string) {
+	header.InternetDeviceID = config.Get().GetConfig().DeviceID
+	header.SupportsDeliveryAck = true
+	if header.Type != "chat" && header.Type != "file" {
+		return
+	}
+	for _, peer := range network.GetDiscovery().GetPeers() {
+		if peer.IP == ip {
+			header.RequireAck = peer.SupportsDeliveryAck
+			break
+		}
+	}
+}
+func awaitDelivery(conn net.Conn, header models.WireHeader) error {
+	if !header.RequireAck {
+		return nil
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	var reply models.WireHeader
+	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&reply); err != nil {
+		return fmt.Errorf("receiver did not confirm delivery: %w", err)
+	}
+	if reply.Type != "delivery_ack" || reply.Status != "delivered" {
+		return fmt.Errorf("receiver could not save transfer: %s", reply.Error)
+	}
+	return nil
+}
+
+// ArchiveFolder prepares a directory for a WAN transfer using the same LAN archive format.
+func ArchiveFolder(source, destination string) error { return zipFolder(source, destination) }

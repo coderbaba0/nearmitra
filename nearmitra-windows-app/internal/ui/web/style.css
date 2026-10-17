@@ -4154,7 +4154,7 @@ body.light-theme .typing-text {
 }
 
 .hw-card {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 16px;
@@ -4165,8 +4165,8 @@ body.light-theme .typing-text {
 }
 
 .hw-card:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.045);
+  border-color: var(--border-light);
+  background: var(--bg-card-hover);
 }
 
 .hw-card-header {
@@ -5270,3 +5270,43 @@ body.light-theme .typing-text {
   0%, 100% { border-color: rgba(234, 179, 8, 0.4); }
   50% { border-color: rgba(234, 179, 8, 0.9); box-shadow: 0 0 14px rgba(234, 179, 8, 0.3); }
 }
+
+/* Hardware and Voice surfaces share the active application theme. */
+#tab-iot .form-control, #tab-iot .form-select, #tab-voice .form-select {
+  background: var(--bg-input); color: var(--text-title); border: 1px solid var(--border-color);
+  border-radius: 6px; min-height: 34px; max-width: 100%;
+}
+#tab-iot .form-control:focus, #tab-iot .form-select:focus, #tab-voice .form-select:focus {
+  outline: 2px solid var(--primary-emerald); outline-offset: 2px;
+}
+#tab-iot .hw-device-row, #tab-iot .audio-spectrum-canvas { background: var(--bg-input); }
+.hw-card-header { gap: 10px; flex-wrap: wrap; }
+.hw-card-title-group { min-width: 0; flex: 1; }
+.hw-icon-box { flex-shrink: 0; }
+.hw-card-title, .hw-card-desc { overflow-wrap: anywhere; }
+.hw-grid-2col { grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+.iot-status-notice { grid-column: 1 / -1; color: var(--text-body); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; margin: 0; }
+#tab-iot [aria-disabled="true"] { opacity: .55; pointer-events: none; }
+body.light-theme #tab-iot .badge-emerald, body.light-theme #tab-voice .badge-emerald { color: #047857; }
+body.light-theme #tab-iot .badge-amber { color: #92400e; }
+body.light-theme #tab-iot .hw-chip.active { color: #047857; }
+#tab-voice .audio-source-settings { background: var(--bg-card); color: var(--text-body); }
+
+body.light-theme .voice-feature-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.10); }
+#tab-iot button:disabled { opacity: .5; cursor: not-allowed; }
+
+:root { --feature-green: #10b981; --feature-blue: #38bdf8; --feature-amber: #f59e0b; --feature-purple: #a855f7; --feature-cyan: #06b6d4; }
+body.light-theme { --feature-green: #047857; --feature-blue: #0369a1; --feature-amber: #92400e; --feature-purple: #7e22ce; --feature-cyan: #0e7490; }
+
+.iot-device-settings { margin-bottom: 14px; }
+.iot-device-settings summary { cursor:pointer; padding:4px 0; }
+.iot-device-settings[open] summary { margin-bottom:12px; }
+.iot-settings-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;}
+.iot-settings-grid label {display:flex;flex-direction:column;gap:6px;color:var(--text-body);font-size:12px;}
+#tab-iot .iot-settings-grid .form-control {width:100%;padding:8px 10px;box-sizing:border-box;}
+#relayScheduleList .hw-device-row {gap:12px;flex-wrap:wrap;}
+
+.iot-relay-controls > span {flex-basis:100%;}
+.iot-relay-controls > button {flex:1;min-width:0;}
+#tab-iot input[type="datetime-local"] {color-scheme:dark;}
+body.light-theme #tab-iot input[type="datetime-local"] {color-scheme:light;}

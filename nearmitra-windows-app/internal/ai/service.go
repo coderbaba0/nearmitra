@@ -101,22 +101,35 @@ func (s *AIService) GetLastState() (string, string, bool) {
 }
 
 // GenerateResponse generates AI completion according to configured provider.
-func (s *AIService) GenerateResponse(prompt string) (string, error) {
-	s.mu.Lock()
-	s.isBusy = true
-	s.lastQuery = prompt
-	s.mu.Unlock()
+func (s *AIService) GenerateResponse(prompt string) (string, error) { return s.generate(prompt, true) }
+
+// GenerateSharedResponse uses this desktop's engine without replacing its owner's My AI state.
+func (s *AIService) GenerateSharedResponse(prompt string) (string, error) {
+	return s.generate(prompt, false)
+}
+
+func (s *AIService) generate(prompt string, local bool) (string, error) {
+	if local {
+		s.mu.Lock()
+		s.isBusy = true
+		s.lastQuery = prompt
+		s.mu.Unlock()
+	}
 
 	defer func() {
-		s.mu.Lock()
-		s.isBusy = false
-		s.mu.Unlock()
+		if local {
+			s.mu.Lock()
+			s.isBusy = false
+			s.mu.Unlock()
+		}
 	}()
 
 	cfg := config.Get().GetConfig().AIConfig
 	if !cfg.Enabled {
 		res := "Nearby AI is currently disabled in Settings."
-		s.setResponse(res)
+		if local {
+			s.setResponse(res)
+		}
 		return res, nil
 	}
 
@@ -137,7 +150,9 @@ func (s *AIService) GenerateResponse(prompt string) (string, error) {
 	}
 
 	if err == nil {
-		s.setResponse(res)
+		if local {
+			s.setResponse(res)
+		}
 		s.mu.Lock()
 		s.promptsServed++
 		s.mu.Unlock()

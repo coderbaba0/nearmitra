@@ -2,21 +2,18 @@
 package transfer
 
 import (
-	"archive/zip"
 	"bufio"
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"nearmitra-windows-app/internal/ai"
 	"nearmitra-windows-app/internal/calling"
 	"nearmitra-windows-app/internal/config"
 	"nearmitra-windows-app/internal/models"
@@ -25,7 +22,7 @@ import (
 
 // TransferCallbacks defines event hooks for incoming TCP events.
 type TransferCallbacks struct {
-	OnIncomingMessage  func(msg models.ChatMessage)
+	OnIncomingMessage  func(msg models.ChatMessage) error
 	OnIncomingReaction func(targetMsgID string, reaction string, peerID string)
 	OnTypingStatus     func(peerID string, isTyping bool)
 	OnTransferProgress func(progress models.TransferProgress)
@@ -177,6 +174,7 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 			avatarEmoji = header.Avatar
 		}
 		network.GetDiscovery().RegisterPeer(senderID, senderName, peerIP, models.TransferPort, header.AIHost, avatarEmoji)
+		network.GetDiscovery().SetPeerIdentity(senderID, header.InternetDeviceID, header.SupportsDeliveryAck)
 	}
 
 	switch header.Type {
@@ -184,11 +182,13 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		// Respond with hello handshake to confirm presence & device identity
 		cfg := config.Get().GetConfig()
 		resp := models.WireHeader{
-			Type:     "hello",
-			Sender:   cfg.DeviceName,
-			SenderID: cfg.DeviceID,
-			ID:       cfg.DeviceID,
-			Name:     cfg.DeviceName,
+			Type:                "hello",
+			SupportsDeliveryAck: true,
+			InternetDeviceID:    cfg.DeviceID,
+			Sender:              cfg.DeviceName,
+			SenderID:            cfg.DeviceID,
+			ID:                  cfg.DeviceID,
+			Name:                cfg.DeviceName,
 		}
 		respData, _ := json.Marshal(resp)
 		_, _ = conn.Write(append(respData, '\n'))
@@ -206,18 +206,19 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 			msgID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 		}
 		if text != "" && cb.OnIncomingMessage != nil {
-			cb.OnIncomingMessage(models.ChatMessage{
-				ID:       msgID,
-				PeerID:   senderID,
-				PeerIP:   peerIP,
-				Sender:   senderName,
-				Text:     text,
-				Mine:     false,
-				At:       time.Now(),
-				Kind:     "text",
-				IsAi:     header.AIHost,
-				Status:   "Delivered",
+			storeErr := cb.OnIncomingMessage(models.ChatMessage{
+				ID:     msgID,
+				PeerID: senderID,
+				PeerIP: peerIP,
+				Sender: senderName,
+				Text:   text,
+				Mine:   false,
+				At:     time.Now(),
+				Kind:   "text",
+				IsAi:   header.AIHost,
+				Status: "Delivered",
 			})
+			ts.writeDeliveryAck(conn, header, storeErr)
 		}
 
 	case "reaction":
@@ -239,31 +240,76 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 		}
 
 	case "file", "folder":
-		ts.receiveFileStream(reader, header, cb, senderID, senderName, peerIP)
+		ts.writeDeliveryAck(conn, header, ts.receiveFileStream(reader, header, cb, senderID, senderName, peerIP))
 
-	case "ai_request", "ai_prompt", "ai_req":
+	case "ai_request", "ai_prompt", "ai_req", "ai_chat":
+		cfg := config.Get().GetConfig()
+		allowed, reason := ai.SharedAccess(cfg.AIConfig, senderID, header.InternetDeviceID, peerIP)
+		reply := map[string]interface{}{"type": "ai_response", "sender": cfg.DeviceName + " AI", "sender_id": cfg.DeviceID, "done": true}
+		if !allowed {
+			reply["status"] = "disabled"
+			reply["error_code"] = "ai_disabled"
+			reply["reply"] = reason
+			reply["message"] = reason
+			_ = json.NewEncoder(conn).Encode(reply)
+			return
+		}
 		prompt := header.Prompt
 		if prompt == "" {
 			prompt = header.Message
 		}
+		if prompt == "" {
+			prompt = header.Text
+		}
+		if strings.TrimSpace(prompt) == "" {
+			reply["status"] = "error"
+			reply["error"] = "Prompt is empty"
+			_ = json.NewEncoder(conn).Encode(reply)
+			return
+		}
 		if cb.OnAIRequest != nil {
 			cb.OnAIRequest(prompt, senderID, senderName, conn)
+			return
 		}
+		response, err := ai.Get().GenerateSharedResponse(prompt)
+		if err != nil {
+			reply["status"] = "error"
+			reply["error"] = err.Error()
+		} else {
+			reply["status"] = "success"
+			reply["reply"] = response
+		}
+		_ = json.NewEncoder(conn).Encode(reply)
 
-	case "call_invite":
-		isVideo := header.IsVideo || header.CallType == "video"
-		switch header.CallAction {
-		case "end":
-			calling.GetCall().EndCall()
-		case "decline":
-			calling.GetCall().DeclineCall()
-		case "accept", "answer":
-			calling.GetCall().AnswerCall()
-		default:
-			calling.GetCall().SetIncoming(peerIP, senderName, isVideo)
-			if cb.OnCallInvite != nil {
-				cb.OnCallInvite(senderID, senderName, isVideo)
+	case "call_invite", "call_accepted", "call_declined", "call_ended", "call_video_toggle":
+		kind := header.Type
+		if kind == "call_invite" {
+			switch header.CallAction {
+			case "end":
+				kind = "call_ended"
+			case "decline":
+				kind = "call_declined"
+			case "accept", "answer":
+				kind = "call_accepted"
 			}
+		}
+		if kind == "call_invite" {
+			video := header.IsVideo || header.CallType == "video"
+			if !calling.GetCall().SetIncoming(peerIP, senderName, video) {
+				_ = calling.SendControl(peerIP, "call_declined")
+				return
+			}
+			if cb.OnCallInvite != nil {
+				cb.OnCallInvite(senderID, senderName, video)
+			}
+		} else if kind != "call_video_toggle" {
+			if !calling.GetCall().ApplyRemote(kind, peerIP) {
+				return
+			}
+		}
+		header.Type = kind
+		if cb.OnStreamSignal != nil {
+			cb.OnStreamSignal(peerIP, header)
 		}
 
 	case "cctv_ctrl":
@@ -281,155 +327,68 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.WireHeader, cb TransferCallbacks, senderID, senderName, peerIP string) {
-	cfg := config.Get().GetConfig()
-	saveDir := cfg.SaveDirectory
-	_ = os.MkdirAll(saveDir, 0755)
-
-	if senderName == "" {
-		senderName = header.Sender
-	}
-	if senderID == "" {
-		senderID = header.SenderID
-	}
-	if senderID == "" {
-		senderID = peerIP
-	}
-
-	targetPath := filepath.Join(saveDir, header.Name)
-	tempPath := targetPath + ".part"
-
-	outFile, err := os.Create(tempPath)
-	if err != nil {
+func (ts *TransferServer) writeDeliveryAck(conn net.Conn, header models.WireHeader, err error) {
+	if !header.RequireAck {
 		return
 	}
-
-	hasher := sha256.New()
-	multiWriter := io.MultiWriter(outFile, hasher)
-
-	var received int64
-	startTime := time.Now()
-	buf := make([]byte, 64*1024)
-
-	for received < header.Size {
-		toRead := int64(len(buf))
-		if (header.Size - received) < toRead {
-			toRead = header.Size - received
-		}
-
-		n, err := reader.Read(buf[:toRead])
-		if n > 0 {
-			_, _ = multiWriter.Write(buf[:n])
-			received += int64(n)
-
-			if cb.OnTransferProgress != nil {
-				elapsed := time.Since(startTime).Seconds()
-				var speed float64
-				if elapsed > 0.1 {
-					speed = (float64(received) / (1024 * 1024)) / elapsed
-				}
-				cb.OnTransferProgress(models.TransferProgress{
-					Active:     true,
-					Direction:  "download",
-					PeerName:   senderName,
-					FileName:   header.Name,
-					BytesTotal: header.Size,
-					BytesSent:  received,
-					SpeedMBps:  speed,
-					StartTime:  startTime,
-				})
-			}
-		}
-		if err != nil {
-			break
-		}
+	reply := models.WireHeader{Type: "delivery_ack", MsgID: header.MsgID, Status: "delivered"}
+	if err != nil {
+		reply.Status = "failed"
+		reply.Error = err.Error()
 	}
-
-	_ = outFile.Close()
-
-	if received == header.Size {
-		_ = os.Rename(tempPath, targetPath)
-
-		// Handle folder auto-extraction if transfer was an archived folder
-		if header.Folder {
-			destFolder := filepath.Join(saveDir, strings.TrimSuffix(header.Name, ".zip"))
-			_ = extractZip(targetPath, destFolder)
-			targetPath = destFolder
-		}
-
-		if cb.OnTransferProgress != nil {
-			cb.OnTransferProgress(models.TransferProgress{
-				Active:     false,
-				Direction:  "download",
-				PeerName:   senderName,
-				FileName:   header.Name,
-				BytesTotal: header.Size,
-				BytesSent:  received,
-				Complete:   true,
-			})
-		}
-
-		if cb.OnIncomingMessage != nil {
-			kind := "file"
-			if header.Folder {
-				kind = "folder"
-			}
-			msgID := header.MsgID
-			if msgID == "" {
-				msgID = header.TargetMsgID
-			}
-			if msgID == "" {
-				msgID = fmt.Sprintf("msg_file_%d", time.Now().UnixNano())
-			}
-			cb.OnIncomingMessage(models.ChatMessage{
-				ID:       msgID,
-				PeerID:   senderID,
-				PeerIP:   peerIP,
-				Sender:   senderName,
-				Mine:     false,
-				At:       time.Now(),
-				Kind:     kind,
-				FileName: header.Name,
-				FileSize: header.Size,
-				FilePath: targetPath,
-				Status:   "Delivered",
-			})
-		}
-	} else {
-		_ = os.Remove(tempPath)
-	}
+	_ = json.NewEncoder(conn).Encode(reply)
 }
 
-// Helper to extract ZIP folder transfers
-func extractZip(srcZip, destDir string) error {
-	r, err := zip.OpenReader(srcZip)
+func (ts *TransferServer) receiveFileStream(reader *bufio.Reader, header models.WireHeader, cb TransferCallbacks, senderID, senderName, peerIP string) error {
+	started := time.Now()
+	tracked := &progressReader{Reader: reader, OnRead: func(received int64) {
+		if cb.OnTransferProgress != nil {
+			seconds := time.Since(started).Seconds()
+			speed := float64(0)
+			if seconds > 0 {
+				speed = float64(received) / (1024 * 1024) / seconds
+			}
+			cb.OnTransferProgress(models.TransferProgress{Active: true, Direction: "download", PeerName: senderName, FileName: header.Name, BytesTotal: header.Size, BytesSent: received, SpeedMBps: speed, StartTime: started})
+		}
+	}}
+	path, err := StoreReceivedFile(config.Get().GetConfig().SaveDirectory, header.Name, header.Folder || header.Type == "folder", tracked, header.Size)
 	if err != nil {
+		log.Printf("[TransferServer] Receive failed for %s: %v", header.Name, err)
+		if cb.OnTransferProgress != nil {
+			cb.OnTransferProgress(models.TransferProgress{FileName: header.Name, Error: err.Error()})
+		}
 		return err
 	}
-	defer r.Close()
-
-	_ = os.MkdirAll(destDir, 0755)
-	for _, f := range r.File {
-		fpath := filepath.Join(destDir, f.Name)
-		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			continue
-		}
-		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			_ = outFile.Close()
-			continue
-		}
-		_, _ = io.Copy(outFile, rc)
-		_ = outFile.Close()
-		_ = rc.Close()
+	if cb.OnIncomingMessage == nil {
+		return fmt.Errorf("message storage is unavailable")
 	}
-	return nil
+	kind := "file"
+	if header.Folder || header.Type == "folder" {
+		kind = "folder"
+	}
+	id := header.MsgID
+	if id == "" {
+		id = fmt.Sprintf("msg_file_%d", time.Now().UnixNano())
+	}
+	err = cb.OnIncomingMessage(models.ChatMessage{ID: id, PeerID: senderID, PeerIP: peerIP, Sender: senderName,
+		Mine: false, At: time.Now(), Kind: kind, FileName: header.Name, FileSize: header.Size, FilePath: path, Status: "Delivered"})
+	if err == nil && cb.OnTransferProgress != nil {
+		cb.OnTransferProgress(models.TransferProgress{Direction: "download", PeerName: senderName, FileName: header.Name, BytesTotal: header.Size, BytesSent: header.Size, Complete: true})
+	}
+	return err
+}
+
+type progressReader struct {
+	io.Reader
+	received int64
+	OnRead   func(int64)
+}
+
+func (r *progressReader) Read(buffer []byte) (int, error) {
+	n, err := r.Reader.Read(buffer)
+	r.received += int64(n)
+	if n > 0 && r.OnRead != nil {
+		r.OnRead(r.received)
+	}
+	return n, err
 }

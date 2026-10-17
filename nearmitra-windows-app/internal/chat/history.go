@@ -62,14 +62,20 @@ func (hm *HistoryManager) saveUnsafe() error {
 }
 
 // AddMessage appends a new message to history.
-func (hm *HistoryManager) AddMessage(msg models.ChatMessage) {
+func (hm *HistoryManager) AddMessage(msg models.ChatMessage) error {
 	hm.mu.Lock()
+	defer hm.mu.Unlock()
 	if msg.At.IsZero() {
 		msg.At = time.Now()
 	}
+	for i, previous := range hm.messages {
+		if previous.ID == msg.ID && msg.ID != "" {
+			hm.messages[i] = msg
+			return hm.saveUnsafe()
+		}
+	}
 	hm.messages = append(hm.messages, msg)
-	_ = hm.saveUnsafe()
-	hm.mu.Unlock()
+	return hm.saveUnsafe()
 }
 
 // AddReaction updates or sets reaction on a targeted message.

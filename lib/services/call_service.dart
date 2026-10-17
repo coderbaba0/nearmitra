@@ -8,6 +8,7 @@ import 'package:flutter_callkit_incoming/entities/call_kit_params.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 
 import '../models/peer.dart';
+import 'package:uuid/uuid.dart';
 
 class AcceptedCallData {
   final Peer peer;
@@ -24,7 +25,27 @@ class CallService {
   factory CallService() => _instance;
   CallService._internal();
 
+  final incomingCall=ValueNotifier<AcceptedCallData?>(null);
+  bool isAppInForeground=false;
+  Timer? _incomingTimeout;
+
   bool _initialized = false;
+
+  void acceptPendingIncomingCall(){
+    final call=incomingCall.value;if(call==null || _isCallActive)return;
+    _incomingTimeout?.cancel();_isCallActive=true;incomingCall.value=null;
+    _pendingAcceptedCall=call;
+    final callback=_onCallAccepted;
+    if(callback!=null){_pendingAcceptedCall=null;callback(call.peer,call.isVideo,true);}
+  }
+  void declinePendingIncomingCall(){
+    final call=incomingCall.value;if(call==null)return;
+    _incomingTimeout?.cancel();incomingCall.value=null;
+    if(_onCallDeclined!=null){_onCallDeclined!(call.peer);}else{unawaited(_sendDeclinedSignalDirect(call.peer));}
+    unawaited(FlutterCallkitIncoming.endAllCalls().catchError((_){ }));
+  }
+  void clearPendingIncomingCall(){_incomingTimeout?.cancel();incomingCall.value=null;}
+
   bool _isCallActive = false;
   AcceptedCallData? _pendingAcceptedCall;
   Function(Peer peer, bool isVideoCall, bool isIncoming)? _onCallAccepted;
@@ -37,6 +58,7 @@ class CallService {
 
   void setCallActive(bool active) {
     _isCallActive = active;
+    if(active)clearPendingIncomingCall();
     if (!active) {
       _pendingAcceptedCall = null;
     }
@@ -57,7 +79,9 @@ class CallService {
         if (ev == Event.actionCallAccept) {
           final body = event.body as Map<dynamic, dynamic>?;
           if (body != null) {
+            if(_isCallActive)return;
             _isCallActive = true;
+            clearPendingIncomingCall();
             _handleAcceptedCallEvent(body);
           }
         } else if (ev == Event.actionCallDecline) {
@@ -69,9 +93,11 @@ class CallService {
           if (body != null) {
             _handleDeclinedCallEvent(body);
           }
+          clearPendingIncomingCall();
           _pendingAcceptedCall = null;
         } else if (ev == Event.actionCallTimeout || ev == Event.actionCallEnded) {
           if (!_isCallActive) {
+            clearPendingIncomingCall();
             _pendingAcceptedCall = null;
           }
         }
@@ -194,8 +220,7 @@ class CallService {
       lastSeen: DateTime.now(),
     );
 
-    _onCallDeclined?.call(peer);
-    _sendDeclinedSignalDirect(peer);
+    if(_onCallDeclined!=null){_onCallDeclined!(peer);}else{unawaited(_sendDeclinedSignalDirect(peer));}
   }
 
   Future<void> _sendDeclinedSignalDirect(Peer peer) async {
@@ -218,9 +243,9 @@ class CallService {
     try {
       final calls = await FlutterCallkitIncoming.activeCalls();
       debugPrint('[CallService] Active calls on startup: $calls');
-      if (calls is List && calls.isNotEmpty) {
+      if (calls is List && calls.isNotEmpty && !_isCallActive) {
         for (final item in calls) {
-          if (item is Map<dynamic, dynamic>) {
+          if (item is Map<dynamic, dynamic> && item['isAccepted']==true) {
             _handleAcceptedCallEvent(item);
             break;
           }
@@ -256,12 +281,14 @@ class CallService {
     _onCallDeclined = callback;
   }
 
-  Future<void> showIncomingCall({
+  Future<bool> showIncomingCall({
     required String peerId,
     required String peerName,
     required String peerIp,
     required bool isVideoCall,
   }) async {
+    if(_isCallActive)return false;
+    if(incomingCall.value!=null)return incomingCall.value!.peer.ip==peerIp;
     final peerObj = Peer(
       id: peerId,
       name: peerName,
@@ -271,7 +298,12 @@ class CallService {
     _cachedPeers[peerId] = peerObj;
     _cachedPeers[peerIp] = peerObj;
 
-    final uuid = DateTime.now().millisecondsSinceEpoch.toString();
+    final uuid = const Uuid().v4();
+    final pending=AcceptedCallData(peer:peerObj,isVideo:isVideoCall);
+    incomingCall.value=pending;
+    _incomingTimeout?.cancel();
+    _incomingTimeout=Timer(const Duration(seconds:35),(){if(incomingCall.value==pending){declinePendingIncomingCall();}});
+    if(isAppInForeground)return true;
     _cachedPeers[uuid] = peerObj;
 
     final params = CallKitParams(
@@ -307,10 +339,12 @@ class CallService {
     } catch (e) {
       debugPrint('Error showing incoming call: $e');
     }
+    return incomingCall.value==pending || _isCallActive;
   }
 
   Future<void> endAllCalls() async {
     try {
+      clearPendingIncomingCall();
       _pendingAcceptedCall = null;
       await FlutterCallkitIncoming.endAllCalls();
     } catch (_) {}

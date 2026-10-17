@@ -2,8 +2,15 @@
 package ui
 
 import (
+	_ "embed"
+	"encoding/binary"
+	"log"
+	"syscall"
 	"unsafe"
 )
+
+//go:embed web/favicon.ico
+var embeddedTrayIcon []byte
 
 const (
 	TrayUID     = 1001
@@ -31,11 +38,8 @@ func NewTrayManager(hwnd uintptr, hIcon uintptr) *TrayManager {
 	tm.nid.UCallbackMessage = WM_TRAYICON
 	tm.nid.HIcon = hIcon
 
-	copyTip := UTF16Ptr("NearMitra - Local AI & P2P Transfer")
-	copy(tm.nid.SzTip[:], (*[128]uint16)(unsafe.Pointer(copyTip))[:])
-
-	pShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&tm.nid)))
-	tm.active = true
+	copyTrayText(tm.nid.SzTip[:], "NearMitra - Local AI & P2P Transfer")
+	tm.Add()
 	return tm
 }
 
@@ -45,10 +49,8 @@ func (tm *TrayManager) ShowNotification(title, message string) {
 		return
 	}
 	tm.nid.UFlags = NIF_INFO
-	copyTitle := UTF16Ptr(title)
-	copyMsg := UTF16Ptr(message)
-	copy(tm.nid.SzInfoTitle[:], (*[64]uint16)(unsafe.Pointer(copyTitle))[:])
-	copy(tm.nid.SzInfo[:], (*[256]uint16)(unsafe.Pointer(copyMsg))[:])
+	copyTrayText(tm.nid.SzInfoTitle[:], title)
+	copyTrayText(tm.nid.SzInfo[:], message)
 	tm.nid.DwInfoFlags = NIIF_INFO
 
 	pShellNotifyIcon.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&tm.nid)))
@@ -99,4 +101,56 @@ func (tm *TrayManager) ShowContextMenu(onOpen, onSaveFolder, onToggleTheme, onEx
 			onExit()
 		}
 	}
+}
+
+func copyTrayText(destination []uint16, text string) {
+	clear(destination)
+	value := syscall.StringToUTF16(text)
+	if len(value) > len(destination) {
+		value = value[:len(destination)-1]
+	}
+	copy(destination, value)
+}
+
+// Add is called at creation, on Explorer restart, and while registration retries.
+func (tm *TrayManager) Add() bool {
+	tm.nid.UFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+	result, _, err := pShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&tm.nid)))
+	tm.active = result != 0
+	if !tm.active {
+		log.Printf("[Tray] Shell_NotifyIcon registration failed: %v (window=%x icon=%x)", err, tm.hwnd, tm.hIcon)
+	} else {
+		log.Printf("[Tray] Notification icon registered")
+	}
+	return tm.active
+}
+func loadEmbeddedTrayIcon() uintptr {
+	data := embeddedTrayIcon
+	if len(data) < 22 || binary.LittleEndian.Uint16(data[2:4]) != 1 {
+		return 0
+	}
+	count := int(binary.LittleEndian.Uint16(data[4:6]))
+	best := -1
+	for i := 0; i < count; i++ {
+		offset := 6 + 16*i
+		if offset+16 > len(data) {
+			break
+		}
+		if best < 0 || data[offset] == 32 {
+			best = offset
+			if data[offset] == 32 {
+				break
+			}
+		}
+	}
+	if best < 0 {
+		return 0
+	}
+	size := int(binary.LittleEndian.Uint32(data[best+8 : best+12]))
+	offset := int(binary.LittleEndian.Uint32(data[best+12 : best+16]))
+	if size <= 0 || offset < 0 || offset > len(data)-size {
+		return 0
+	}
+	icon, _, _ := user32.NewProc("CreateIconFromResourceEx").Call(uintptr(unsafe.Pointer(&data[offset])), uintptr(size), 1, 0x00030000, 32, 32, 0)
+	return icon
 }

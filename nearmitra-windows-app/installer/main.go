@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -30,21 +32,24 @@ var appIcon []byte
 //go:embed uninstall.ps1
 var uninstallerScript []byte
 
+//go:embed setup-network.ps1
+var networkScript []byte
+
 //go:embed assets/*
 var assetsFS embed.FS
 
 const (
-	AppName      = "NearMitra Desktop (Windows 11)"
-	AppVersion   = "2.0.0"
-	Publisher    = "NearMitra Ecosystem"
+	AppName       = "NearMitra Desktop"
+	AppVersion    = "2.1.2"
+	Publisher     = "NearMitra Ecosystem"
 	InstallerPort = 43899
 )
 
 var (
-	kernel32        = syscall.NewLazyDLL("kernel32.dll")
-	user32          = syscall.NewLazyDLL("user32.dll")
-	shell32         = syscall.NewLazyDLL("shell32.dll")
-	pShellExecute   = shell32.NewProc("ShellExecuteW")
+	kernel32      = syscall.NewLazyDLL("kernel32.dll")
+	user32        = syscall.NewLazyDLL("user32.dll")
+	shell32       = syscall.NewLazyDLL("shell32.dll")
+	pShellExecute = shell32.NewProc("ShellExecuteW")
 )
 
 func UTF16Ptr(s string) *uint16 {
@@ -109,115 +114,76 @@ func main() {
 	})
 
 	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "NearMitra")
+	var installMu sync.Mutex
+	installed := false
 
 	mux.HandleFunc("/api/installer/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"app_name":     AppName,
-			"app_version":  AppVersion,
-			"publisher":    Publisher,
-			"install_path": installDir,
+			"app_name":       AppName,
+			"app_version":    AppVersion,
+			"publisher":      Publisher,
+			"payload_sha256": fmt.Sprintf("%x", sha256.Sum256(appBinary)),
+			"install_path":   installDir,
 		})
 	})
 
 	mux.HandleFunc("/api/installer/execute", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			DesktopShortcut bool `json:"desktop_shortcut"`
-			StartMenu       bool `json:"start_menu"`
-			Autostart       bool `json:"autostart"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-
-		// 1. Stop any currently running NearMitra process
-		_ = exec.Command("powershell.exe", "-NoProfile", "-Command", "Stop-Process -Name 'NearMitra', 'nearmitra-windows-app' -Force -ErrorAction SilentlyContinue").Run()
-		time.Sleep(500 * time.Millisecond)
-
-		// 2. Create Destination Directory
-		if err := os.MkdirAll(installDir, 0755); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", 405)
 			return
 		}
-
-		exePath := filepath.Join(installDir, "NearMitra.exe")
-		iconPath := filepath.Join(installDir, "nearmitra.ico")
-		uninstPath := filepath.Join(installDir, "uninstall.ps1")
-
-		// 3. Extract NearMitra.exe
-		if err := os.WriteFile(exePath, appBinary, 0755); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": fmt.Sprintf("Failed to write NearMitra.exe: %v", err)})
+		if !installMu.TryLock() {
+			http.Error(w, "Installation already in progress", 409)
 			return
 		}
-
-		// 4. Extract nearmitra.ico & uninstaller script
-		if len(appIcon) > 0 {
-			_ = os.WriteFile(iconPath, appIcon, 0644)
-		}
-		if len(uninstallerScript) > 0 {
-			_ = os.WriteFile(uninstPath, uninstallerScript, 0644)
-		}
-
-		// 4b. Extract assets directory
-		destAssets := filepath.Join(installDir, "assets")
-		_ = os.MkdirAll(destAssets, 0755)
-		_ = fs.WalkDir(assetsFS, "assets", func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			rel, _ := filepath.Rel("assets", path)
-			targetFile := filepath.Join(destAssets, rel)
-			_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-			data, readErr := assetsFS.ReadFile(path)
-			if readErr == nil {
-				_ = os.WriteFile(targetFile, data, 0644)
-			}
-			return nil
-		})
-
-		// 5. Create Desktop and Start Menu Shortcuts via PowerShell
-		var psScript strings.Builder
-		psScript.WriteString("$WshShell = New-Object -ComObject WScript.Shell;\n")
-
-		if req.DesktopShortcut {
-			desktopPath := filepath.Join(os.Getenv("USERPROFILE"), "Desktop")
-			if _, err := os.Stat(filepath.Join(os.Getenv("USERPROFILE"), "OneDrive", "Desktop")); err == nil {
-				desktopPath = filepath.Join(os.Getenv("USERPROFILE"), "OneDrive", "Desktop")
-			}
-			shortcutPath := filepath.Join(desktopPath, "NearMitra.lnk")
-			psScript.WriteString(fmt.Sprintf(`$s1 = $WshShell.CreateShortcut('%s'); $s1.TargetPath = '%s'; $s1.WorkingDirectory = '%s'; $s1.IconLocation = '%s,0'; $s1.Description = 'NearMitra - Local AI & High-Speed P2P Mesh'; $s1.Save();`+"\n", shortcutPath, exePath, installDir, iconPath))
-		}
-
-		if req.StartMenu {
-			startMenuPath := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "Start Menu", "Programs")
-			shortcutPath := filepath.Join(startMenuPath, "NearMitra.lnk")
-			psScript.WriteString(fmt.Sprintf(`$s2 = $WshShell.CreateShortcut('%s'); $s2.TargetPath = '%s'; $s2.WorkingDirectory = '%s'; $s2.IconLocation = '%s,0'; $s2.Description = 'NearMitra - Local AI & High-Speed P2P Mesh'; $s2.Save();`+"\n", shortcutPath, exePath, installDir, iconPath))
-		}
-
-		// 6. Register in Windows Add / Remove Programs
-		regPath := `HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\NearMitra`
-		uninstCmd := fmt.Sprintf(`powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%s"`, uninstPath)
-		psScript.WriteString(fmt.Sprintf(`if (!(Test-Path '%s')) { New-Item -Path '%s' -Force | Out-Null };`+"\n", regPath, regPath))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'DisplayName' -Value '%s';`+"\n", regPath, AppName))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'DisplayVersion' -Value '%s';`+"\n", regPath, AppVersion))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'Publisher' -Value '%s';`+"\n", regPath, Publisher))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'DisplayIcon' -Value '%s';`+"\n", regPath, iconPath))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'InstallLocation' -Value '%s';`+"\n", regPath, installDir))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'UninstallString' -Value '%s';`+"\n", regPath, uninstCmd))
-		psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path '%s' -Name 'QuietUninstallString' -Value '%s';`+"\n", regPath, uninstCmd))
-
-		if req.Autostart {
-			psScript.WriteString(fmt.Sprintf(`Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'NearMitra' -Value '"%s" --minimized';`+"\n", exePath))
-		}
-
-		_ = exec.Command("powershell.exe", "-NoProfile", "-Command", psScript.String()).Run()
-
-		log.Println("[Installer] Core extraction & registration completed successfully.")
+		defer installMu.Unlock()
+		var options InstallOptions
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+		if json.NewDecoder(r.Body).Decode(&options) != nil {
+			w.WriteHeader(400)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Invalid installation options"})
+			return
+		}
+		fail := func(err error) {
+			log.Printf("[Installer] %v", err)
+			w.WriteHeader(500)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
+		}
+		if err := runInstallerScript("$ErrorActionPreference='Stop';$running=Get-Process -Name NearMitra,nearmitra-windows-app -ErrorAction SilentlyContinue;foreach($p in $running){Stop-Process -Id $p.Id -Force -ErrorAction Stop};exit 0"); err != nil {
+			fail(err)
+			return
+		}
+		if err := writeInstallFiles(installDir); err != nil {
+			fail(err)
+			return
+		}
+		if err := runInstallerScript(registrationScript(installDir, options)); err != nil {
+			fail(err)
+			return
+		}
+		warning := ""
+		if options.PrivateNetwork {
+			if err := configurePrivateNetwork(installDir); err != nil {
+				warning = "App installed. Private-network access was not configured: " + err.Error()
+			}
+		}
+		installed = true
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "warning": warning, "message": "NearMitra installed successfully"})
 	})
 
 	mux.HandleFunc("/api/installer/finish", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", 405)
+			return
+		}
+		installMu.Lock()
+		ready := installed
+		installMu.Unlock()
+		if !ready {
+			http.Error(w, "Complete installation first", 409)
+			return
+		}
 		var req struct {
 			LaunchNow bool `json:"launch_now"`
 		}
@@ -225,7 +191,12 @@ func main() {
 
 		if req.LaunchNow {
 			exePath := filepath.Join(installDir, "NearMitra.exe")
-			_ = exec.Command(exePath).Start()
+			cmd := exec.Command(exePath)
+			cmd.Dir = installDir
+			if err := cmd.Start(); err != nil {
+				http.Error(w, "Cannot start NearMitra: "+err.Error(), 500)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -238,6 +209,15 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/installer/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", 405)
+			return
+		}
+		if !installMu.TryLock() {
+			http.Error(w, "Wait for installation to finish", 409)
+			return
+		}
+		installMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		go func() {
 			time.Sleep(300 * time.Millisecond)

@@ -17,6 +17,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : FlutterActivity() {
+    private val phoneTelemetry by lazy { PhoneTelemetry(this) }
     private val networkChannelName = "farmitra_nearby/network"
     private val p2pMethodChannelName = "farmitra_nearby/wifi_p2p"
     private val p2pEventChannelName = "farmitra_nearby/wifi_p2p_events"
@@ -48,6 +49,7 @@ class MainActivity : FlutterActivity() {
         // Multicast & Background Network Lock Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannelName).setMethodCallHandler { call, result ->
             when (call.method) {
+                "requestPhoneTelemetry" -> phoneTelemetry.request(call.argument<String>("peer") ?: "Nearby desktop", result)
                 "acquireMulticastLock" -> {
                     try {
                         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -674,7 +676,13 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        phoneTelemetry.onPermissionsResult(requestCode)
+    }
+
     override fun onDestroy() {
+        phoneTelemetry.close()
         try {
             if (p2pReceiver != null) {
                 unregisterReceiver(p2pReceiver)

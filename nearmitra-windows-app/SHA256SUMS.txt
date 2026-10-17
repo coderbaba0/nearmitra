@@ -1,1 +1,3 @@
-31BE90A5584F1D2D7BC80361F400E027608252AA865427113A634F2539B860F7
+63c33dac4f1341a97b3bb5ebfb07f748dc1dc879a4dfd95e5e1bf67039f48fa2  build/windows-release/NearMitra_Setup_2.1.2_x64.exe
+ffdd4b2ea62989afc4931c6aa92d1736c5d275ea0310d8deb60ded63ddd48306  build/windows-release/NearMitra.exe
+0754db213757a6a361c4a036fc777d3e1339bc072a7e7835e03a1042c8390028  build/windows-release/NearMitra-Android-1.0.1.apk

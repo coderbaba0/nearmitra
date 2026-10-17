@@ -10,14 +10,14 @@ class HistoryService extends ChangeNotifier {
   HistoryService._internal();
 
   static const _key = 'farmitra_nearby_chat_history_v1';
+  Future<void> _writes = Future<void>.value();
 
-  Future<List<ChatItem>> load() async {
+  Future<List<ChatItem>> _read() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_key);
     if (raw == null || raw.isEmpty) return [];
     try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
+      return (jsonDecode(raw) as List<dynamic>)
           .map((e) => ChatItem.fromJson(Map<String, dynamic>.from(e as Map)))
           .toList();
     } catch (_) {
@@ -25,35 +25,53 @@ class HistoryService extends ChangeNotifier {
     }
   }
 
-  Future<void> save(List<ChatItem> items) async {
+  Future<List<ChatItem>> load() async {
+    await _writes;
+    return _read();
+  }
+
+  Future<void> _write(List<ChatItem> items) async {
     final prefs = await SharedPreferences.getInstance();
-    final trimmed = items.length > 800 ? items.sublist(items.length - 800) : items;
-    await prefs.setString(_key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+    final unique = {for (final item in items) item.id: item}.values.toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final trimmed =
+        unique.length > 800 ? unique.sublist(unique.length - 800) : unique;
+    await prefs.setString(
+        _key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
     notifyListeners();
   }
 
-  Future<void> addItem(ChatItem item) async {
-    final list = await load();
-    final idx = list.indexWhere((e) => e.id == item.id);
-    if (idx != -1) {
-      list[idx] = item;
-    } else {
-      list.add(item);
-    }
-    await save(list);
+  Future<void> _serialize(Future<void> Function() action) {
+    final result = _writes.then((_) => action());
+    _writes = result.then<void>((_) {}, onError: (Object e, StackTrace s) {
+      debugPrint('[History] Write failed: $e');
+    });
+    return result;
   }
 
-  Future<void> addItems(List<ChatItem> newItems) async {
-    if (newItems.isEmpty) return;
-    final list = await load();
-    for (final item in newItems) {
-      final idx = list.indexWhere((e) => e.id == item.id);
-      if (idx != -1) {
-        list[idx] = item;
-      } else {
-        list.add(item);
+  Future<void> save(List<ChatItem> items) {
+    final snapshot = items.map((e) => ChatItem.fromJson(e.toJson())).toList();
+    return _serialize(() => _write(snapshot));
+  }
+
+  Future<void> removePeers(Set<String> peerIds) => _serialize(() async {
+        final items = await _read();
+        await _write(
+            items.where((item) => !peerIds.contains(item.peerId)).toList());
+      });
+
+  Future<void> addItem(ChatItem item) => addItems([item]);
+
+  Future<void> addItems(List<ChatItem> newItems) {
+    if (newItems.isEmpty) return Future<void>.value();
+    final snapshots =
+        newItems.map((e) => ChatItem.fromJson(e.toJson())).toList();
+    return _serialize(() async {
+      final current = {for (final item in await _read()) item.id: item};
+      for (final item in snapshots) {
+        current[item.id] = item;
       }
-    }
-    await save(list);
+      await _write(current.values.toList());
+    });
   }
 }
