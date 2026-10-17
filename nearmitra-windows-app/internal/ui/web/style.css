@@ -5352,7 +5352,7 @@ body.light-theme #tab-iot input[type="datetime-local"] {color-scheme:light;}
 .live-transfer-row progress {width:100%;height:6px;accent-color:var(--primary-emerald);}
 
 /* Chat actions follow the active application theme. */
-.msg-chat-actions {display:flex;gap:4px;justify-content:flex-end;margin:0 0 4px;opacity:0;transition:opacity .15s;}
+.msg-chat-actions {display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;margin:0 0 4px;opacity:0;transition:opacity .15s;}
 .msg-row:hover .msg-chat-actions,.msg-row:focus-within .msg-chat-actions {opacity:1;}
 .msg-chat-actions button,.chat-selection-bar button,.chat-forward-dialog button,.chat-reply-preview button {font:inherit;cursor:pointer;border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-body);border-radius:7px;padding:5px 9px;}
 .msg-chat-actions button {font-size:11px;}

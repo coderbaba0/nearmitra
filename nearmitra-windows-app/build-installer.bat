@@ -12,10 +12,10 @@ call "%~dp0sign-release.bat" "%RELEASE_DIR%\NearMitra.exe"
 if errorlevel 1 exit /b 1
 copy /Y "%RELEASE_DIR%\NearMitra.exe" installer\NearMitra.exe >nul
 if errorlevel 1 exit /b 1
-echo Building NearMitra Setup 2.1.17...
-go build -trimpath -ldflags="-H windowsgui -s -w" -o "%RELEASE_DIR%\NearMitra_Setup_2.1.17_x64.exe" ./installer
+echo Building NearMitra Setup 2.1.19...
+go build -trimpath -ldflags="-H windowsgui -s -w" -o "%RELEASE_DIR%\NearMitra_Setup_2.1.19_x64.exe" ./installer
 if errorlevel 1 exit /b 1
-call "%~dp0sign-release.bat" "%RELEASE_DIR%\NearMitra_Setup_2.1.17_x64.exe"
+call "%~dp0sign-release.bat" "%RELEASE_DIR%\NearMitra_Setup_2.1.19_x64.exe"
 if errorlevel 1 exit /b 1
-echo Setup ready: %RELEASE_DIR%\NearMitra_Setup_2.1.17_x64.exe
+echo Setup ready: %RELEASE_DIR%\NearMitra_Setup_2.1.19_x64.exe
 endlocal

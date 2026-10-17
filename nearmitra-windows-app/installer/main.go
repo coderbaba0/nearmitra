@@ -34,7 +34,7 @@ var assetsFS embed.FS
 
 const (
 	AppName       = "NearMitra Desktop"
-	AppVersion    = "2.1.17"
+	AppVersion    = "2.1.19"
 	Publisher     = "flutterfever.com"
 	InstallerPort = 43899
 )

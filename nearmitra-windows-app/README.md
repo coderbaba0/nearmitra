@@ -1,10 +1,10 @@
 # NearMitra for Windows
 
-NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.17**, targeting **Windows 10/11 x64**.
+NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.19**, targeting **Windows 10/11 x64**.
 
 The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript interface opened in a Windows browser app window, plus native Win32 tray, picker, audio and Explorer integrations. Older native-renderer code and historical screenshots remain in the repository; they are not the current UI specification.
 
-## Updates included in 2.1.17
+## Updates included in 2.1.19
 
 | Versions | Changes |
 |---|---|
@@ -16,13 +16,16 @@ The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript
 | 2.1.15 | `flutterfever.com` publisher branding and optional certificate-store signing/verification in the release build. The available setup remains unsigned. |
 | 2.1.16 | Selected-device Nearby AI separated from My AI; per-device Allow/Revoke; actual Ollama response streaming, loading heartbeats, Stop and mid-stream permission checks. |
 | 2.1.17 | Native Explorer Open Folder / Show in Folder, exact full-path window matching, foreground/restoration of existing folder windows, and actual error feedback. |
+| 2.1.18 | Connected-call video upgrades explicitly enable the negotiated video sender; screen/camera switching preserves audio and restores the prior track/direction after a failed upgrade. |
+
+| 2.1.19 | Copy beside Select in message hover actions, clipboard feedback/fallback, and configured desktop avatars included in discovery handshakes and preserved across rescans. |
 
 Connected-call screen sharing/camera switching and WAN heartbeat expiry/offline cleanup are also included in the current source. Android additions are source changes; no new APK was generated for these Windows releases.
 
 ## Install or upgrade
 
 1. Build the setup as described below, or use the installer supplied separately by the maintainer.
-2. Exit old NearMitra tray/portable copies and run `build\windows-release\NearMitra_Setup_2.1.17_x64.exe`.
+2. Exit old NearMitra tray/portable copies and run `build\windows-release\NearMitra_Setup_2.1.19_x64.exe`.
 3. Choose preferences. **Auto-start NearMitra minimized when Windows starts** is checked by default and can be unchecked.
 4. Optional **Allow Nearby on private networks** requests administrator approval for the setup executable. It adds inbound TCP/UDP rules limited to this program, the private profile and local subnet. Declining approval still completes installation, but incoming discovery, files or calls may be blocked until allowed in Windows Firewall.
 5. Launch the installed copy. The tray icon may be inside Windows' notification overflow.
@@ -117,7 +120,7 @@ Local outputs:
 
 ```text
 build\windows-release\NearMitra.exe
-build\windows-release\NearMitra_Setup_2.1.17_x64.exe
+build\windows-release\NearMitra_Setup_2.1.19_x64.exe
 ```
 
 Run the build first on a fresh clone: the installer embeds `installer/NearMitra.exe`, which is generated and intentionally not committed. The build copies the current app into the setup's embedded payload. Installer tests compare its bytes with the release app. If a trusted certificate is configured, the app is signed/verified before embedding, then setup is signed/verified; configured signing failures abort the build. Without a certificate, output remains explicitly unsigned.

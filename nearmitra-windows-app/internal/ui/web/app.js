@@ -1005,7 +1005,7 @@ function renderChatMessages() {
     const quote=NearMitraChat.normalize(m);
     const quoteHTML=quote.reply_to_id ? `<button class="msg-quoted-reply" data-quote-id="${escapeHTML(quote.reply_to_id)}" onclick="jumpQuotedMessage(event)"><strong>${escapeHTML(quote.reply_to_sender || 'Message')}</strong><span>${escapeHTML(quote.reply_to_text || 'Attachment')}</span></button>` : '';
     const forwardedHTML=quote.is_forwarded ? '<div class="msg-forwarded-label">↪ Forwarded</div>' : '';
-    const actionHTML=chatCanAct(m) ? `<div class="msg-chat-actions" data-chat-id="${escapeHTML(m.id)}"><button onclick="chatMessageAction(event,'reply')" title="Reply to message">↩ Reply</button><button onclick="chatMessageAction(event,'forward')" title="Forward message or file">↪ Forward</button><button onclick="chatMessageAction(event,'select')" aria-pressed="${chatSelection.has(m.id)}">${chatSelection.has(m.id)?'✓ Selected':'Select'}</button></div>` : '';
+    const actionHTML=chatCanAct(m) ? `<div class="msg-chat-actions" data-chat-id="${escapeHTML(m.id)}"><button onclick="chatMessageAction(event,'reply')" title="Reply to message">↩ Reply</button><button onclick="chatMessageAction(event,'forward')" title="Forward message or file">↪ Forward</button><button onclick="chatMessageAction(event,'select')" aria-pressed="${chatSelection.has(m.id)}">${chatSelection.has(m.id)?'✓ Selected':'Select'}</button><button onclick="chatMessageAction(event,'copy')" title="Copy message text">⧉ Copy</button></div>` : '';
     const hoverReactionsBar = `
       <div class="msg-hover-reactions">
         <span onclick="toggleMessageReaction('${m.id}', '👍')">👍</span>
@@ -7562,6 +7562,23 @@ function chatMessageAction(event,action) {
   if(chatSelection.has(id)) chatSelection.delete(id);else chatSelection.add(id);
   renderChatMessages();
  } else if(action==='forward') openChatForward([id]);
+ else if(action==='copy') copyChatMessage(message);
+}
+async function copyChatMessage(message) {
+ const text=message.text || message.file_name || message.attachment?.name || '';
+ if(!text) {showToast('No text to copy');return;}
+ try {
+  if(globalThis.navigator?.clipboard?.writeText) {
+   await navigator.clipboard.writeText(text);
+  } else {
+   const previousFocus=document.activeElement,field=document.createElement('textarea');
+   field.value=text;field.readOnly=true;field.style.cssText='position:fixed;left:-9999px;top:0';
+   document.body.appendChild(field);
+   try {field.select();if(!document.execCommand('copy')) throw new Error('Copy failed');}
+   finally {field.remove();previousFocus?.focus();}
+  }
+  showToast('Message copied to clipboard');
+ } catch(error) {showToast('Could not copy message. Please try again.');}
 }
 function clearChatSelection() {chatSelection.clear();renderChatMessages();}
 function cancelChatReply() {chatReply=null;updateChatReplyPreview();}

@@ -91,20 +91,39 @@
   }
   async publishVideo(s,track){
    if(this.session!==s)return false;
-   const previous=s.videoTransceiver.sender.track;
+   const reserved=s.videoTransceiver;
+   const live=s.pc.getTransceivers().find(tx=>!tx.stopped &&
+    (tx.sender===reserved.sender || (reserved.mid!=null && tx.mid===reserved.mid)));
+   if(!live)throw new Error('The call video sender is unavailable; reconnect the call');
+   s.videoTransceiver=live;
+   const previous=live.sender.track,previousDirection=live.direction;
+   const upgrade=track && live.currentDirection!=='sendrecv' && live.currentDirection!=='sendonly';
+   // Check before replacing media so a pending remote/local offer leaves the
+   // currently published camera or screen intact.
+   if(upgrade && s.pc.signalingState!=='stable')throw new Error('Call negotiation is in progress; try again');
+   let replaced=false,localOfferSet=false;
    try{
-   await s.videoTransceiver.sender.replaceTrack(track);
-   // A legacy audio-only peer may not have negotiated the reserved video slot.
-   const direction=s.videoTransceiver.currentDirection;
-   if(track && direction!=='sendrecv' && direction!=='sendonly'){
-    if(s.pc.signalingState!=='stable')throw new Error('Call negotiation is in progress; try again');
-    const offer=await s.pc.createOffer();
+    // A mobile audio-only answer can leave this slot recvonly/inactive. The
+    // next offer must explicitly permit sending before publishing video.
+    if(upgrade)live.direction='sendrecv';
+    await live.sender.replaceTrack(track);replaced=true;
     if(this.session!==s)return false;
-    await s.pc.setLocalDescription(offer);
-    await this.signal('webrtc_offer',{sdp:offer.sdp,sdp_type:offer.type,is_video:true});
+    if(upgrade){
+     const offer=await s.pc.createOffer();
+     if(this.session!==s)return false;
+     await s.pc.setLocalDescription(offer);localOfferSet=true;
+     if(this.session!==s)return false;
+     await this.signal('webrtc_offer',{sdp:offer.sdp,sdp_type:offer.type,is_video:true});
+    }
+    return this.session===s;
+   }catch(error){
+    if(this.session===s){
+     if(localOfferSet && s.pc.signalingState==='have-local-offer')await s.pc.setLocalDescription({type:'rollback'}).catch(()=>{});
+     if(replaced)await live.sender.replaceTrack(previous).catch(()=>{});
+     if(upgrade)live.direction=previousDirection;
+    }
+    throw error;
    }
-   return this.session===s;
-   }catch(error){if(this.session===s)await s.videoTransceiver.sender.replaceTrack(previous).catch(()=>{});throw error;}
   }
   async notifyVideo(s){if(this.session===s)await this.signal('call_video_toggle',{is_video:s.sharing || s.video});}
   async camera(enabled){return this.videoChange(async s=>{

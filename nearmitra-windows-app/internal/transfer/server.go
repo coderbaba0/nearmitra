@@ -190,6 +190,9 @@ func (ts *TransferServer) handleConnection(conn net.Conn) {
 			SenderID:            cfg.DeviceID,
 			ID:                  cfg.DeviceID,
 			Name:                cfg.DeviceName,
+			AvatarEmoji:         cfg.AvatarEmoji,
+			Emoji:               cfg.AvatarEmoji,
+			Avatar:              cfg.AvatarEmoji,
 		}
 		respData, _ := json.Marshal(resp)
 		_, _ = conn.Write(append(respData, '\n'))

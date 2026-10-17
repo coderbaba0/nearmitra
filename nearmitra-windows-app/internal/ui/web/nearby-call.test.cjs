@@ -79,3 +79,33 @@ test('Ending during the display picker releases late capture and never switches 
 test('Remote video-toggle changes remote presentation without enabling this PC camera',async()=>{
  const f=setup();const s=await connected(f);await f.call.handle(peer.ip,{type:'call_video_toggle',is_video:true});assert.equal(s.peerVideo,true);assert.equal(s.video,false);await f.call.handle(peer.ip,{type:'call_video_toggle',is_video:false});assert.equal(s.peerVideo,false);await f.call.stop(false);
 });
+
+for(const direction of ['recvonly','inactive'])test(`Camera upgrade from ${direction} enables sending before generating the offer`,async()=>{
+ const camera=videoTrack('camera');const f=setup({getUserMedia:async c=>c.video?videoStream(camera):f.stream});const s=await connected(f);
+ const tx=s.videoTransceiver;tx.currentDirection=direction;tx.direction=direction;
+ f.pc.createOffer=async()=>{assert.equal(tx.direction,'sendrecv');assert.equal(tx.sender.track,camera);return {type:'offer',sdp:'video-upgrade'};};
+ await f.call.camera(true);assert.equal(f.signals[0].type,'webrtc_offer');assert.equal(s.video,true);assert.equal(f.tracks[0].stopped,undefined);await f.call.stop(false);
+});
+test('Failed screen upgrade rolls back SDP, sender and direction while keeping the call audio',async()=>{
+ const screen=videoTrack('screen');const f=setup({getDisplayMedia:async()=>videoStream(screen),sendSignal:async()=>{throw new Error('Signal unavailable');}});const s=await connected(f);
+ const tx=s.videoTransceiver;tx.currentDirection='inactive';tx.direction='inactive';
+ await assert.rejects(f.call.screen(true),/Signal unavailable/);
+ assert.equal(f.pc.signalingState,'stable');assert.equal(f.pc.localDescription.type,'rollback');assert.equal(tx.sender.track,null);assert.equal(tx.direction,'inactive');
+ assert.equal(screen.stopped,true);assert.equal(s.sharing,false);assert.equal(s.mediaBusy,false);assert.equal(f.call.session,s);assert.equal(f.tracks[0].stopped,undefined);await f.call.stop(false);
+});
+test('Pending negotiation rejects an upgrade before touching the published track',async()=>{
+ const camera=videoTrack('camera'),screen=videoTrack('screen');const f=setup({getDisplayMedia:async()=>videoStream(screen)});const s=await connected(f);
+ const tx=s.videoTransceiver;tx.sender.track=camera;tx.currentDirection='recvonly';tx.direction='recvonly';f.pc.signalingState='have-remote-offer';
+ await assert.rejects(f.call.screen(true),/negotiation is in progress/);assert.equal(tx.sender.track,camera);assert.equal(tx.direction,'recvonly');assert.equal(screen.stopped,true);assert.equal(f.tracks[0].stopped,undefined);await f.call.stop(false);
+});
+test('Video changes refresh the negotiated transceiver by MID without using the audio sender',async()=>{
+ const screen=videoTrack('screen');const f=setup({getDisplayMedia:async()=>videoStream(screen)});const s=await connected(f);
+ const reserved=s.videoTransceiver;reserved.mid='1';const live={...reserved,sender:{track:null,async replaceTrack(track){this.track=track;}}};
+ f.pc.transceivers.splice(f.pc.transceivers.indexOf(reserved),1,live);
+ await f.call.screen(true);assert.equal(s.videoTransceiver,live);assert.equal(live.sender.track,screen);assert.equal(f.pc.transceivers[0].sender.track,f.tracks[0]);await f.call.stop(false);
+});
+test('Missing reserved video sender reports an error without publishing to audio',async()=>{
+ const screen=videoTrack('screen');const f=setup({getDisplayMedia:async()=>videoStream(screen)});const s=await connected(f);
+ f.pc.transceivers.splice(f.pc.transceivers.indexOf(s.videoTransceiver),1);
+ await assert.rejects(f.call.screen(true),/video sender is unavailable/);assert.equal(f.pc.transceivers[0].sender.track,f.tracks[0]);assert.equal(screen.stopped,true);assert.equal(f.call.session,s);await f.call.stop(false);
+});

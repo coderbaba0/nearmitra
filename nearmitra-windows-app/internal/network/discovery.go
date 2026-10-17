@@ -246,9 +246,12 @@ func (ds *DiscoveryService) ManualPair(targetIP string) error {
 
 	cfg := config.Get().GetConfig()
 	header := models.WireHeader{
-		Type:     "discover",
-		Sender:   cfg.DeviceName,
-		SenderID: cfg.DeviceID,
+		Type:        "discover",
+		Sender:      cfg.DeviceName,
+		SenderID:    cfg.DeviceID,
+		AvatarEmoji: cfg.AvatarEmoji,
+		Emoji:       cfg.AvatarEmoji,
+		Avatar:      cfg.AvatarEmoji,
 	}
 	payload, _ := json.Marshal(header)
 
@@ -763,11 +766,14 @@ func (ds *DiscoveryService) ScanLANNow() {
 						// Perform active hello handshake with peer to get actual device name, ID & avatar
 						cfg := config.Get().GetConfig()
 						helloPayload, _ := json.Marshal(models.WireHeader{
-							Type:     "hello",
-							Sender:   cfg.DeviceName,
-							SenderID: cfg.DeviceID,
-							ID:       cfg.DeviceID,
-							Name:     cfg.DeviceName,
+							Type:        "hello",
+							Sender:      cfg.DeviceName,
+							SenderID:    cfg.DeviceID,
+							ID:          cfg.DeviceID,
+							Name:        cfg.DeviceName,
+							AvatarEmoji: cfg.AvatarEmoji,
+							Emoji:       cfg.AvatarEmoji,
+							Avatar:      cfg.AvatarEmoji,
 						})
 						_, _ = conn.Write(append(helloPayload, '\n'))
 						_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
@@ -800,6 +806,11 @@ func (ds *DiscoveryService) ScanLANNow() {
 									ds.mu.Lock()
 									for k, existingP := range ds.peers {
 										if existingP.IP == targetIP {
+											// Older desktops omit the avatar in hello responses.
+											// Keep the icon already learned from discovery beacons.
+											if avatarEmoji == "" {
+												avatarEmoji = existingP.AvatarEmoji
+											}
 											delete(ds.peers, k)
 											break
 										}

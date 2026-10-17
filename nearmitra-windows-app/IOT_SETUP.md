@@ -1,6 +1,6 @@
 # Windows IoT setup and supported hardware
 
-Install `build/windows-release/NearMitra_Setup_2.1.17_x64.exe` for Windows. For standalone wireless audio and the latest mobile call/presence fixes, the phone needs a newer Android build from the current source; the existing Android 1.0.1 APK predates these updates. Close older portable desktop copies before opening the installed version.
+Install `build/windows-release/NearMitra_Setup_2.1.19_x64.exe` for Windows. For standalone wireless audio and the latest mobile call/presence fixes, the phone needs a newer Android build from the current source; the existing Android 1.0.1 APK predates these updates. Close older portable desktop copies before opening the installed version.
 
 ## Phone battery and location
 
@@ -149,3 +149,31 @@ The top-right folder action, Received Files / Open Folder, CCTV recordings folde
 Invalid or removed files return a visible error. Browser actions wait for the native request result rather than showing an unconditional success toast. Tests cover native COM ABI and shell enumeration, decoded full-path matching and invalid items. An opt-in interactive Windows test opens a new temporary folder, puts a temporary app-style window in front, invokes Show in Folder and verifies the exact target Explorer window is foreground; it closes only its own test windows afterward.
 
 Publisher status is unchanged: setup remains unsigned. The flutterfever.com branding does not establish a UAC verified publisher; a trusted code-signing certificate is still required, as documented in WINDOWS_SIGNING.md.
+
+### Mobile Nearby AI reply visibility correction
+
+The installed desktop was checked without changing its AI settings or grants: Ollama was running with the configured installed model, and a local TCP diagnostic using an already allowed identity received nine response chunks and a final done packet. This verifies the desktop host path, not an end-to-end phone UI session.
+
+Two mobile UI defects were identified: prompt and response IDs were derived from the same millisecond/peer and could collide, and history notifications replaced the visible reply object while the typewriter continued updating a detached object. Mobile AI requests now use independent UUIDs and a draft that preserves the active reply through history reloads, peer selection and forwarding refreshes. Only the prompt/reply records are merged into storage; unrelated incoming history is retained. Overlapping AI sends are blocked, errors are visible, and disposing/clearing the active conversation cancels its pending stream and timer. Truncated answers retain their text with an incomplete-response warning.
+
+Validation: all 60 mobile tests pass, including seven new cases for ID uniqueness, visible draft preservation across real history persistence, cancellation/deletion, actual TCP loading/chunk/completion packets, denial reasons and truncated streams. Static analysis of the affected mobile files and tests reports no issues. No Windows backend change, installer rebuild, mobile APK generation/installation or GitHub push was performed for this correction. Running the fix on the phone requires the updated mobile source; its currently installed binary does not change automatically.
+
+### Mobile connected-call media switching correction
+
+The mobile call screen now resolves the current video transceiver/sender from the live peer connection before replacing camera/display tracks, matching the existing sender identity or negotiated MID. It no longer relies only on the pre-negotiation wrapper. A receive-only/inactive video slot is explicitly set to sendrecv before a video-upgrade offer; previously an offer could be generated without changing that desired direction. Failed replacement/renegotiation restores the previously published video track and direction. If publishing an offer fails, its local SDP is rolled back when possible so a later retry is not blocked by a leftover local offer. The existing microphone sender and camera/screen permission flow are preserved.
+
+Eight new sender-controller tests cover refreshed wrappers, negotiated MID recovery, audio-only upgrades, camera/display/audio switching, rollback, busy SDP and ended/missing-slot handling. Together with the AI reply regressions and existing app tests, all 68 mobile tests pass; affected call files pass static analysis. The exact reported RTP error was not present in the available phone logs, so its resolution still needs an actual updated-phone call test. This is a mobile source correction; no APK build/install, Windows setup rebuild or GitHub push was performed.
+
+### Windows connected-call media switching correction
+
+Windows now checks the live reserved video transceiver before camera/screen changes. When the negotiated slot is receive-only or inactive, it sets the desired direction to sendrecv before generating the upgrade offer. A pending negotiation rejects an upgrade before replacing the existing track. Failed offer delivery rolls back the local offer where possible and restores the prior video track/direction; the microphone sender is preserved. Camera off returns to audio, and stopping display capture restores the previous camera/audio state using the existing controls.
+
+Validation: all 124 JavaScript UI/installer tests pass, including six new regression cases for receive-only/inactive upgrades, screen-offer failure rollback, pending SDP, refreshed transceiver lookup and missing video sender. The adapter test double now exposes its actual reserved transceivers, matching the browser API. Actual updated Windows/mobile device validation remains necessary. This change updates source only; it does not rebuild an installer or mobile APK and is not pushed to GitHub.
+
+### Windows 2.1.18 installer
+
+Built `build/windows-release/NearMitra_Setup_2.1.18_x64.exe` from the updated Windows source, including the connected-call media switching correction above. Go backend/installer tests pass, including offline payload extraction and exact app-payload equality; all 124 JavaScript UI/installer tests pass. SHA-256 manifests were regenerated. Existing installer defaults and per-user installation behavior are retained. Setup remains unsigned. No mobile APK, installation on either device or GitHub push was performed; live cross-device call testing remains necessary.
+
+### Windows 2.1.19 installer
+
+Built `build/windows-release/NearMitra_Setup_2.1.19_x64.exe` with Copy beside Select in message hover actions and desktop avatar handshake/rescan fixes. All 124 JavaScript tests and `go test ./...` pass, including configured-avatar handshake, installer extraction and embedded app equality. Both SHA-256 manifests were regenerated from the final artifacts. Setup remains unsigned. Live cross-device verification is still pending.
