@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-const (
-	DefaultFirebaseRTDBUrl = "" // No shared production backend.
-)
+// A Git-ignored firebase_config.local.go may set this for owner builds.
+// Public checkouts have no shared production backend.
+var DefaultFirebaseRTDBUrl = ""
 
 // FirebaseClient handles lightweight REST interactions with Firebase Realtime Database.
 type FirebaseClient struct {

@@ -8,6 +8,9 @@ import (
 )
 
 func TestNoFirebaseEndpointByDefault(t *testing.T) {
+	previous := DefaultFirebaseRTDBUrl
+	DefaultFirebaseRTDBUrl = ""
+	t.Cleanup(func() { DefaultFirebaseRTDBUrl = previous })
 	t.Setenv("NEARMITRA_FIREBASE_RTDB_URL", "")
 	client := NewFirebaseClient("")
 	if client.baseURL != "" || DefaultFirebaseRTDBUrl != "" {

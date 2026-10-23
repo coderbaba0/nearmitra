@@ -44,3 +44,10 @@ $RECYCLE.BIN/
 /config/firebase.local.json
 /lib/firebase_options.local.dart
 **/wan_config.json
+
+# Local Firebase launch helpers
+/flutter-local.bat
+/nearmitra-windows-app/run-local.ps1
+
+# Optional owner-only Windows build configuration
+/nearmitra-windows-app/internal/wan/firebase_config.local.go

@@ -17,6 +17,12 @@ Official references: [Flutter setup](https://firebase.google.com/docs/flutter/se
 
 ## 2. Configure the Flutter Android app
 
+### Normal Android run/build with local native config
+
+Keep your downloaded `android/app/google-services.json` in the project; Git ignores it, so publishing source does not remove your local copy. Ensure `project_info.firebase_url` contains your exact Realtime Database URL (download a fresh file after creating the database, or add that field locally). Android uses this native configuration automatically when Dart defines are absent. Your usual `flutter run` and `flutter build apk --release` commands work with it. Keep `firebase.json` local too; it is ignored.
+
+### Optional explicit Dart configuration
+
 Copy the placeholder example to an ignored local file:
 
 ```powershell
@@ -47,11 +53,23 @@ flutter build apk --release --dart-define-from-file=config/firebase.local.json
 
 `lib/firebase_options.dart` is a tracked, configuration-free loader of these build-time values. Do not overwrite it with generated project credentials. If using FlutterFire CLI, generate options to the ignored `lib/firebase_options.local.dart` for reference and copy the corresponding values into your local JSON. Keep generated `firebase.json`, `.firebaserc` and platform configuration files local.
 
-Without the required defines, startup skips Firebase and Nearby LAN/P2P remains available. The Android Google Services Gradle plugin is applied only when your local `google-services.json` exists. A missing config is not replaced with the maintainer's project.
+Without Dart defines, startup attempts the native platform configuration. If no local configuration exists, Firebase initialization fails inside the background error handler while Nearby LAN/P2P remains available. The Android Google Services Gradle plugin is applied only when your local `google-services.json` exists. A missing config is not replaced with the maintainer's project.
 
 ## 3. Configure the native Windows app
 
-There is no Windows `google-services.json`. Choose either an environment variable or your own runtime configuration.
+There is no Windows `google-services.json`. For normal local Go builds, create **`nearmitra-windows-app/internal/wan/firebase_config.local.go`** (Git-ignored):
+
+```go
+package wan
+
+func init() {
+    DefaultFirebaseRTDBUrl = "https://YOUR_DATABASE_HOST"
+}
+```
+
+Your existing Go run/build and installer build commands include that local configuration automatically. Binaries made this way contain your chosen endpoint; only distribute them if you intend them to use that backend. Keep this file on your computer when publishing source. New contributors create their own file with their own database URL.
+
+Alternatively, choose an environment variable or your own runtime configuration.
 
 In PowerShell, before starting the app:
 
