@@ -20,6 +20,7 @@ import (
 	"nearmitra-windows-app/internal/network"
 	"nearmitra-windows-app/internal/streaming"
 	"nearmitra-windows-app/internal/transfer"
+	"nearmitra-windows-app/internal/wan"
 )
 
 // AppLauncher coordinates the backend services, local embedded HTTP server, and Windows 11 App Window.
@@ -115,11 +116,23 @@ func (al *AppLauncher) StartTray(appURL string) {
 
 		className := UTF16Ptr("NearMitraTrayWindowClass")
 		windowName := UTF16Ptr("NearMitra Tray")
+		taskbarCreated, _, _ := user32.NewProc("RegisterWindowMessageW").Call(uintptr(unsafe.Pointer(UTF16Ptr("TaskbarCreated"))))
 
 		var wc WNDCLASSEX
 		wc.CbSize = uint32(unsafe.Sizeof(wc))
 		wc.LpfnWndProc = syscall.NewCallback(func(hwnd, msg, wParam, lParam uintptr) uintptr {
+			if msg == taskbarCreated && taskbarCreated != 0 {
+				if al.tray != nil {
+					al.tray.Add()
+				}
+				return 0
+			}
 			switch msg {
+			case WM_TIMER:
+				if al.tray != nil && !al.tray.active {
+					al.tray.Add()
+				}
+				return 0
 			case WM_TRAYICON:
 				if lParam == 0x0202 { // WM_LBUTTONUP - Click on tray icon directly opens app window!
 					al.OpenAppWindow(appURL)
@@ -135,7 +148,10 @@ func (al *AppLauncher) StartTray(appURL string) {
 								}
 								al.cfgMgr.SetThemeMode(theme)
 							},
-							func() { os.Exit(0) },
+							func() {
+								al.tray.Remove()
+								go func() { wan.GetWanService().Stop(); os.Exit(0) }()
+							},
 						)
 					}
 				} else if lParam == 0x0203 { // WM_LBUTTONDBLCLK
@@ -153,10 +169,13 @@ func (al *AppLauncher) StartTray(appURL string) {
 		})
 		hInstance, _, _ := kernel32.NewProc("GetModuleHandleW").Call(0)
 		pLoadIcon := user32.NewProc("LoadIconW")
-		hIcon, _, _ := pLoadIcon.Call(hInstance, 1)
+		hIcon := loadEmbeddedTrayIcon()
+		if hIcon == 0 {
+			hIcon, _, _ = pLoadIcon.Call(hInstance, 1)
+		}
 		if hIcon == 0 {
 			pLoadImage := user32.NewProc("LoadImageW")
-			hIcon, _, _ = pLoadImage.Call(0, uintptr(unsafe.Pointer(UTF16Ptr("nearmitra.ico"))), 1, 32, 32, 0x0010)
+			hIcon, _, _ = pLoadImage.Call(0, uintptr(unsafe.Pointer(UTF16Ptr(filepath.Join(filepath.Dir(mustExecutable()), "nearmitra.ico")))), 1, 32, 32, 0x0010)
 		}
 		if hIcon == 0 {
 			hIcon, _, _ = pLoadIcon.Call(0, 32512) // IDI_APPLICATION
@@ -167,7 +186,10 @@ func (al *AppLauncher) StartTray(appURL string) {
 		wc.HIconSm = hIcon
 		wc.LpszClassName = className
 
-		pRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
+		if result, _, err := pRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))); result == 0 {
+			log.Printf("[Tray] Cannot register tray window class: %v", err)
+			return
+		}
 
 		hwnd, _, _ := pCreateWindowEx.Call(
 			0,
@@ -178,7 +200,12 @@ func (al *AppLauncher) StartTray(appURL string) {
 			0, 0, hInstance, 0,
 		)
 
+		if hwnd == 0 {
+			log.Printf("[Tray] Cannot create notification message window")
+			return
+		}
 		al.tray = NewTrayManager(hwnd, hIcon)
+		user32.NewProc("SetTimer").Call(hwnd, 1, 5000, 0)
 
 		var msg MSG
 		for {
@@ -242,12 +269,24 @@ func (al *AppLauncher) OpenAppWindow(appURL string) {
 func (al *AppLauncher) setupCallbacks() {
 	if al.server != nil {
 		al.server.SetCallbacks(transfer.TransferCallbacks{
-			OnIncomingMessage: func(msg models.ChatMessage) {
-				al.chatMgr.AddMessage(msg)
+			OnIncomingMessage: func(msg models.ChatMessage) error {
+				if err := al.chatMgr.AddMessage(msg); err != nil {
+					return err
+				}
 				al.httpServer.AddLog(fmt.Sprintf("Incoming Chat from %s: %s", msg.Sender, msg.Text))
 				if al.cfgMgr.IsNotificationsEnabled() && al.tray != nil {
 					al.tray.ShowNotification("NearMitra - New Message", fmt.Sprintf("%s: %s", msg.Sender, msg.Text))
 				}
+				return nil
+			},
+			OnIncomingReaction: func(id, emoji, peerID string) {
+				aliases := []string{peerID}
+				for _, p := range al.httpServer.discovery.GetPeers() {
+					if p.ID == peerID || p.InternetDeviceID == peerID {
+						aliases = append(aliases, p.ID, p.InternetDeviceID, p.IP)
+					}
+				}
+				al.chatMgr.SetPeerReaction(id, emoji, aliases...)
 			},
 			OnTypingStatus: func(peerID string, isTyping bool) {
 				al.httpServer.SetPeerTyping(peerID, isTyping)
@@ -266,7 +305,7 @@ func (al *AppLauncher) setupCallbacks() {
 				al.httpServer.mu.Lock()
 				updated := false
 				for i, t := range al.httpServer.transfers {
-					if t.FileName == prog.FileName {
+					if (prog.ID != "" && t.ID == prog.ID && t.PeerID == prog.PeerID) || (prog.ID == "" && t.ID == "" && t.FileName == prog.FileName && t.PeerIP == prog.PeerIP) {
 						al.httpServer.transfers[i] = prog
 						updated = true
 						break
@@ -330,4 +369,12 @@ func findChromeExecutable() string {
 	}
 
 	return ""
+}
+
+func mustExecutable() string {
+	path, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return path
 }

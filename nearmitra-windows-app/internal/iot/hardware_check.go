@@ -40,10 +40,6 @@ func refreshHardwareDiagnostics() {
 		InternetModeEnabled: false, // Strictly OFF by default as requested
 		LastDiagnostic:      time.Now(),
 		NFCStatusReason:     "No NFC reader detected on this PC",
-		WiFiDirectSupported: true,
-		WiFiDirectActive:    true,
-		PrintersCount:       2,
-		ScannersCount:       1,
 	}
 
 	// 1. Probe Network Interfaces (Wi-Fi & LAN) via native net.Interfaces()
@@ -75,13 +71,19 @@ func refreshHardwareDiagnostics() {
 	}
 
 	// 2. Bluetooth & NFC Native Flags
-	matrix.BluetoothSupported = true
-	matrix.BluetoothActive = true
-	matrix.BluetoothRadioName = "Intel / Realtek Bluetooth Adapter (Active)"
+	hwSummaryMu.RLock()
+	hw := hwSummaryCache
+	hwSummaryMu.RUnlock()
+	matrix.BluetoothSupported = hw.BluetoothRadio != ""
+	matrix.BluetoothActive = hw.BluetoothBLE
+	matrix.BluetoothRadioName = hw.BluetoothRadio
+	matrix.NFCSupported = hw.NFCSupported
+	matrix.NFCActive = hw.NFCActive
+	matrix.ScannersCount = len(hw.ScannerDevices)
 
-	matrix.NFCSupported = false
-	matrix.NFCActive = false
-	matrix.NFCStatusReason = "NFC Proximity Module Not Found"
+	if matrix.NFCSupported {
+		matrix.NFCStatusReason = hw.NFCReaderName
+	}
 
 	diagMu.Lock()
 	diagCache = matrix

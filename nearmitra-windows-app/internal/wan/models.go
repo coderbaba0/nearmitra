@@ -14,14 +14,15 @@ const (
 
 // WanDevice represents a discovered or trusted remote device over the Internet.
 type WanDevice struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Platform    string    `json:"platform"`
-	AvatarEmoji string    `json:"avatar_emoji"`
-	IsOnline    bool      `json:"is_online"`
-	LastSeen    time.Time `json:"last_seen"`
-	IsTrusted   bool      `json:"is_trusted"`
-	UnreadCount int       `json:"unread_count"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Platform        string    `json:"platform"`
+	AvatarEmoji     string    `json:"avatar_emoji"`
+	IsOnline        bool      `json:"is_online"`
+	LastSeen        time.Time `json:"last_seen"`
+	PresenceLeaseMs int64     `json:"presence_lease_ms,omitempty"`
+	IsTrusted       bool      `json:"is_trusted"`
+	UnreadCount     int       `json:"unread_count"`
 }
 
 // WanPairCode represents a temporary 6-digit PIN pairing code.

@@ -165,18 +165,20 @@ func (ds *DiscoveryService) sendBeacon() {
 
 	// Send wire header matching BOTH Flutter (id, name, avatar_emoji) and Windows (sender, sender_id, type)
 	header := models.WireHeader{
-		ID:          cfg.DeviceID,
-		Name:        cfg.DeviceName,
-		Type:        "discover",
-		Sender:      cfg.DeviceName,
-		SenderID:    cfg.DeviceID,
-		AvatarEmoji: cfg.AvatarEmoji,
-		Emoji:       cfg.AvatarEmoji,
-		Avatar:      cfg.AvatarEmoji,
-		AIHost:      cfg.AIConfig.Enabled && cfg.AIConfig.ShareAI,
-		Provider:    cfg.AIConfig.Provider,
-		Model:       cfg.AIConfig.GeminiModel,
-		ComputeInfo: computeInfo,
+		ID:                  cfg.DeviceID,
+		InternetDeviceID:    cfg.DeviceID,
+		SupportsDeliveryAck: true,
+		Name:                cfg.DeviceName,
+		Type:                "discover",
+		Sender:              cfg.DeviceName,
+		SenderID:            cfg.DeviceID,
+		AvatarEmoji:         cfg.AvatarEmoji,
+		Emoji:               cfg.AvatarEmoji,
+		Avatar:              cfg.AvatarEmoji,
+		AIHost:              cfg.AIConfig.Enabled && cfg.AIConfig.ShareAI,
+		Provider:            cfg.AIConfig.Provider,
+		Model:               cfg.AIConfig.GeminiModel,
+		ComputeInfo:         computeInfo,
 	}
 
 	payload, err := json.Marshal(header)
@@ -244,9 +246,12 @@ func (ds *DiscoveryService) ManualPair(targetIP string) error {
 
 	cfg := config.Get().GetConfig()
 	header := models.WireHeader{
-		Type:     "discover",
-		Sender:   cfg.DeviceName,
-		SenderID: cfg.DeviceID,
+		Type:        "discover",
+		Sender:      cfg.DeviceName,
+		SenderID:    cfg.DeviceID,
+		AvatarEmoji: cfg.AvatarEmoji,
+		Emoji:       cfg.AvatarEmoji,
+		Avatar:      cfg.AvatarEmoji,
 	}
 	payload, _ := json.Marshal(header)
 
@@ -300,7 +305,7 @@ func (ds *DiscoveryService) RegisterPeer(id, name, ip string, port int, isAiHost
 		return
 	}
 	cfg := config.Get().GetConfig()
-	if id == cfg.DeviceID || name == cfg.DeviceName || isLocalIP(ip) {
+	if id == cfg.DeviceID || isLocalIP(ip) {
 		return
 	}
 	if port <= 0 {
@@ -461,7 +466,7 @@ func (ds *DiscoveryService) handleBeacon(data []byte, remoteIP string) {
 		senderName = "Nearby device (" + remoteIP + ")"
 	}
 
-	if senderID == "" || senderID == cfg.DeviceID || senderName == cfg.DeviceName || isLocalIP(remoteIP) {
+	if senderID == "" || senderID == cfg.DeviceID || isLocalIP(remoteIP) {
 		return // Ignore self or invalid
 	}
 
@@ -497,6 +502,8 @@ func (ds *DiscoveryService) handleBeacon(data []byte, remoteIP string) {
 	}
 	ds.peers[senderID] = p
 
+	p.InternetDeviceID = header.InternetDeviceID
+	p.SupportsDeliveryAck = header.SupportsDeliveryAck
 	p.Name = senderName
 	p.IP = remoteIP
 	p.Port = models.TransferPort
@@ -759,11 +766,14 @@ func (ds *DiscoveryService) ScanLANNow() {
 						// Perform active hello handshake with peer to get actual device name, ID & avatar
 						cfg := config.Get().GetConfig()
 						helloPayload, _ := json.Marshal(models.WireHeader{
-							Type:     "hello",
-							Sender:   cfg.DeviceName,
-							SenderID: cfg.DeviceID,
-							ID:       cfg.DeviceID,
-							Name:     cfg.DeviceName,
+							Type:        "hello",
+							Sender:      cfg.DeviceName,
+							SenderID:    cfg.DeviceID,
+							ID:          cfg.DeviceID,
+							Name:        cfg.DeviceName,
+							AvatarEmoji: cfg.AvatarEmoji,
+							Emoji:       cfg.AvatarEmoji,
+							Avatar:      cfg.AvatarEmoji,
 						})
 						_, _ = conn.Write(append(helloPayload, '\n'))
 						_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
@@ -796,6 +806,11 @@ func (ds *DiscoveryService) ScanLANNow() {
 									ds.mu.Lock()
 									for k, existingP := range ds.peers {
 										if existingP.IP == targetIP {
+											// Older desktops omit the avatar in hello responses.
+											// Keep the icon already learned from discovery beacons.
+											if avatarEmoji == "" {
+												avatarEmoji = existingP.AvatarEmoji
+											}
 											delete(ds.peers, k)
 											break
 										}
@@ -1009,3 +1024,14 @@ func isLocalIP(ipStr string) bool {
 	return false
 }
 
+// SetPeerIdentity links a mobile device's stable WAN ID to its LAN advertisement.
+func (ds *DiscoveryService) SetPeerIdentity(id, internetID string, deliveryAck bool) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if peer := ds.peers[id]; peer != nil {
+		if internetID != "" {
+			peer.InternetDeviceID = internetID
+		}
+		peer.SupportsDeliveryAck = deliveryAck
+	}
+}

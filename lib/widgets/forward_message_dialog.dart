@@ -1,14 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/conversation_providers.dart';
 import '../models/chat_item.dart';
 import '../models/peer.dart';
 import '../models/wan_models.dart';
-import '../services/history_service.dart';
 import '../services/nearby_service.dart';
 import '../services/wan_service.dart';
-import '../services/wan_webrtc_manager.dart';
 
-class ForwardMessageDialog extends StatefulWidget {
+class ForwardMessageDialog extends ConsumerStatefulWidget {
   const ForwardMessageDialog({
     super.key,
     required this.item,
@@ -35,10 +35,11 @@ class ForwardMessageDialog extends StatefulWidget {
   }
 
   @override
-  State<ForwardMessageDialog> createState() => _ForwardMessageDialogState();
+  ConsumerState<ForwardMessageDialog> createState() =>
+      _ForwardMessageDialogState();
 }
 
-class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
+class _ForwardMessageDialogState extends ConsumerState<ForwardMessageDialog> {
   final TextEditingController _searchController = TextEditingController();
   String _filter = '';
 
@@ -53,7 +54,11 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
       return peer.avatarEmoji!.trim();
     }
     final lower = peer.name.toLowerCase();
-    if (lower.contains('windows') || lower.contains('pc') || lower.contains('desktop') || lower.contains('laptop') || lower.contains('win')) {
+    if (lower.contains('windows') ||
+        lower.contains('pc') ||
+        lower.contains('desktop') ||
+        lower.contains('laptop') ||
+        lower.contains('win')) {
       return '💻';
     }
     return '📱';
@@ -64,137 +69,36 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
       return dev.avatarEmoji!.trim();
     }
     final lower = dev.name.toLowerCase();
-    if (lower.contains('windows') || lower.contains('pc') || lower.contains('desktop') || lower.contains('laptop') || lower.contains('win')) {
+    if (lower.contains('windows') ||
+        lower.contains('pc') ||
+        lower.contains('desktop') ||
+        lower.contains('laptop') ||
+        lower.contains('win')) {
       return '💻';
     }
     return '📱';
   }
 
   Future<void> _forwardToNearbyPeer(Peer peer) async {
+    final controller = ref.read(conversationControllerProvider);
     Navigator.pop(context);
-    final nearby = NearbyService.instance;
-    final historyService = HistoryService();
-
-    if (widget.item.kind == ChatKind.text && widget.item.text != null) {
-      final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-      final ok = await nearby.sendChat(
-        peer,
-        widget.item.text!,
-        msgId: itemId,
-        isForwarded: true,
-      );
-      final status = ok ? 'Sent' : 'Queued';
-
-      if (!ok) {
-        await nearby.queueOutboxItem(QueuedOutboxItem(
-          id: itemId,
-          peerId: peer.id,
-          peerName: peer.name,
-          kind: ChatKind.text,
-          text: widget.item.text!,
-          createdAt: DateTime.now(),
-        ));
-      }
-
-      final chatItem = ChatItem(
-        id: itemId,
-        peerId: peer.id,
-        sender: nearby.deviceName,
-        mine: true,
-        createdAt: DateTime.now(),
-        kind: ChatKind.text,
-        text: widget.item.text!,
-        status: status,
-        isAi: false,
-        isForwarded: true,
-      );
-      await historyService.addItem(chatItem);
-    } else if (widget.item.kind == ChatKind.folder && widget.item.filePath != null) {
-      final folderPath = widget.item.filePath!;
-      final dir = Directory(folderPath);
-      if (await dir.exists()) {
-        final folderName = widget.item.fileName ?? dir.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? 'Folder';
-        final ok = await nearby.sendFolder(peer, folderPath);
-        final status = ok ? 'Sent' : 'Failed';
-        final fileItem = ChatItem(
-          id: '${DateTime.now().millisecondsSinceEpoch}_${peer.id}',
-          peerId: peer.id,
-          sender: nearby.deviceName,
-          mine: true,
-          createdAt: DateTime.now(),
-          kind: ChatKind.folder,
-          fileName: folderName,
-          filePath: folderPath,
-          status: status,
-          isForwarded: true,
-        );
-        await historyService.addItem(fileItem);
-      }
-    } else if (widget.item.filePath != null) {
-      final file = File(widget.item.filePath!);
-      if (await file.exists()) {
-        final size = await file.length();
-        final name = widget.item.fileName ?? file.uri.pathSegments.last;
-        final ok = await nearby.sendFile(peer, file, displayName: name);
-        final status = ok ? 'Sent' : 'Queued';
-        final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-        if (!ok) {
-          await nearby.queueOutboxItem(QueuedOutboxItem(
-            id: itemId,
-            peerId: peer.id,
-            peerName: peer.name,
-            kind: ChatKind.file,
-            fileName: name,
-            filePath: file.path,
-            fileSize: size,
-            createdAt: DateTime.now(),
-          ));
-        }
-        final fileItem = ChatItem(
-          id: itemId,
-          peerId: peer.id,
-          sender: nearby.deviceName,
-          mine: true,
-          createdAt: DateTime.now(),
-          kind: ChatKind.file,
-          fileName: name,
-          filePath: file.path,
-          fileSize: size,
-          status: status,
-          isForwarded: true,
-        );
-        await historyService.addItem(fileItem);
-      }
+    final item = widget.item;
+    if (item.kind == ChatKind.text && item.text != null) {
+      await controller.sendText(peer, item.text!, forwarded: true);
+    } else if (item.kind == ChatKind.folder && item.filePath != null) {
+      await controller.sendFolder(peer, item.filePath!);
+    } else if (item.filePath != null && await File(item.filePath!).exists()) {
+      await controller.sendFile(peer, File(item.filePath!), forwarded: true);
     }
-
     widget.onForwardComplete(peer.name);
   }
 
-  Future<void> _forwardToWanPeer(WanDevice dev) async {
-    Navigator.pop(context);
-    final rtc = WanWebRtcManager();
-
-    if (widget.item.kind == ChatKind.text && widget.item.text != null) {
-      await rtc.sendDirectMessage(
-        widget.item.text!,
-        dev.id,
-        null,
-        null,
-        null,
-        true,
-      );
-    } else if (widget.item.filePath != null) {
-      final file = File(widget.item.filePath!);
-      if (await file.exists()) {
-        await rtc.sendDirectFile(file, dev.id, true);
-      }
-    }
-
-    widget.onForwardComplete(dev.name);
-  }
+  Future<void> _forwardToWanPeer(WanDevice device) => _forwardToNearbyPeer(
+      ref.read(conversationControllerProvider).peerForWan(device));
 
   @override
   Widget build(BuildContext context) {
+    final conversations = ref.watch(conversationControllerProvider);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final scheme = theme.colorScheme;
@@ -204,7 +108,11 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
       return p.name.toLowerCase().contains(_filter.toLowerCase());
     }).toList();
 
+    final nearbyIds = nearbyPeers
+        .map((p) => conversations.canonicalId(p.internetDeviceId ?? p.id))
+        .toSet();
     final wanDevices = WanService.instance.trustedDevicesList.where((d) {
+      if (nearbyIds.contains(d.id)) return false;
       if (_filter.isEmpty) return true;
       return d.name.toLowerCase().contains(_filter.toLowerCase());
     }).toList();
@@ -248,12 +156,14 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
               child: Row(
                 children: [
-                  const Icon(Icons.shortcut_rounded, color: Color(0xFF25D366), size: 24),
+                  const Icon(Icons.shortcut_rounded,
+                      color: Color(0xFF25D366), size: 24),
                   const SizedBox(width: 12),
                   const Expanded(
                     child: Text(
                       'Forward Message',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                   ),
                   IconButton(
@@ -269,7 +179,8 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF111B21) : const Color(0xFFF1F5F9),
+                color:
+                    isDark ? const Color(0xFF111B21) : const Color(0xFFF1F5F9),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: const Color(0xFF25D366).withValues(alpha: 0.35),
@@ -329,9 +240,12 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
                   hintText: 'Search contact or device…',
                   hintStyle: const TextStyle(fontSize: 15),
                   prefixIcon: const Icon(Icons.search_rounded, size: 22),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   filled: true,
-                  fillColor: isDark ? const Color(0xFF111B21) : const Color(0xFFF8FAFC),
+                  fillColor: isDark
+                      ? const Color(0xFF111B21)
+                      : const Color(0xFFF8FAFC),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide.none,
@@ -354,11 +268,13 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
                     )
                   : ListView(
                       shrinkWrap: true,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       children: [
                         if (nearbyPeers.isNotEmpty) ...[
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
                             child: Text(
                               'NEARBY NETWORK',
                               style: TextStyle(
@@ -371,29 +287,39 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
                           ),
                           ...nearbyPeers.map((p) {
                             return ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 4),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14)),
                               leading: CircleAvatar(
                                 radius: 22,
-                                backgroundColor: scheme.primary.withValues(alpha: 0.15),
-                                child: Text(_resolveNearbyAvatar(p), style: const TextStyle(fontSize: 20)),
+                                backgroundColor:
+                                    scheme.primary.withValues(alpha: 0.15),
+                                child: Text(_resolveNearbyAvatar(p),
+                                    style: const TextStyle(fontSize: 20)),
                               ),
                               title: Text(
                                 p.name,
-                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15.5),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 15.5),
                               ),
                               subtitle: Text(
                                 p.isMeshPeer ? 'Mesh Relay' : p.ip,
-                                style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: scheme.onSurfaceVariant),
                               ),
-                              trailing: const Icon(Icons.send_rounded, size: 22, color: Color(0xFF25D366)),
+                              trailing: const Icon(Icons.send_rounded,
+                                  size: 22, color: Color(0xFF25D366)),
                               onTap: () => _forwardToNearbyPeer(p),
                             );
                           }),
                         ],
                         if (wanDevices.isNotEmpty) ...[
                           Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 8),
                             child: Text(
                               'INTERNET (WAN) CONTACTS',
                               style: TextStyle(
@@ -406,25 +332,34 @@ class _ForwardMessageDialogState extends State<ForwardMessageDialog> {
                           ),
                           ...wanDevices.map((d) {
                             return ListTile(
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 4),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14)),
                               leading: CircleAvatar(
                                 radius: 22,
-                                backgroundColor: const Color(0xFF005C4B).withValues(alpha: 0.15),
-                                child: Text(_resolveWanAvatar(d), style: const TextStyle(fontSize: 20)),
+                                backgroundColor: const Color(0xFF005C4B)
+                                    .withValues(alpha: 0.15),
+                                child: Text(_resolveWanAvatar(d),
+                                    style: const TextStyle(fontSize: 20)),
                               ),
                               title: Text(
                                 d.name,
-                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15.5),
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 15.5),
                               ),
                               subtitle: Text(
                                 d.isOnline ? 'Online' : 'Offline (Outbox)',
                                 style: TextStyle(
                                   fontSize: 13,
-                                  color: d.isOnline ? const Color(0xFF22C55E) : Colors.grey,
+                                  color: d.isOnline
+                                      ? const Color(0xFF22C55E)
+                                      : Colors.grey,
                                 ),
                               ),
-                              trailing: const Icon(Icons.send_rounded, size: 22, color: Color(0xFF25D366)),
+                              trailing: const Icon(Icons.send_rounded,
+                                  size: 22, color: Color(0xFF25D366)),
                               onTap: () => _forwardToWanPeer(d),
                             );
                           }),

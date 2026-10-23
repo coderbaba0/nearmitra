@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -37,17 +38,17 @@ var webFS embed.FS
 
 // HTTPServer manages local embedded web GUI server.
 type HTTPServer struct {
-	mu        sync.RWMutex
-	port      int
-	cfgMgr    *config.ConfigManager
-	discovery *network.DiscoveryService
-	server    *transfer.TransferServer
-	chatMgr   *chat.HistoryManager
-	aiService *ai.AIService
-	cctv      *streaming.StreamState
-	signaling *calling.CallState
-	iotMgr    *iot.Manager
-	iotAuto   *iot.AutomationEngine
+	mu            sync.RWMutex
+	port          int
+	cfgMgr        *config.ConfigManager
+	discovery     *network.DiscoveryService
+	server        *transfer.TransferServer
+	chatMgr       *chat.HistoryManager
+	aiService     *ai.AIService
+	cctv          *streaming.StreamState
+	signaling     *calling.CallState
+	iotMgr        *iot.Manager
+	iotAuto       *iot.AutomationEngine
 	logs          []string
 	transfers     []models.TransferProgress
 	streamSignals []StreamSignalEvent
@@ -58,9 +59,9 @@ type HTTPServer struct {
 
 // StreamSignalEvent represents incoming WebRTC stream signals from network peers.
 type StreamSignalEvent struct {
-	PeerIP   string           `json:"peer_ip"`
+	PeerIP   string            `json:"peer_ip"`
 	Header   models.WireHeader `json:"header"`
-	Received time.Time        `json:"received"`
+	Received time.Time         `json:"received"`
 }
 
 var globalHTTPServer *HTTPServer
@@ -137,6 +138,10 @@ func (hs *HTTPServer) PushStreamSignal(peerIP string, header models.WireHeader) 
 		Received: time.Now(),
 	})
 	hs.AddLog(fmt.Sprintf("[SIGNAL] WebRTC Stream Signal [%s] received from %s", header.Type, peerIP))
+	if strings.HasPrefix(header.Type, "wireless_audio_") && header.Reason != "" {
+		hs.AddLog(fmt.Sprintf("[AUDIO] %s from %s: %s", header.Type, peerIP, header.Reason))
+		log.Printf("[AUDIO] %s from %s: %s", header.Type, peerIP, header.Reason)
+	}
 }
 
 // AddLog appends a timestamped log to the UI console.
@@ -150,57 +155,61 @@ func (hs *HTTPServer) AddLog(msg string) {
 	}
 }
 
+// serveEmbeddedUI serves the same embedded assets used by the installed app.
+func serveEmbeddedUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" || path == "index.html" {
+		data, err := fs.ReadFile(webFS, "web/index.html")
+		if err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "style.css" {
+		data, err := fs.ReadFile(webFS, "web/style.css")
+		if err == nil {
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "app.js" || path == "chat-routing.js" || path == "nearby-call.js" || path == "audio-capture.js" || path == "wireless-audio.js" || path == "chat-transfers.js" || path == "native-audio.js" || path == "native-audio-worklet.js" || path == "native-pcm-buffer.js" {
+		data, err := fs.ReadFile(webFS, "web/"+path)
+		if err == nil {
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "logo.png" {
+		data, err := fs.ReadFile(webFS, "web/logo.png")
+		if err == nil {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(data)
+			return
+		}
+	} else if path == "favicon.ico" {
+		data, err := fs.ReadFile(webFS, "web/favicon.ico")
+		if err == nil {
+			w.Header().Set("Content-Type", "image/x-icon")
+			_, _ = w.Write(data)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
 // Start launches embedded web server.
 func (hs *HTTPServer) Start() error {
 	mux := http.NewServeMux()
 
-	// Direct Embedded Asset Handlers
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" || path == "index.html" {
-			data, err := fs.ReadFile(webFS, "web/index.html")
-			if err == nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "style.css" {
-			data, err := fs.ReadFile(webFS, "web/style.css")
-			if err == nil {
-				w.Header().Set("Content-Type", "text/css; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "app.js" {
-			data, err := fs.ReadFile(webFS, "web/app.js")
-			if err == nil {
-				w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "logo.png" {
-			data, err := fs.ReadFile(webFS, "web/logo.png")
-			if err == nil {
-				w.Header().Set("Content-Type", "image/png")
-				_, _ = w.Write(data)
-				return
-			}
-		} else if path == "favicon.ico" {
-			data, err := fs.ReadFile(webFS, "web/favicon.ico")
-			if err == nil {
-				w.Header().Set("Content-Type", "image/x-icon")
-				_, _ = w.Write(data)
-				return
-			}
-		}
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("/", serveEmbeddedUI)
 
 	// API Endpoints
+	mux.HandleFunc("/api/audio/devices", hs.handleAudioDevices)
+	mux.HandleFunc("/api/audio/loopback", hs.handleAudioLoopback)
 	mux.HandleFunc("/api/state", hs.handleState)
 	mux.HandleFunc("/api/discovery/rescan", hs.handleDiscoveryRescan)
 	mux.HandleFunc("/api/lan/scan", hs.handleLANScan)
@@ -210,7 +219,12 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/send-file", hs.handleSendFile)
 	mux.HandleFunc("/api/send-folder", hs.handleSendFolder)
 	mux.HandleFunc("/api/chat/send", hs.handleChatSend)
+	mux.HandleFunc("/api/chat/receive-file", hs.handleChatReceiveFile)
+	mux.HandleFunc("/api/chat/cache-attachment", hs.handleChatCacheAttachment)
+	mux.HandleFunc("/api/chat/folder-archive", hs.handleChatFolderArchive)
 	mux.HandleFunc("/api/chat/react", hs.handleChatReact)
+	mux.HandleFunc("/api/chat/forward", hs.handleChatForward)
+	mux.HandleFunc("/api/chat/forward-file", hs.handleChatForwardFile)
 	mux.HandleFunc("/api/chat/typing", hs.handleChatTyping)
 	mux.HandleFunc("/api/chat/clear", hs.handleChatClear)
 	mux.HandleFunc("/api/cctv/filter", hs.handleCCTVFilter)
@@ -235,9 +249,13 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/ai/set-config", hs.handleAISetConfig)
 	mux.HandleFunc("/api/ai/get-config", hs.handleAIGetConfig)
 	mux.HandleFunc("/api/ai/query", hs.handleAIQuery)
+	mux.HandleFunc("/api/ai/nearby-query", hs.handleNearbyAIQuery)
+	mux.HandleFunc("/api/ai/selected-sharing", hs.handleSelectedAISharing)
 	mux.HandleFunc("/api/ai/share-toggle", hs.handleAIShareToggle)
 	mux.HandleFunc("/api/ai/peer-permission", hs.handleAIPeerPermission)
 	mux.HandleFunc("/api/ai/analytics", hs.handleAIAnalytics)
+	mux.HandleFunc("/api/iot/config", hs.handleIOTConfig)
+	mux.HandleFunc("/api/iot/scale", hs.handleIOTScale)
 	mux.HandleFunc("/api/iot/reprobe", hs.handleIOTReprobe)
 	mux.HandleFunc("/api/iot/hardware-scan", hs.handleIOTHwScan)
 	mux.HandleFunc("/api/iot/audio-cast", hs.handleIOTAudioCast)
@@ -316,15 +334,7 @@ func (hs *HTTPServer) handleState(w http.ResponseWriter, r *http.Request) {
 	chatMessages := hs.chatMgr.GetMessages()
 
 	// Pending incoming call info from signaling
-	pendingCall := map[string]interface{}{
-		"active":     hs.signaling.Active,
-		"ptt":        hs.signaling.PTTActive,
-		"muted":      hs.signaling.Muted,
-		"is_video":   hs.signaling.IsVideo,
-		"peer_name":  hs.signaling.PeerName,
-		"peer_ip":    hs.signaling.PeerIP,
-		"ringing":    hs.signaling.Ringing,
-	}
+	pendingCall := hs.signaling.Snapshot()
 
 	resp := map[string]interface{}{
 		"local_device": map[string]interface{}{
@@ -333,9 +343,9 @@ func (hs *HTTPServer) handleState(w http.ResponseWriter, r *http.Request) {
 			"avatar_emoji": hs.cfgMgr.GetConfig().AvatarEmoji,
 			"ip":           router.IPv4,
 		},
-		"peers":        peers,
-		"lan_devices":  lanDevs,
-		"typing_peers": hs.GetTypingPeers(),
+		"peers":         peers,
+		"lan_devices":   lanDevs,
+		"typing_peers":  hs.GetTypingPeers(),
 		"chat_messages": chatMessages,
 		"router": map[string]interface{}{
 			"ssid":      router.SSID,
@@ -357,7 +367,7 @@ func (hs *HTTPServer) handleState(w http.ResponseWriter, r *http.Request) {
 			"is_recording":    hs.cctv.IsRecording,
 			"torch_on":        hs.cctv.TorchOn,
 		},
-		"voice":  pendingCall,
+		"voice": pendingCall,
 		"ai": map[string]interface{}{
 			"provider":      aiCfg.Provider,
 			"model":         aiCfg.GeminiModel,
@@ -420,16 +430,18 @@ func (hs *HTTPServer) handleSendFile(w http.ResponseWriter, r *http.Request) {
 
 	hs.AddLog(fmt.Sprintf("Sending file %s...", filepath.Base(filePath)))
 	if targetIP == "" {
-		peers := hs.discovery.GetPeers()
-		if len(peers) > 0 {
-			targetIP = peers[0].IP
-		}
+		http.Error(w, "Select an available Nearby device", 400)
+		return
 	}
-	if targetIP != "" {
-		go transfer.SendFile(targetIP, filePath, nil)
+	sent, err := hs.sendChatAttachment(targetIP, filePath, false)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(502)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": filepath.Base(filePath)})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": filepath.Base(filePath), "message": sent})
 }
 
 // handleSendFileUpload receives drag-dropped file bytes from the browser,
@@ -455,47 +467,24 @@ func (hs *HTTPServer) handleSendFileUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer file.Close()
-
-	// Save to temp dir
-	tmpDir := os.TempDir()
-	tmpPath := filepath.Join(tmpDir, "nearmitra_drop_"+header.Filename)
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "cannot write temp file"})
-		return
-	}
-	defer tmpFile.Close()
-
-	buf := make([]byte, 1<<20) // 1 MB chunks
-	for {
-		n, readErr := file.Read(buf)
-		if n > 0 {
-			_, _ = tmpFile.Write(buf[:n])
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	tmpFile.Close()
+	defer r.MultipartForm.RemoveAll()
 
 	if targetIP == "" {
-		peers := hs.discovery.GetPeers()
-		if len(peers) > 0 {
-			targetIP = peers[0].IP
-		}
+		http.Error(w, "Select an available Nearby device", 400)
+		return
 	}
-
-	hs.AddLog(fmt.Sprintf("[TRANSFER] Drag-Drop: Sending %s → %s", header.Filename, targetIP))
-	if targetIP != "" {
-		go func() {
-			_ = transfer.SendFile(targetIP, tmpPath, nil)
-			_ = os.Remove(tmpPath) // clean up temp after send
-		}()
+	path, err := transfer.StoreReceivedFile(hs.chatMgr.AttachmentDirectory(), header.Filename, false, file, header.Size)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
-
+	sent, err := hs.sendChatAttachment(targetIP, path, false)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": header.Filename, "size": header.Size})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": header.Filename, "size": header.Size, "message": sent})
 }
 
 func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
@@ -503,17 +492,18 @@ func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
 	folder, err := SelectFolderDialog(hs.cfgMgr.GetConfig().SaveDirectory)
 	if err == nil && folder != "" {
 		if targetIP == "" {
-			peers := hs.discovery.GetPeers()
-			if len(peers) > 0 {
-				targetIP = peers[0].IP
-			}
+			http.Error(w, "Select an available Nearby device", 400)
+			return
 		}
-		hs.AddLog(fmt.Sprintf("Sending folder %s to %s...", filepath.Base(folder), targetIP))
-		if targetIP != "" {
-			go transfer.SendFolder(targetIP, folder, nil)
+		sent, err := hs.sendChatAttachment(targetIP, folder, true)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(502)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"folder": filepath.Base(folder)})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"folder": filepath.Base(folder), "message": sent})
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -521,43 +511,135 @@ func (hs *HTTPServer) handleSendFolder(w http.ResponseWriter, r *http.Request) {
 
 func (hs *HTTPServer) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	var msg models.ChatMessage
-	_ = json.NewDecoder(r.Body).Decode(&msg)
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, "invalid message", 400)
+		return
+	}
 	if msg.ID == "" {
 		msg.ID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	}
 	if msg.At.IsZero() {
 		msg.At = time.Now()
 	}
-	hs.chatMgr.AddMessage(msg)
-	
-	targetIP := msg.PeerIP
-	if targetIP == "" && msg.PeerID != "" {
-		peers := hs.discovery.GetPeers()
-		for _, p := range peers {
-			if p.ID == msg.PeerID {
-				targetIP = p.IP
+	if msg.Mine && !msg.IsWan && msg.Kind != "file" && msg.Kind != "folder" {
+		ip := msg.PeerIP
+		for _, peer := range hs.discovery.GetPeers() {
+			if peer.ID == msg.PeerID || peer.InternetDeviceID == msg.PeerID {
+				if peer.IsOnline {
+					ip = peer.IP
+				}
 				break
 			}
 		}
+		if ip == "" || strings.HasPrefix(ip, "wan") {
+			http.Error(w, "Nearby device unavailable", 503)
+			return
+		}
+		if err := transfer.SendTextMessage(ip, msg.ID, msg.Text, msg); err != nil {
+			msg.Status = "Queued"
+			_ = hs.chatMgr.AddMessage(msg)
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		msg.Status = "Sent"
 	}
-	
-	hs.AddLog(fmt.Sprintf("Chat Message to [%s]: %s", targetIP, msg.Text))
-	if targetIP != "" && !strings.HasPrefix(targetIP, "wan://") && targetIP != "wan" {
-		go transfer.SendTextMessage(targetIP, msg.ID, msg.Text)
+	if err := hs.chatMgr.AddMessage(msg); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
+}
+
+func (hs *HTTPServer) handleChatReceiveFile(w http.ResponseWriter, r *http.Request) {
+	hs.handleChatFileStorage(w, r, false)
+}
+func (hs *HTTPServer) handleChatCacheAttachment(w http.ResponseWriter, r *http.Request) {
+	hs.handleChatFileStorage(w, r, true)
+}
+func (hs *HTTPServer) handleChatFileStorage(w http.ResponseWriter, r *http.Request, outgoing bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
+	}
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	var msg models.ChatMessage
+	if err := json.Unmarshal([]byte(r.FormValue("message")), &msg); err != nil {
+		http.Error(w, "invalid metadata", 400)
+		return
+	}
+	input, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	defer input.Close()
+	if msg.FileSize != header.Size {
+		http.Error(w, "incomplete transfer", 400)
+		return
+	}
+	directory := hs.chatMgr.AttachmentDirectory()
+	if !outgoing {
+		directory = hs.cfgMgr.GetConfig().SaveDirectory
+	}
+	msg.FilePath, err = transfer.StoreReceivedFile(directory, msg.FileName, msg.Kind == "folder", input, header.Size)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	msg.Mine = outgoing
+	msg.IsWan = true
+	msg.Status = "Delivered"
+	if outgoing {
+		msg.Status = "Sent"
+	}
+	if msg.Kind == "" {
+		msg.Kind = "file"
+	}
+	if err := hs.chatMgr.AddMessage(msg); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
 }
 
 func (hs *HTTPServer) handleChatReact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
+	}
 	var body struct {
 		TargetIP string `json:"target_ip"`
 		MsgID    string `json:"msg_id"`
 		Emoji    string `json:"emoji"`
+		PeerID   string `json:"peer_id"`
+		Incoming bool   `json:"incoming"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	hs.chatMgr.AddReaction(body.MsgID, body.Emoji)
-	if body.TargetIP != "" {
-		go transfer.SendReaction(body.TargetIP, body.MsgID, body.Emoji)
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.MsgID == "" {
+		http.Error(w, "Invalid reaction", 400)
+		return
+	}
+	if body.Incoming {
+		if !hs.chatMgr.SetPeerReaction(body.MsgID, body.Emoji, hs.reactionPeerAliases(body.PeerID)...) {
+			http.Error(w, "Message not found for peer", 404)
+			return
+		}
+	} else {
+		if body.TargetIP != "" {
+			if err := transfer.SendReaction(body.TargetIP, body.MsgID, body.Emoji); err != nil {
+				http.Error(w, err.Error(), 502)
+				return
+			}
+		}
+		if !hs.chatMgr.SetLocalReaction(body.MsgID, body.Emoji) {
+			http.Error(w, "Message not found", 404)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -806,6 +888,10 @@ func (hs *HTTPServer) handleCCTVSignal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if net.ParseIP(targetIP) == nil {
+		http.Error(w, "Select a Nearby device", 400)
+		return
+	}
 	// Flatten signal payload
 	signalPayload := make(map[string]interface{})
 	if hdr, ok := rawMap["header"].(map[string]interface{}); ok && len(hdr) > 0 {
@@ -826,6 +912,12 @@ func (hs *HTTPServer) handleCCTVSignal(w http.ResponseWriter, r *http.Request) {
 	signalPayload["id"] = cfg.DeviceID
 
 	sigType, _ := signalPayload["type"].(string)
+	if strings.HasPrefix(sigType, "wireless_audio_") {
+		if reason, ok := signalPayload["reason"].(string); ok && reason != "" {
+			hs.AddLog(fmt.Sprintf("[AUDIO] %s to %s: %s", sigType, targetIP, reason))
+			log.Printf("[AUDIO] %s to %s: %s", sigType, targetIP, reason)
+		}
+	}
 	if sigType == "" {
 		sigType, _ = rawMap["type"].(string)
 		signalPayload["type"] = sigType
@@ -835,6 +927,8 @@ func (hs *HTTPServer) handleCCTVSignal(w http.ResponseWriter, r *http.Request) {
 		err := transfer.SendWebRTCSignal(targetIP, signalPayload)
 		if err != nil {
 			hs.AddLog(fmt.Sprintf("[WARN] Failed to send [%s] stream signal to %s: %v", sigType, targetIP, err))
+			http.Error(w, err.Error(), 502)
+			return
 		} else {
 			hs.AddLog(fmt.Sprintf("[SIGNAL] Sent [%s] stream signal to %s (as %s / %s)", sigType, targetIP, cfg.DeviceName, cfg.DeviceID))
 		}
@@ -901,7 +995,10 @@ func (hs *HTTPServer) handleStreamingTrustDevice(w http.ResponseWriter, r *http.
 func (hs *HTTPServer) handleOpenRecordings(w http.ResponseWriter, r *http.Request) {
 	recDir := filepath.Join(hs.cfgMgr.GetConfig().SaveDirectory, "CCTV_Recordings")
 	_ = os.MkdirAll(recDir, 0755)
-	OpenFolderInExplorer(recDir)
+	if err := OpenFolderInExplorer(recDir); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -936,7 +1033,10 @@ func (hs *HTTPServer) handleCallInvite(w http.ResponseWriter, r *http.Request) {
 		IsVideo  bool   `json:"is_video"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	_ = hs.signaling.InviteCall(body.TargetIP, body.PeerID, body.PeerName, body.IsVideo)
+	if err := hs.signaling.InviteCall(body.TargetIP, body.PeerID, body.PeerName, body.IsVideo); err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
 	callType := "HD Audio"
 	if body.IsVideo {
 		callType = "HD Video"
@@ -947,7 +1047,10 @@ func (hs *HTTPServer) handleCallInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleCallAnswer(w http.ResponseWriter, r *http.Request) {
-	hs.signaling.AnswerCall()
+	if err := hs.signaling.AnswerCall(); err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
 	hs.AddLog(fmt.Sprintf("[CALL] Call answered from %s", hs.signaling.PeerName))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
@@ -1121,25 +1224,47 @@ func (hs *HTTPServer) handleAIPeerPermission(w http.ResponseWriter, r *http.Requ
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	cfg := hs.cfgMgr.GetConfig().AIConfig
-
+	if strings.TrimSpace(body.PeerID) == "" || body.PeerID == "unknown_device_id" {
+		http.Error(w, "Select a device", 400)
+		return
+	}
+	ids := map[string]bool{body.PeerID: true}
+	for _, peer := range hs.discovery.GetPeers() {
+		if peer.ID == body.PeerID || peer.InternetDeviceID == body.PeerID || peer.IP == body.PeerID {
+			ids[peer.ID] = true
+			if peer.InternetDeviceID != "" && peer.InternetDeviceID != "unknown_device_id" {
+				ids[peer.InternetDeviceID] = true
+			}
+			// Remove legacy IP grants when changing this device's permission.
+			ids[peer.IP] = true
+		}
+	}
 	// Remove from both lists first
 	var newAllowed, newRevoked []string
 	for _, id := range cfg.AllowedPeers {
-		if id != body.PeerID {
+		if !ids[id] {
 			newAllowed = append(newAllowed, id)
 		}
 	}
 	for _, id := range cfg.RevokedPeers {
-		if id != body.PeerID {
+		if !ids[id] {
 			newRevoked = append(newRevoked, id)
 		}
 	}
 
 	if body.Allow {
-		newAllowed = append(newAllowed, body.PeerID)
+		for id := range ids {
+			if net.ParseIP(id) == nil {
+				newAllowed = append(newAllowed, id)
+			}
+		}
 		hs.AddLog(fmt.Sprintf("AI Access GRANTED for Peer [%s]", body.PeerID))
 	} else {
-		newRevoked = append(newRevoked, body.PeerID)
+		for id := range ids {
+			if net.ParseIP(id) == nil {
+				newRevoked = append(newRevoked, id)
+			}
+		}
 		hs.AddLog(fmt.Sprintf("AI Access REVOKED for Peer [%s]", body.PeerID))
 	}
 
@@ -1282,13 +1407,7 @@ func (hs *HTTPServer) handleAIAnalytics(w http.ResponseWriter, r *http.Request) 
 
 	var peerPerms []PeerPermInfo
 	for _, p := range peers {
-		isAllowed := true
-		for _, revID := range cfg.RevokedPeers {
-			if revID == p.ID || revID == p.IP {
-				isAllowed = false
-				break
-			}
-		}
+		isAllowed := ai.PeerAllowed(cfg, p.ID, p.InternetDeviceID, p.IP)
 		peerPerms = append(peerPerms, PeerPermInfo{
 			ID:         p.ID,
 			Name:       p.Name,
@@ -1300,19 +1419,19 @@ func (hs *HTTPServer) handleAIAnalytics(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"share_enabled":   cfg.ShareAI,
-		"provider":        cfg.Provider,
-		"model":           cfg.GeminiModel,
-		"gpu":             gpuLabel,
-		"cpu":             cpuName,
-		"ram":             ramLabel,
-		"ram_used_pct":    usedPct,
-		"ram_total_gb":    totalRAM,
-		"speed":           speedLabel,
+		"share_enabled":    cfg.ShareAI,
+		"provider":         cfg.Provider,
+		"model":            cfg.GeminiModel,
+		"gpu":              gpuLabel,
+		"cpu":              cpuName,
+		"ram":              ramLabel,
+		"ram_used_pct":     usedPct,
+		"ram_total_gb":     totalRAM,
+		"speed":            speedLabel,
 		"ollama_installed": ollamaInstalled,
-		"ollama_models":   ollamaModels,
-		"prompts_served":  hs.aiService.GetPromptsServed(),
-		"peers":           peerPerms,
+		"ollama_models":    ollamaModels,
+		"prompts_served":   hs.aiService.GetPromptsServed(),
+		"peers":            peerPerms,
 	})
 }
 
@@ -1328,65 +1447,19 @@ func (hs *HTTPServer) handleIOTHwScan(w http.ResponseWriter, r *http.Request) {
 		_ = iot.ScanRealWindowsHardware()
 	}
 	hw := iot.GetSystemHardwareSummary()
-	virtualBridge := iot.GetVirtualBridgeState()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"hardware":       hw,
-		"virtual_bridge": virtualBridge,
-		"devices":        hs.iotMgr.GetDevices(),
+		"hardware": hw,
+		"devices":  hs.iotMgr.GetDevices(),
 	})
 }
 
 func (hs *HTTPServer) handleIOTAudioCast(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		TargetIP   string  `json:"target_ip"`
-		PeerName   string  `json:"peer_name"`
-		Action     string  `json:"action"`
-		TrackTitle string  `json:"track_title"`
-		Volume     float64 `json:"volume"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.Volume <= 0 {
-		body.Volume = 0.85
-	}
-	if body.Action == "stop" {
-		iot.StopAudioCast()
-		hs.AddLog("⏹ Stopped Wireless Audio Casting to remote speaker.")
-	} else {
-		_ = iot.StartAudioCast(body.PeerName, body.TargetIP, body.TrackTitle, body.Volume)
-		hs.AddLog(fmt.Sprintf("[AUDIO] Wireless Cast [PLAY %s] broadcasting to %s (%s)", body.TrackTitle, body.PeerName, body.TargetIP))
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "action": body.Action})
+	http.Error(w, "Use the audio sharing controls to establish a Nearby WebRTC connection.", http.StatusNotImplemented)
 }
 
 func (hs *HTTPServer) handleIOTLiveAudioStream(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		TargetIP string `json:"target_ip"`
-		PeerName string `json:"peer_name"`
-		Streaming bool   `json:"streaming"`
-		Source    string `json:"source"` // "system_audio", "youtube_tab", "microphone"
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.Streaming {
-		iot.UpdateRemoteSensors(map[string]interface{}{
-			"audio_cast": map[string]interface{}{
-				"active":     true,
-				"bitrate":    128.0,
-				"latency_ms": 14.0,
-			},
-		})
-		hs.AddLog(fmt.Sprintf("[AUDIO] Live PC Audio Mirror [%s] streaming to %s (%s) @ 128 kbps (Ultra-Low Latency)", body.Source, body.PeerName, body.TargetIP))
-	} else {
-		iot.UpdateRemoteSensors(map[string]interface{}{
-			"audio_cast": map[string]interface{}{
-				"active": false,
-			},
-		})
-		hs.AddLog("⏹ Stopped Live PC Audio Mirroring.")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "streaming": body.Streaming})
+	http.Error(w, "Audio streaming requires a connected WebRTC session in the desktop app.", http.StatusNotImplemented)
 }
 
 func (hs *HTTPServer) handleIOTSensorsPoll(w http.ResponseWriter, r *http.Request) {
@@ -1399,66 +1472,77 @@ func (hs *HTTPServer) handleIOTSensorsPoll(w http.ResponseWriter, r *http.Reques
 }
 
 func (hs *HTTPServer) handleIOTSensorsTrigger(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
+	}
 	var body struct {
 		TargetIP string `json:"target_ip"`
-		Action   string `json:"action"` // "scan_ble", "fetch_gps", "tap_nfc", "flash_torch"
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	hs.AddLog(fmt.Sprintf("[SENSOR] Remote Sensor Trigger [%s] dispatched to %s", body.Action, body.TargetIP))
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"action":  body.Action,
-		"sensors": iot.GetRemotePhoneSensors(),
-	})
+	if json.NewDecoder(r.Body).Decode(&body) != nil {
+		http.Error(w, "Invalid request", 400)
+		return
+	}
+	found := false
+	if hs.discovery != nil {
+		for _, peer := range hs.discovery.GetPeers() {
+			if peer.IP == body.TargetIP && peer.IsOnline {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		http.Error(w, "Select an online Nearby phone", 400)
+		return
+	}
+	sensors, err := transfer.RequestPhoneTelemetry(body.TargetIP)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	iot.ReplaceRemoteSnapshot(sensors)
+	writeIOTJSON(w, map[string]interface{}{"success": true, "sensors": iot.GetRemotePhoneSensors()})
 }
 
 func (hs *HTTPServer) handleIOTRemoteMic(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		TargetIP string `json:"target_ip"`
-		PeerName string `json:"peer_name"`
-		Active   bool   `json:"active"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	iot.ToggleRemoteMic(body.PeerName, body.TargetIP, body.Active)
-	if body.Active {
-		hs.AddLog(fmt.Sprintf("[MIC] Linked remote microphone on %s as Wireless PC Mic.", body.PeerName))
-	} else {
-		hs.AddLog("[MIC] Unlinked wireless microphone bridge.")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "active": body.Active})
+	http.Error(w, "Use Listen to Phone Microphone and accept the call on the phone.", http.StatusNotImplemented)
 }
 
 func (hs *HTTPServer) handleIOTRemoteCam(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		TargetIP string `json:"target_ip"`
-		PeerName string `json:"peer_name"`
-		Active   bool   `json:"active"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	iot.ToggleRemoteCam(body.PeerName, body.TargetIP, body.Active)
-	if body.Active {
-		hs.AddLog(fmt.Sprintf("[CAMERA] Remote camera lens on %s linked as virtual PC camera sensor.", body.PeerName))
-	} else {
-		hs.AddLog("[CAMERA] Unlinked remote camera lens.")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "active": body.Active})
+	http.Error(w, "Use the Nearby CCTV viewer. No Windows virtual camera driver is installed by NearMitra.", http.StatusNotImplemented)
 }
 
 func (hs *HTTPServer) handleIOTNFCRead(w http.ResponseWriter, r *http.Request) {
-	tagID := fmt.Sprintf("NFC-UID-%d", time.Now().Unix()%1000000)
-	data := "Farmer Kisan Mandi e-Pass ID: KM-88492 • Produce: Basmati Paddy Grade A • Verified"
-	hs.AddLog(fmt.Sprintf("[NFC] Proximity Tap Detected: Tag [%s]", tagID))
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":    true,
-		"tag_id":     tagID,
-		"tag_type":   "Mifare Classic / NTAG215",
-		"ndef_data":  data,
-		"scanned_at": time.Now().Format("15:04:05"),
-	})
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
+	}
+	var data map[string]interface{}
+	var err error
+	if iot.GetGatewayConfig().NFCURL != "" {
+		data, err = iot.ReadGateway(r.Context(), "nfc")
+	} else {
+		type nfcResult struct {
+			data map[string]interface{}
+			err  error
+		}
+		completed := make(chan nfcResult, 1)
+		go func() { d, e := iot.ReadLocalNFCTag(); completed <- nfcResult{d, e} }()
+		select {
+		case result := <-completed:
+			data, err = result.data, result.err
+		case <-time.After(8 * time.Second):
+			err = fmt.Errorf("NFC reader timed out; reconnect the reader and try again")
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 503)
+		return
+	}
+	writeIOTJSON(w, data)
 }
 
 func (hs *HTTPServer) handleIOTPrintGatepass(w http.ResponseWriter, r *http.Request) {
@@ -1469,25 +1553,28 @@ func (hs *HTTPServer) handleIOTPrintGatepass(w http.ResponseWriter, r *http.Requ
 		MandiRate  float64 `json:"mandi_rate"`
 		PrinterIP  string  `json:"printer_ip"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.FarmerName == "" {
-		body.FarmerName = "Ramesh Kumar Sharma"
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
 	}
-	if body.CropType == "" {
-		body.CropType = "Basmati Paddy (Grade A)"
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid print request", http.StatusBadRequest)
+		return
 	}
-	if body.WeightKg <= 0 {
-		body.WeightKg = 2450.0
+	if net.ParseIP(body.PrinterIP) == nil {
+		http.Error(w, "Enter the LAN printer IP address", http.StatusBadRequest)
+		return
 	}
-	if body.MandiRate <= 0 {
-		body.MandiRate = 3850.0
+	if strings.TrimSpace(body.FarmerName) == "" || strings.TrimSpace(body.CropType) == "" || body.WeightKg <= 0 || body.MandiRate < 0 || math.IsNaN(body.WeightKg) || math.IsInf(body.WeightKg, 0) {
+		http.Error(w, "Enter a farmer name, crop, positive weight and non-negative rate", http.StatusBadRequest)
+		return
 	}
-
 	receiptBytes := iot.GenerateSampleGatePassReceipt(body.FarmerName, body.CropType, body.WeightKg, body.MandiRate)
-	if body.PrinterIP != "" {
-		_ = iot.SendRawToLANPrinter(body.PrinterIP, 9100, receiptBytes)
+	if err := iot.SendRawToLANPrinter(body.PrinterIP, 9100, receiptBytes); err != nil {
+		http.Error(w, "Printer connection failed: "+err.Error(), http.StatusBadGateway)
+		return
 	}
-	_ = hs.iotMgr.TriggerTestPrint("printer_thermal_01")
 	hs.AddLog(fmt.Sprintf("[PRINT] Mandi Gate Pass printed for farmer [%s] (Produce: %s, %.2f Qtl)", body.FarmerName, body.CropType, body.WeightKg/100))
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1499,39 +1586,83 @@ func (hs *HTTPServer) handleIOTPrintGatepass(w http.ResponseWriter, r *http.Requ
 }
 
 func (hs *HTTPServer) handleIOTToggle(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Device string `json:"device"`
-		State  bool   `json:"state"`
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", 405)
+		return
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	newState, _ := hs.iotMgr.ToggleRelay(body.Device)
-	hs.AddLog(fmt.Sprintf("Relay [%s] switched %v", body.Device, newState))
-	w.WriteHeader(http.StatusOK)
+	var body struct {
+		Channel int   `json:"channel"`
+		State   *bool `json:"state"`
+	}
+	if json.NewDecoder(r.Body).Decode(&body) != nil || body.State == nil {
+		http.Error(w, "channel and explicit state required", 400)
+		return
+	}
+	state, err := iot.SetRelay(r.Context(), body.Channel, *body.State)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	writeIOTJSON(w, state)
 }
 
 func (hs *HTTPServer) handleIOTPoll(w http.ResponseWriter, r *http.Request) {
-	hs.AddLog("Polled real-time telemetry from soil moisture sensor.")
-	w.WriteHeader(http.StatusOK)
+	state, err := iot.ReadGateway(r.Context(), "sensor")
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	writeIOTJSON(w, state)
 }
 
 func (hs *HTTPServer) handleIOTPrint(w http.ResponseWriter, r *http.Request) {
-	_ = hs.iotMgr.TriggerTestPrint("printer_thermal_01")
-	hs.AddLog("Sent sample Mandi Gate Pass to Thermal Printer.")
-	w.WriteHeader(http.StatusOK)
+	http.Error(w, "Configure a LAN printer in the gate pass form first.", http.StatusNotImplemented)
 }
 
 func (hs *HTTPServer) handleIOTScan(w http.ResponseWriter, r *http.Request) {
-	_ = hs.iotMgr.TriggerScan("scanner_doc_01")
-	hs.AddLog("Acquired document scan from WIA/TWAIN scanner.")
-	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	// Windows owns scan settings, device selection and the save dialog.
+	cmd := exec.Command("wiaacmgr.exe")
+	if err := cmd.Start(); err != nil {
+		http.Error(w, "Windows scanner could not be opened: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"opened": true})
 }
 
 func (hs *HTTPServer) handleIOTSchedule(w http.ResponseWriter, r *http.Request) {
-	task, _ := hs.iotAuto.ParseAIPromptSchedule("Auto-irrigate pump for 15 mins if soil moisture < 35%")
-	if task != nil {
-		hs.AddLog(fmt.Sprintf("AI Automation Schedule Added: %s", task.DeviceName))
+	if r.Method == http.MethodDelete {
+		if err := iot.CancelRelaySchedule(r.URL.Query().Get("id")); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		writeIOTJSON(w, iot.GetRelaySchedules())
+		return
 	}
-	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		writeIOTJSON(w, iot.GetRelaySchedules())
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "GET or POST required", 405)
+		return
+	}
+	var schedule iot.RelaySchedule
+	if json.NewDecoder(r.Body).Decode(&schedule) != nil {
+		http.Error(w, "Invalid schedule", 400)
+		return
+	}
+	if err := iot.AddRelaySchedule(schedule); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeIOTJSON(w, iot.GetRelaySchedules())
 }
 
 func (hs *HTTPServer) handleLogsClear(w http.ResponseWriter, r *http.Request) {
@@ -1543,7 +1674,10 @@ func (hs *HTTPServer) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleOpenSaveDir(w http.ResponseWriter, r *http.Request) {
-	OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+	if err := OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1662,12 +1796,16 @@ func (hs *HTTPServer) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs *HTTPServer) handleShowInFolder(w http.ResponseWriter, r *http.Request) {
-	targetPath := r.URL.Query().Get("path")
-	if targetPath != "" {
-		OpenFileInExplorer(targetPath)
-		hs.AddLog(fmt.Sprintf("Highlighted file in Explorer: %s", filepath.Base(targetPath)))
+	target := r.URL.Query().Get("path")
+	var err error
+	if target != "" {
+		err = OpenFileInExplorer(target)
 	} else {
-		OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+		err = OpenFolderInExplorer(hs.cfgMgr.GetConfig().SaveDirectory)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -1879,3 +2017,86 @@ func (hs *HTTPServer) handleWanSessionDelete(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
 
+func (hs *HTTPServer) handleChatFolderArchive(w http.ResponseWriter, r *http.Request) {
+	folder, err := SelectFolderDialog(hs.cfgMgr.GetConfig().SaveDirectory)
+	if err != nil || folder == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	dir, err := os.MkdirTemp("", "nearmitra-folder-*")
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer os.RemoveAll(dir)
+	name := filepath.Base(folder) + ".zip"
+	path := filepath.Join(dir, name)
+	if err := transfer.ArchiveFolder(folder, path); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("X-Folder-Name", name)
+	http.ServeFile(w, r, path)
+}
+
+func writeIOTJSON(w http.ResponseWriter, value interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(value)
+}
+func (hs *HTTPServer) handleIOTConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeIOTJSON(w, iot.GetGatewayConfig())
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "GET or POST required", 405)
+		return
+	}
+	var cfg iot.GatewayConfig
+	if json.NewDecoder(r.Body).Decode(&cfg) != nil {
+		http.Error(w, "Invalid device configuration", 400)
+		return
+	}
+	if err := iot.SaveGatewayConfig(cfg); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeIOTJSON(w, cfg)
+}
+func (hs *HTTPServer) handleIOTScale(w http.ResponseWriter, r *http.Request) {
+	var state map[string]interface{}
+	var err error
+	if r.Method == http.MethodPost {
+		var body struct {
+			Action string `json:"action"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Action != "tare" {
+			http.Error(w, "tare action required", 400)
+			return
+		}
+		state, err = iot.TareScale(r.Context())
+	} else if r.Method == http.MethodGet {
+		state, err = iot.ReadGateway(r.Context(), "scale")
+	} else {
+		http.Error(w, "GET or POST required", 405)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	writeIOTJSON(w, state)
+}
+
+func (hs *HTTPServer) reactionPeerAliases(id string) []string {
+	aliases := []string{id, "wan://" + id}
+	if hs.discovery != nil {
+		for _, p := range hs.discovery.GetPeers() {
+			if p.ID == id || p.InternetDeviceID == id {
+				aliases = append(aliases, p.ID, p.InternetDeviceID, p.IP)
+			}
+		}
+	}
+	return aliases
+}

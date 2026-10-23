@@ -9,14 +9,14 @@ import (
 type DeviceType string
 
 const (
-	TypeRelay       DeviceType = "relay"        // Smart Switches, Water Pumps, Solenoid Valves
-	TypeSensor      DeviceType = "sensor"       // Soil Moisture, Temperature, Humidity, NPK
-	TypePrinter     DeviceType = "printer"      // Network, Thermal, POS, Windows Spooler
-	TypeScanner     DeviceType = "scanner"      // WIA, TWAIN, Document & Barcode Scanners
-	TypeAudio       DeviceType = "audio"        // Bluetooth Earphones, Headsets, Speakers
-	TypeBLEBeacon   DeviceType = "ble_beacon"   // Proximity Beacons & Asset Trackers
-	TypeNFCReader   DeviceType = "nfc_reader"   // Proximity Tags & Smart Cards
-	TypeSmartNode   DeviceType = "smart_node"   // ESP32 / Arduino / Raspberry Pi Bridge
+	TypeRelay     DeviceType = "relay"      // Smart Switches, Water Pumps, Solenoid Valves
+	TypeSensor    DeviceType = "sensor"     // Soil Moisture, Temperature, Humidity, NPK
+	TypePrinter   DeviceType = "printer"    // Network, Thermal, POS, Windows Spooler
+	TypeScanner   DeviceType = "scanner"    // WIA, TWAIN, Document & Barcode Scanners
+	TypeAudio     DeviceType = "audio"      // Bluetooth Earphones, Headsets, Speakers
+	TypeBLEBeacon DeviceType = "ble_beacon" // Proximity Beacons & Asset Trackers
+	TypeNFCReader DeviceType = "nfc_reader" // Proximity Tags & Smart Cards
+	TypeSmartNode DeviceType = "smart_node" // ESP32 / Arduino / Raspberry Pi Bridge
 )
 
 // Protocol specifies the physical/link communication layer.
@@ -34,29 +34,29 @@ const (
 
 // HardwareSupportMatrix holds the host PC's detected hardware capabilities.
 type HardwareSupportMatrix struct {
-	WiFiSupported       bool   `json:"wifi_supported"`
-	WiFiActive          bool   `json:"wifi_active"`
-	WiFiAdapterName     string `json:"wifi_adapter_name"`
+	WiFiSupported   bool   `json:"wifi_supported"`
+	WiFiActive      bool   `json:"wifi_active"`
+	WiFiAdapterName string `json:"wifi_adapter_name"`
 
-	BluetoothSupported  bool   `json:"bluetooth_supported"`
-	BluetoothActive     bool   `json:"bluetooth_active"`
-	BluetoothRadioName  string `json:"bluetooth_radio_name"`
+	BluetoothSupported bool   `json:"bluetooth_supported"`
+	BluetoothActive    bool   `json:"bluetooth_active"`
+	BluetoothRadioName string `json:"bluetooth_radio_name"`
 
-	LANSupported        bool   `json:"lan_supported"`
-	LANActive           bool   `json:"lan_active"`
-	LANAdapterName      string `json:"lan_adapter_name"`
+	LANSupported   bool   `json:"lan_supported"`
+	LANActive      bool   `json:"lan_active"`
+	LANAdapterName string `json:"lan_adapter_name"`
 
-	NFCSupported        bool   `json:"nfc_supported"`
-	NFCActive           bool   `json:"nfc_active"`
-	NFCStatusReason     string `json:"nfc_status_reason"`
+	NFCSupported    bool   `json:"nfc_supported"`
+	NFCActive       bool   `json:"nfc_active"`
+	NFCStatusReason string `json:"nfc_status_reason"`
 
-	WiFiDirectSupported bool   `json:"wifi_direct_supported"`
-	WiFiDirectActive    bool   `json:"wifi_direct_active"`
+	WiFiDirectSupported bool `json:"wifi_direct_supported"`
+	WiFiDirectActive    bool `json:"wifi_direct_active"`
 
-	PrintersCount       int    `json:"printers_count"`
-	ScannersCount       int    `json:"scanners_count"`
+	PrintersCount int `json:"printers_count"`
+	ScannersCount int `json:"scanners_count"`
 
-	InternetModeEnabled bool   `json:"internet_mode_enabled"` // Strictly false by default for local-first security
+	InternetModeEnabled bool      `json:"internet_mode_enabled"` // Strictly false by default for local-first security
 	LastDiagnostic      time.Time `json:"last_diagnostic"`
 }
 

@@ -18,6 +18,9 @@ import (
 // WanService manages Internet / WAN remote discovery, privacy modes, pair codes, and trusted peer relationships.
 type WanService struct {
 	mu                  sync.RWMutex
+	presenceMu          sync.Mutex
+	presenceCancel      context.CancelFunc
+	lastPresenceAt      time.Time
 	client              *FirebaseClient
 	config              WanConfig
 	trustedDevices      map[string]*WanDevice
@@ -141,13 +144,14 @@ func (ws *WanService) Start() {
 	ws.stopChan = make(chan struct{})
 	ws.config.InternetModeEnabled = true
 	ws.saveConfigLocked()
+	stop := ws.stopChan
 	ws.mu.Unlock()
 
 	log.Println("[WanService] Starting Internet / WAN Mesh & Firebase Presence...")
-	go ws.presenceLoop()
-	go ws.incomingRequestsLoop()
-	go ws.publicDiscoveryLoop()
-	go ws.syncTrustedDevicesLoop()
+	go ws.presenceLoop(stop)
+	go ws.incomingRequestsLoop(stop)
+	go ws.publicDiscoveryLoop(stop)
+	go ws.syncTrustedDevicesLoop(stop)
 }
 
 // Stop halts all WAN background workers and cleans up presence.
@@ -161,12 +165,15 @@ func (ws *WanService) Stop() {
 	ws.config.InternetModeEnabled = false
 	ws.saveConfigLocked()
 	close(ws.stopChan)
+	if ws.presenceCancel != nil {
+		ws.presenceCancel()
+	}
 	ws.isFirebaseConnected = false
 	ws.isPresenceOnline = false
 	ws.mu.Unlock()
 
 	log.Println("[WanService] Stopping WAN Mesh and cleaning up Firebase presence...")
-	go ws.cleanupPresence()
+	ws.cleanupPresence()
 }
 
 // SetInternetMode toggles the master WAN internet mesh.
@@ -211,12 +218,17 @@ func (ws *WanService) GetState() *WanState {
 			continue
 		}
 		cp := *d
+		cp.IsOnline = presenceAlive(cp.IsOnline, cp.Platform, cp.LastSeen, cp.PresenceLeaseMs, time.Now())
+		if !cp.IsOnline {
+			continue
+		}
 		publicList = append(publicList, &cp)
 	}
 
 	trustedList := make([]*WanDevice, 0, len(ws.trustedDevices))
 	for _, d := range ws.trustedDevices {
 		cp := *d
+		cp.IsOnline = presenceAlive(cp.IsOnline, cp.Platform, cp.LastSeen, cp.PresenceLeaseMs, time.Now())
 		trustedList = append(trustedList, &cp)
 	}
 
@@ -237,8 +249,8 @@ func (ws *WanService) GetState() *WanState {
 	return &WanState{
 		InternetModeEnabled: ws.config.InternetModeEnabled,
 		DiscoveryMode:       ws.config.DiscoveryMode,
-		IsFirebaseConnected: ws.isFirebaseConnected,
-		IsPresenceOnline:    ws.isPresenceOnline,
+		IsFirebaseConnected: ws.isFirebaseConnected && time.Since(ws.lastPresenceAt) < desktopPresenceLease,
+		IsPresenceOnline:    ws.isPresenceOnline && time.Since(ws.lastPresenceAt) < desktopPresenceLease,
 		MyDeviceID:          cfg.DeviceID,
 		MyDeviceName:        cfg.DeviceName,
 		MyAvatarEmoji:       cfg.AvatarEmoji,
@@ -649,15 +661,15 @@ func (ws *WanService) RemoveTrustedDevice(id string) {
 }
 
 // presenceLoop periodically refreshes device heartbeat in presence/{deviceId} and public_presence/{deviceId}.
-func (ws *WanService) presenceLoop() {
+func (ws *WanService) presenceLoop(stop <-chan struct{}) {
 	ws.syncPresenceImmediate()
 
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(presenceHeartbeatInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ws.stopChan:
+		case <-stop:
 			return
 		case <-ticker.C:
 			ws.syncPresenceImmediate()
@@ -666,59 +678,80 @@ func (ws *WanService) presenceLoop() {
 }
 
 func (ws *WanService) syncPresenceImmediate() {
-	cfg := config.Get().GetConfig()
-	now := time.Now()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-
-	presencePayload := map[string]interface{}{
-		"deviceId":    cfg.DeviceID,
-		"deviceName":  cfg.DeviceName,
-		"avatarEmoji": cfg.AvatarEmoji,
-		"platform":    "windows",
-		"online":      true,
-		"lastSeen":    now.UnixMilli(),
-	}
-
-	err := ws.client.Put(ctx, "presence/"+cfg.DeviceID, presencePayload)
+	// Serialize writes with offline cleanup, so a late heartbeat cannot
+	// resurrect the app after WAN is disabled or the process exits.
+	ws.presenceMu.Lock()
+	defer ws.presenceMu.Unlock()
 	ws.mu.Lock()
-	ws.isFirebaseConnected = (err == nil)
-	ws.isPresenceOnline = (err == nil)
-	mode := ws.config.DiscoveryMode
+	if !ws.running || !ws.config.InternetModeEnabled {
+		ws.mu.Unlock()
+		return
+	}
+	mode, client := ws.config.DiscoveryMode, ws.client
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ws.presenceCancel = cancel
 	ws.mu.Unlock()
+	defer func() {
+		cancel()
+		ws.mu.Lock()
+		ws.presenceCancel = nil
+		ws.mu.Unlock()
+	}()
 
-	// Handle Public Radar vs Ghost/PIN
-	publicCtx, pCancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer pCancel()
-
+	cfg := config.Get().GetConfig()
+	payload := map[string]interface{}{
+		"deviceId": cfg.DeviceID, "deviceName": cfg.DeviceName,
+		"avatarEmoji": cfg.AvatarEmoji, "platform": "windows", "online": true,
+		"lastSeen":        map[string]string{".sv": "timestamp"},
+		"presenceLeaseMs": desktopPresenceLease.Milliseconds(),
+	}
+	err := client.Put(ctx, "presence/"+cfg.DeviceID, payload)
+	ws.mu.Lock()
+	active := ws.running && ws.config.InternetModeEnabled
+	ws.isFirebaseConnected = active && err == nil
+	ws.isPresenceOnline = active && err == nil
+	if active && err == nil {
+		ws.lastPresenceAt = time.Now()
+	}
+	ws.mu.Unlock()
+	if !active {
+		return
+	}
 	if mode == ModePublicRadar && err == nil {
-		_ = ws.client.Put(publicCtx, "public_presence/"+cfg.DeviceID, presencePayload)
+		if err := client.Put(ctx, "public_presence/"+cfg.DeviceID, payload); err != nil {
+			log.Printf("[WanService] Public presence refresh failed: %v", err)
+		}
 	} else {
-		_ = ws.client.Delete(publicCtx, "public_presence/"+cfg.DeviceID)
+		_ = client.Delete(ctx, "public_presence/"+cfg.DeviceID)
 	}
 }
 
 func (ws *WanService) cleanupPresence() {
+	ws.presenceMu.Lock()
+	defer ws.presenceMu.Unlock()
+	ws.mu.RLock()
+	running, client := ws.running, ws.client
+	ws.mu.RUnlock()
+	if running {
+		return
+	} // A new WAN session already owns presence.
 	cfg := config.Get().GetConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_ = ws.client.Patch(ctx, "presence/"+cfg.DeviceID, map[string]interface{}{
-		"online":   false,
-		"lastSeen": time.Now().UnixMilli(),
+	_ = client.Patch(ctx, "presence/"+cfg.DeviceID, map[string]interface{}{
+		"online": false, "lastSeen": map[string]string{".sv": "timestamp"},
 	})
-	_ = ws.client.Delete(ctx, "public_presence/"+cfg.DeviceID)
+	_ = client.Delete(ctx, "public_presence/"+cfg.DeviceID)
 }
 
 // incomingRequestsLoop polls for incoming pairing requests at pairRequests/{myDeviceID}.
-func (ws *WanService) incomingRequestsLoop() {
+func (ws *WanService) incomingRequestsLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ws.stopChan:
+		case <-stop:
 			return
 		case <-ticker.C:
 			ws.pollIncomingRequests()
@@ -766,13 +799,13 @@ func (ws *WanService) pollIncomingRequests() {
 }
 
 // publicDiscoveryLoop sweeps public_presence/ to discover other online peers on WAN Radar.
-func (ws *WanService) publicDiscoveryLoop() {
+func (ws *WanService) publicDiscoveryLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(6 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ws.stopChan:
+		case <-stop:
 			return
 		case <-ticker.C:
 			ws.sweepPublicPresence()
@@ -794,7 +827,7 @@ func (ws *WanService) sweepPublicPresence() {
 	defer cancel()
 
 	var presenceMap map[string]map[string]interface{}
-	if err := ws.client.Get(ctx, "public_presence", &presenceMap); err != nil || presenceMap == nil {
+	if err := ws.client.Get(ctx, "public_presence", &presenceMap); err != nil {
 		return
 	}
 
@@ -802,6 +835,7 @@ func (ws *WanService) sweepPublicPresence() {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
+	ws.publicDevices = make(map[string]*WanDevice)
 	for devID, data := range presenceMap {
 		if devID == cfg.DeviceID {
 			continue
@@ -813,27 +847,32 @@ func (ws *WanService) sweepPublicPresence() {
 		platform, _ := data["platform"].(string)
 		avatar, _ := data["avatarEmoji"].(string)
 		online, _ := data["online"].(bool)
-		lastSeenNum, _ := data["lastSeen"].(float64)
-
-		lastSeen := now
+		lastSeenNum := presenceNumber(data["lastSeen"])
+		var lastSeen time.Time
 		if lastSeenNum > 0 {
-			lastSeen = time.UnixMilli(int64(lastSeenNum))
+			lastSeen = time.UnixMilli(lastSeenNum)
+		}
+		lease := presenceNumber(data["presenceLeaseMs"])
+		online = presenceAlive(online, platform, lastSeen, lease, now)
+		if !online {
+			continue
 		}
 
 		ws.publicDevices[devID] = &WanDevice{
-			ID:          devID,
-			Name:        name,
-			Platform:    platform,
-			AvatarEmoji: avatar,
-			IsOnline:    online,
-			LastSeen:    lastSeen,
-			IsTrusted:   ws.trustedDevices[devID] != nil,
+			ID:              devID,
+			Name:            name,
+			Platform:        platform,
+			AvatarEmoji:     avatar,
+			IsOnline:        online,
+			LastSeen:        lastSeen,
+			PresenceLeaseMs: lease,
+			IsTrusted:       ws.trustedDevices[devID] != nil,
 		}
 	}
 }
 
 // syncTrustedDevicesLoop continuously synchronizes paired trusted peers with Firebase RTDB.
-func (ws *WanService) syncTrustedDevicesLoop() {
+func (ws *WanService) syncTrustedDevicesLoop(stop <-chan struct{}) {
 	ws.syncTrustedDevices()
 
 	ticker := time.NewTicker(3 * time.Second)
@@ -841,7 +880,7 @@ func (ws *WanService) syncTrustedDevicesLoop() {
 
 	for {
 		select {
-		case <-ws.stopChan:
+		case <-stop:
 			return
 		case <-ticker.C:
 			ws.syncTrustedDevices()
@@ -902,7 +941,8 @@ func (ws *WanService) syncTrustedDevices() {
 		avatar, _ := data["avatarEmoji"].(string)
 
 		isOnline := false
-		lastSeen := now
+		var lastSeen time.Time
+		var lease int64
 
 		// Try presence node first, then fallback to public_presence node
 		var pData map[string]interface{}
@@ -925,6 +965,7 @@ func (ws *WanService) syncTrustedDevices() {
 			if lastSeenNum > 0 {
 				lastSeen = time.UnixMilli(int64(lastSeenNum))
 			}
+			lease = presenceNumber(pData["presenceLeaseMs"])
 			isOnline = onlineVal
 			if pName, _ := pData["deviceName"].(string); pName != "" {
 				name = pName
@@ -936,17 +977,19 @@ func (ws *WanService) syncTrustedDevices() {
 				avatar = pAvatar
 			}
 		}
+		isOnline = presenceAlive(isOnline, platform, lastSeen, lease, now)
 
 		existing, exists := ws.trustedDevices[peerID]
 		if !exists {
 			ws.trustedDevices[peerID] = &WanDevice{
-				ID:          peerID,
-				Name:        name,
-				Platform:    platform,
-				AvatarEmoji: avatar,
-				IsOnline:    isOnline,
-				IsTrusted:   true,
-				LastSeen:    lastSeen,
+				ID:              peerID,
+				Name:            name,
+				Platform:        platform,
+				AvatarEmoji:     avatar,
+				IsOnline:        isOnline,
+				IsTrusted:       true,
+				LastSeen:        lastSeen,
+				PresenceLeaseMs: lease,
 			}
 			changed = true
 		} else {
@@ -967,6 +1010,7 @@ func (ws *WanService) syncTrustedDevices() {
 				changed = true
 			}
 			existing.LastSeen = lastSeen
+			existing.PresenceLeaseMs = lease
 		}
 		// Ensure peer is excluded from public radar list
 		delete(ws.publicDevices, peerID)
@@ -1070,5 +1114,3 @@ func (ws *WanService) DeleteSession(sessionID string) error {
 
 	return ws.client.Delete(ctx, "sessions/"+sessionID)
 }
-
-

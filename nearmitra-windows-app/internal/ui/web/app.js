@@ -111,6 +111,8 @@ document.addEventListener("DOMContentLoaded", () => {
   renderChatMessages();
   loadRecentFiles();
   initWanWebRTC();
+  loadPcMicrophones();
+  navigator.mediaDevices?.addEventListener?.('devicechange',loadPcMicrophones);
   showToast("NearMitra Windows 11 Engine Active • Subnet & P2P Mesh Online");
 });
 
@@ -200,15 +202,16 @@ function switchTab(tabKey, pushHistory = true) {
     targetPane.classList.add("active");
   }
 
+  if(remoteSensorPollTimer){clearInterval(remoteSensorPollTimer);remoteSensorPollTimer=null;}
   if (tabKey === 'chat') {
-    renderChatMessages();
+    renderChatMessages();renderMasterList();
   } else if (tabKey === 'recents') {
     loadRecentFiles();
     renderRecentCalls();
   } else if (tabKey === 'cctv') {
     populateCctvPeerSelect();
   } else if (tabKey === 'voice') {
-    populateAudioPeerSelect();
+    populateAudioPeerSelect();loadPcMicrophones();renderWirelessAudio();loadWirelessOutputs();
     const dashboard = document.getElementById("voiceDashboardView");
     const activeCallView = document.getElementById("voiceActiveCallView");
     if (!isCallActive) {
@@ -222,7 +225,8 @@ function switchTab(tabKey, pushHistory = true) {
   } else if (tabKey === 'settings') {
     loadStreamingSecurity();
   } else if (tabKey === 'iot') {
-    loadHardwareDiagnostics();
+    loadHardwareDiagnostics();loadIotConfiguration();pollRemoteSensors();
+    remoteSensorPollTimer=setInterval(()=>{pollRemoteSensors();loadRelaySchedules().catch(()=>{});},10000);
   }
 }
 
@@ -301,7 +305,7 @@ function filterMasterList(query) {
 // -----------------------------------------------------------------------------
 function startStatePoller() {
   fetchState();
-  setInterval(fetchState, 1500);
+  setInterval(fetchState, 1000);
 }
 
 async function fetchState() {
@@ -346,6 +350,7 @@ function updateUIFromState(data) {
     });
     const cleanPeers = Array.from(seenMap.values());
     appState.peers = cleanPeers;
+    renderWirelessAudio();
     const peerBadge = document.getElementById("badgePeerCount");
     if (peerBadge) peerBadge.innerText = cleanPeers.length;
     const modeP2P = document.getElementById("modeP2PBadge");
@@ -412,76 +417,20 @@ function updateUIFromState(data) {
     }
   }
 
-  // ── Sync server-persisted chat messages (authoritative sync) ──
-  if (data.chat_messages && Array.isArray(data.chat_messages)) {
-    const serverMsgs = data.chat_messages;
-    const serverMsgMap = new Map();
-    serverMsgs.forEach(m => {
-      if (!m.id) {
-        m.id = "msg_" + (m.peer_id || m.peer_ip || "dev") + "_" + (m.at ? new Date(m.at).getTime() : Date.now());
-      }
-      serverMsgMap.set(m.id, m);
-    });
-
-    const currentMap = new Map();
-    (appState.messages || []).forEach(m => {
-      if (m && m.id) currentMap.set(m.id, m);
-    });
-
-    let changed = false;
-    let latestIncomingPeer = null;
-
-    // 1. Remove messages from local appState that were permanently cleared on server
-    const validMessages = (appState.messages || []).filter(localMsg => {
-      if (!localMsg || !localMsg.id) return false;
-      // Allow initial welcome message
-      if (localMsg.id === "msg_init_1") return true;
-      // Keep WAN or P2P WebRTC messages in local state
-      if (localMsg.is_wan || (localMsg.peer_ip && localMsg.peer_ip.startsWith("wan://")) || localMsg.peer_ip === "wan" || localMsg.is_p2p) return true;
-      // If message was synced from server and no longer exists on server, drop it
-      return serverMsgMap.has(localMsg.id);
-    });
-
-    if (validMessages.length !== (appState.messages || []).length) {
-      appState.messages = validMessages;
-      changed = true;
+  if (Array.isArray(data.chat_messages)) {
+    resolveChatRoute(appState.activePeer);
+    const previous = new Set(appState.messages.map(m=>m.id));
+    appState.messages = NearMitraChat.merge(appState.messages,data.chat_messages);
+    const incoming = data.chat_messages.filter(m=>!m.mine && !previous.has(m.id)).at(-1);
+    if (!appState.activePeer && incoming) {
+      appState.activePeer = (appState.peers || []).find(p=>p.id===incoming.peer_id || p.ip===incoming.peer_ip) ||
+        {id:incoming.peer_id,ip:incoming.peer_ip,name:incoming.sender,is_wan:incoming.is_wan};
+      updateDetailViewForPeer(appState.activePeer);
     }
-
-    // 2. Add newly arrived server messages deterministically
-    serverMsgs.forEach(serverMsg => {
-      if (!currentMap.has(serverMsg.id)) {
-        if (serverMsg.at) serverMsg.at = new Date(serverMsg.at);
-        appState.messages.push(serverMsg);
-        currentMap.set(serverMsg.id, serverMsg);
-        changed = true;
-
-        if (!serverMsg.mine) {
-          latestIncomingPeer = {
-            id: serverMsg.peer_id || serverMsg.peer_ip,
-            name: serverMsg.sender,
-            ip: serverMsg.peer_ip
-          };
-        }
-      }
-    });
-
-    if (changed) {
-      savePersistedMessages();
-
-      // If no active peer is selected, auto-select the sender so the chat conversation is visible
-      if (!appState.activePeer && latestIncomingPeer) {
-        const foundPeer = (appState.peers || []).find(p => (p.id && p.id === latestIncomingPeer.id) || (p.ip && p.ip === latestIncomingPeer.ip));
-        if (foundPeer) {
-          appState.activePeer = foundPeer;
-          updateDetailViewForPeer(foundPeer);
-        } else if (latestIncomingPeer.ip || latestIncomingPeer.id) {
-          appState.activePeer = latestIncomingPeer;
-          updateDetailViewForPeer(latestIncomingPeer);
-        }
-      }
-
-      renderChatMessages();
-    }
+    savePersistedMessages();
+    syncIncomingIndicators(true);
+    renderChatMessages();
+    if(appState.activePeer) updateDetailViewForPeer(appState.activePeer);
   }
 
   // ── Incoming Call Ringing Overlay ──
@@ -663,10 +612,10 @@ function renderMasterList() {
             <div class="card-content">
               <div class="card-top-row">
                 <span class="card-title">
-                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
                   ${escapeHTML(p.name)}
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
+                  ${incomingDeviceBadge(p)}
                   <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : 'Live'}</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
@@ -686,44 +635,10 @@ function renderMasterList() {
       });
     }
 
-    // IoT Peripherals Group
+    // Open hardware diagnostics without inventing connected peripherals.
     if (seg === "all" || seg === "iot" || seg === "focused") {
-      html += `
-        <div class="list-group-header">
-          <span>SMART IOT & HARDWARE</span>
-          <span class="group-count-badge">2</span>
-        </div>
-        <div class="master-item-card" onclick="switchTab('iot', true)">
-          <div class="card-avatar-circle bg-amber">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M12 2v20"/><path d="m4.93 4.93 4.24 4.24"/><path d="M2 12h20"/></svg>
-          </div>
-          <div class="card-content">
-            <div class="card-top-row">
-              <span class="card-title">Kisan Smart Pump #1</span>
-              <span class="card-time">Live</span>
-            </div>
-            <div class="card-sub-row">
-              <span class="card-snippet">228V • Flow 0 L/min • [OFF]</span>
-              <span class="card-badge-pill bg-amber-dim">Relay</span>
-            </div>
-          </div>
-        </div>
-        <div class="master-item-card" onclick="switchTab('iot', true)">
-          <div class="card-avatar-circle bg-cyan">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          </div>
-          <div class="card-content">
-            <div class="card-top-row">
-              <span class="card-title">Field Sector-A Soil Probe</span>
-              <span class="card-time">48%</span>
-            </div>
-            <div class="card-sub-row">
-              <span class="card-snippet">Moisture Optimal (BLE)</span>
-              <span class="card-badge-pill bg-cyan-dim">BLE</span>
-            </div>
-          </div>
-        </div>
-      `;
+      html += `<div class="list-group-header">HARDWARE & IOT</div>
+        <div class="master-item-card" onclick="switchTab('iot',true)"><div class="card-content"><div class="card-title">Windows hardware & Nearby sharing</div><div class="card-snippet">Scan connected devices and manage audio</div></div></div>`;
     }
 
   } else {
@@ -809,10 +724,10 @@ function renderMasterList() {
             <div class="card-content">
               <div class="card-top-row">
                 <span class="card-title">
-                  ${isPinned ? '<span class="pinned-badge-pill">📌 Pinned</span>' : ''}
                   ${escapeHTML(displayName)}
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
+                  ${incomingDeviceBadge({id:dev.id || dev.ip,ip:dev.ip,name:displayName})}
                   <span class="card-time">${dev.ping_ms || 2}ms</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
@@ -892,11 +807,13 @@ function updateDetailViewForPeer(peer) {
     if (match) emoji = match[0];
   }
   const avatarDisplay = emoji || getInitials(peer.name);
-  const isWan = !!peer.is_wan;
+  const chatRoute = resolveChatRoute(peer);
+  const isWan = chatRoute.mode === 'wan';
+  document.querySelectorAll('[title="Voice Call"], [title="Video Call"], [onclick*= "voice_call"], [onclick*= "video_call"]').forEach(button => { button.disabled = chatRoute.mode !== 'nearby'; });
 
   // Radar / Hero
   document.getElementById("heroPeerName").innerText = peer.name;
-  document.getElementById("heroPeerStatus").innerText = isWan ? (peer.is_online ? "Online" : "Offline") : "Online • 4ms Latency";
+  document.getElementById("heroPeerStatus").innerText = chatRoute.mode === "offline" ? "Offline" : "Online • " + (isWan ? "Internet" : "Nearby");
   document.getElementById("heroPeerType").innerText = isWan ? "NearMitra Internet WAN" : "NearMitra Direct P2P";
   document.getElementById("heroPeerIP").innerText = isWan ? "Internet Peer" : (peer.ip || "192.168.1.55");
   const heroAvatar = document.getElementById("heroPeerAvatar");
@@ -906,7 +823,7 @@ function updateDetailViewForPeer(peer) {
   document.getElementById("chatHeaderTitle").innerText = peer.name;
   const chatInitials = document.getElementById("chatHeaderInitials");
   if (chatInitials) chatInitials.innerText = avatarDisplay;
-  document.getElementById("chatHeaderStatus").innerText = isWan ? (peer.is_online ? '● Online' : '● Offline') : `Encrypted Direct TCP (${peer.ip || '192.168.1.55'})`;
+  document.getElementById("chatHeaderStatus").innerText = chatRoute.mode === "offline" ? "Offline • Messages queued" : isWan ? "Online • Internet" : `Online • Nearby (${chatRoute.nearby.ip})`;
   const dropLabel = document.getElementById("dropTargetLabel");
   if (dropLabel) dropLabel.innerText = isWan ? `Transfer to ${peer.name} (WAN Mesh)` : `Transfer to ${peer.name} (${peer.ip})`;
 
@@ -960,15 +877,49 @@ function refreshDiscoveryState() {
 // P2P ENCRYPTED CHAT (Targeted to Selected Peer + Persistent + Clear Chat)
 // -----------------------------------------------------------------------------
 
+function incomingChatItems(){
+ return typeof NearMitraTransfers==='undefined'?appState.messages:NearMitraTransfers.project(appState.messages,appState.transfers);
+}
+let incomingReadIDs = new Set();
+let incomingBaselineReady=false;
+try{const saved=localStorage.getItem('nearmitra_incoming_read_v1');if(saved){incomingReadIDs=new Set(JSON.parse(saved));incomingBaselineReady=true;}}catch(_){}
+function incomingItemKey(m){return (m.peer_id || m.peer_ip || '')+'|'+m.id;}
+function visibleChatIsOpen(){return document.getElementById('tab-chat')?.classList?.contains('active') && document.visibilityState!=='hidden' && (!document.hasFocus || document.hasFocus());}
+function saveIncomingReads(){try{localStorage.setItem('nearmitra_incoming_read_v1',JSON.stringify([...incomingReadIDs].slice(-10000)));}catch(_){} }
+function syncIncomingIndicators(establishBaseline=false){
+ const items=incomingChatItems().filter(m=>!m.mine && m.id);
+ if(!incomingBaselineReady && establishBaseline){
+  // Existing history is not a fresh notification; live transfers remain unread.
+  const transferring=new Set((appState.transfers || []).filter(t=>t.Active).map(t=>t.ID));
+  for(const m of items)if(!m._liveTransfer&&!transferring.has(m.id))incomingReadIDs.add(incomingItemKey(m));
+  incomingBaselineReady=true;saveIncomingReads();
+ }
+ if(visibleChatIsOpen() && appState.activePeer){for(const m of items)if(NearMitraChat.matches(m,appState.activePeer,appState.peers,chatDeviceLinks))incomingReadIDs.add(incomingItemKey(m));saveIncomingReads();}
+ const unread=items.filter(m=>!incomingReadIDs.has(incomingItemKey(m)));
+ const badge=document.getElementById('badgeChatUnread');if(badge){badge.hidden=!unread.length;badge.innerText=unread.length>99?'99+':String(unread.length);}
+ return unread;
+}
+function incomingDeviceBadge(peer){
+ const unread=incomingChatItems().filter(m=>!m.mine&&!incomingReadIDs.has(incomingItemKey(m))&&NearMitraChat.matches(m,peer,appState.peers,chatDeviceLinks));
+ return unread.length?'<span class="device-unread-count" aria-label="'+unread.length+' unread items">'+(unread.length>99?'99+':unread.length)+'</span>':'';
+}
+window.addEventListener('focus',()=>{syncIncomingIndicators();renderMasterList();});
+document.addEventListener('visibilitychange',()=>{syncIncomingIndicators();renderMasterList();});
+
+let chatSelection=new Set(), chatSelectionScope='', chatReply=null, chatForwardBusy=false;
+
 function renderChatMessages() {
+  syncNearbyAIConversation();
   const container = document.getElementById("chatStream");
   if (!container) return;
 
+  syncIncomingIndicators();
+  const followLatest=container.scrollHeight-container.scrollTop-container.clientHeight<120;
   const activePeer = appState.activePeer;
   const activeIP = activePeer ? activePeer.ip : "";
   const activeID = activePeer ? activePeer.id : "";
   const activeName = activePeer ? activePeer.name : "";
-  const isWanPeer = !!(activePeer && activePeer.is_wan);
+  const isWanPeer = activePeer && resolveChatRoute(activePeer).mode === 'wan';
 
   let html = `
     <div class="chat-drop-overlay" id="chatDropOverlay">
@@ -981,19 +932,12 @@ function renderChatMessages() {
     <div class="chat-date-divider"><span>${isWanPeer ? 'WAN Mesh Chat' : 'Today'}</span></div>
   `;
 
-  // Filter messages for ONLY the active selected peer (strictly separating WAN from LAN)
-  const targetMessages = (appState.messages || []).filter(m => {
-    const isWanMsg = m.is_wan === true || (m.peer_ip && m.peer_ip.startsWith('wan://')) || (m.peer_id && m.peer_id.startsWith('wan://'));
-    if (isWanPeer) {
-      if (!isWanMsg) return false;
-      return m.peer_id === activeID || m.peer_ip === 'wan://' + activeID || m.peer_ip === activeIP;
-    } else {
-      if (isWanMsg) return false;
-      return (activeIP && m.peer_ip === activeIP) ||
-             (activeID && m.peer_id === activeID) ||
-             (activeIP && m.peer_id === 'manual_' + activeIP);
-    }
-  });
+  const route = resolveChatRoute(activePeer);
+  if(chatSelectionScope!==route.id) {chatSelection.clear();chatReply=null;chatSelectionScope=route.id;}
+  updateChatReplyPreview();
+  const targetMessages = (incomingChatItems() || []).filter(m =>
+    NearMitraChat.matches(m,activePeer,appState.peers,chatDeviceLinks))
+    .sort((a,b) => new Date(a.at)-new Date(b.at));
 
   if (targetMessages.length === 0) {
     html += `
@@ -1004,9 +948,12 @@ function renderChatMessages() {
     `;
   }
 
+  const validIDs=new Set(targetMessages.filter(chatCanAct).map(m=>m.id));
+  for(const id of chatSelection) if(!validIDs.has(id)) chatSelection.delete(id);
+  if(chatSelection.size) html+=`<div class="chat-selection-bar"><strong>${chatSelection.size} selected</strong><button onclick="openChatForward()">Forward</button><button onclick="clearChatSelection()">Cancel</button></div>`;
   targetMessages.forEach(m => {
     const timeStr = formatTime(m.at);
-    const reactions = m.reactions || {};
+    const reactions = NearMitraChat.normalize(m).reactions;
     const reactionKeys = Object.keys(reactions).filter(k => reactions[k] > 0);
 
     let reactionsHTML = "";
@@ -1014,8 +961,8 @@ function renderChatMessages() {
       reactionsHTML = `
         <div class="msg-reaction-badges">
           ${reactionKeys.map(k => `
-            <span class="reaction-badge-pill" onclick="toggleMessageReaction('${m.id}', '${k}')">
-              ${k} <span class="badge-count">${reactions[k]}</span>
+            <span class="reaction-badge-pill">
+              ${escapeHTML(k)} <span class="badge-count">${reactions[k]}</span>
             </span>
           `).join("")}
         </div>
@@ -1026,21 +973,22 @@ function renderChatMessages() {
     if (m.attachment) {
       const isSending = m.attachment.status === "Sending" || m.status === "Sending" || (m.attachment.progress !== undefined && m.attachment.progress < 100 && m.attachment.status !== "Sent" && m.attachment.status !== "Delivered");
       const isDownloading = m.attachment.status === "Downloading" || m.status === "Downloading";
-      const isProgressing = isSending || isDownloading;
-      const progress = m.attachment.progress !== undefined ? m.attachment.progress : (isProgressing ? 50 : 100);
       const isFailed = m.attachment.status === "Failed" || m.status === "Failed";
+      const isProgressing = !isFailed && (isSending || isDownloading);
+      const progress = m.attachment.progress !== undefined ? m.attachment.progress : (isProgressing ? 50 : 100);
       const isMine = m.mine;
 
       attachmentHTML = `
-        <div class="msg-attachment-card" id="att_${m.id}" onclick="handleAttachmentClick('${m.id}')" title="Click to open or save">
+        <div class="msg-attachment-card" id="att_${m.id}" onclick="${m._liveTransfer ? '' : `handleAttachmentClick('${m.id}')`}" title="Click to open or save">
           <div class="attachment-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
           </div>
           <div class="attachment-info" style="flex:1; min-width:0;">
             <span class="attachment-name">${escapeHTML(m.attachment.name || 'File')}</span>
             <span class="attachment-meta" id="att_meta_${m.id}">
-              ${m.attachment.size || ''} • ${isProgressing ? `${isSending ? 'Sending' : 'Downloading'} (${progress}%)` : (isFailed ? 'Failed ✕' : (isMine ? 'Sent ✓' : 'Received ✓'))}
+              ${typeof m.attachment.size==='number'?formatFileSize(m.attachment.size):m.attachment.size || ''} • ${isProgressing ? `${m.mine ? 'Sending' : 'Receiving'} (${progress}%)` : (isFailed ? 'Failed ✕' : (isMine ? 'Sent ✓' : 'Received ✓'))}
             </span>
+            ${m._liveTransfer && typeof NearMitraTransfers!=='undefined' ? '<span class="incoming-transfer-detail">'+escapeHTML(NearMitraTransfers.detail(m.attachment,formatFileSize))+'</span>':''}
             ${isProgressing ? `
               <div class="wan-progress-track" style="margin-top:6px; height:4px; background:rgba(255,255,255,0.2); border-radius:2px; overflow:hidden;">
                 <div class="wan-progress-fill" id="att_prog_${m.id}" style="width:${progress}%; height:100%; background:var(--primary-emerald); transition:width 0.2s linear;"></div>
@@ -1054,6 +1002,10 @@ function renderChatMessages() {
       `;
     }
 
+    const quote=NearMitraChat.normalize(m);
+    const quoteHTML=quote.reply_to_id ? `<button class="msg-quoted-reply" data-quote-id="${escapeHTML(quote.reply_to_id)}" onclick="jumpQuotedMessage(event)"><strong>${escapeHTML(quote.reply_to_sender || 'Message')}</strong><span>${escapeHTML(quote.reply_to_text || 'Attachment')}</span></button>` : '';
+    const forwardedHTML=quote.is_forwarded ? '<div class="msg-forwarded-label">↪ Forwarded</div>' : '';
+    const actionHTML=chatCanAct(m) ? `<div class="msg-chat-actions" data-chat-id="${escapeHTML(m.id)}"><button onclick="chatMessageAction(event,'reply')" title="Reply to message">↩ Reply</button><button onclick="chatMessageAction(event,'forward')" title="Forward message or file">↪ Forward</button><button onclick="chatMessageAction(event,'select')" aria-pressed="${chatSelection.has(m.id)}">${chatSelection.has(m.id)?'✓ Selected':'Select'}</button><button onclick="chatMessageAction(event,'copy')" title="Copy message text">⧉ Copy</button></div>` : '';
     const hoverReactionsBar = `
       <div class="msg-hover-reactions">
         <span onclick="toggleMessageReaction('${m.id}', '👍')">👍</span>
@@ -1070,12 +1022,14 @@ function renderChatMessages() {
         <div class="msg-row outgoing" id="${m.id}">
           <div class="msg-bubble-wrap">
             ${hoverReactionsBar}
-            <div class="msg-bubble">
+            ${actionHTML}
+            <div class="msg-bubble ${chatSelection.has(m.id)?'msg-selected':''}">
+              ${forwardedHTML}${quoteHTML}
               ${attachmentHTML}
               ${m.text ? `<div class="msg-text">${escapeHTML(m.text)}</div>` : ''}
               <div class="msg-meta">
                 <span class="msg-time">${timeStr}</span>
-                <span class="msg-ticks double-blue">✓✓</span>
+                <span class="msg-ticks" title="${escapeHTML(m.status || 'Sent')}">${m.status==='Queued' ? '◷' : m.status==='Sending' ? '…' : m.status==='Failed' ? '!' : '✓✓'}</span>
               </div>
             </div>
             ${reactionsHTML}
@@ -1087,8 +1041,11 @@ function renderChatMessages() {
         <div class="msg-row incoming" id="${m.id}">
           <div class="msg-bubble-wrap">
             ${hoverReactionsBar}
-            <div class="msg-bubble">
+            ${actionHTML}
+            <div class="msg-bubble ${chatSelection.has(m.id)?'msg-selected':''}">
+              ${forwardedHTML}
               <div class="msg-sender">${escapeHTML(m.sender || activeName || 'Peer')}</div>
+              ${quoteHTML}
               ${attachmentHTML}
               ${m.text ? `<div class="msg-text">${escapeHTML(m.text)}</div>` : ''}
               <div class="msg-meta">
@@ -1103,50 +1060,22 @@ function renderChatMessages() {
   });
 
   container.innerHTML = html;
-  container.scrollTop = container.scrollHeight;
+  if(followLatest || !Number.isFinite(container.clientHeight))container.scrollTop = container.scrollHeight;
 }
 
 function sendChatMessage() {
-  const input = document.getElementById("chatInput");
-  const text = (input.value || "").trim();
-  if (!text) return;
-
-  const targetPeer = appState.activePeer;
-  const targetIP = targetPeer ? targetPeer.ip : "";
-  const targetID = targetPeer ? targetPeer.id : "";
-  const isWanPeer = !!(targetPeer && targetPeer.is_wan);
-
-  const msg = {
-    id: "msg_" + Date.now(),
-    peer_id: targetID,
-    peer_ip: isWanPeer ? ("wan://" + targetID) : targetIP,
-    sender: "Windows Host",
-    text: text,
-    mine: true,
-    at: new Date(),
-    status: "Sent",
-    is_wan: isWanPeer,
-    reactions: {}
-  };
-
-  appState.messages.push(msg);
-  savePersistedMessages();
-  input.value = "";
-  renderChatMessages();
-
-  // Hide user typing
-  handleUserTyping(false);
-
-  if (isWanPeer) {
-    sendWanChatMessage(targetID, text, msg.id);
-  } else if (targetIP) {
-    // Exclusively send to target peer IP over local LAN
-    fetch("/api/chat/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(msg)
-    });
-  }
+ const input=document.getElementById('chatInput');
+ const text=input.value.trim();
+ const peer=appState.activePeer;
+ if (!text || !peer) return;
+ const route=resolveChatRoute(peer);
+ appState.messages.push({id:crypto.randomUUID(),peer_id:route.id,peer_ip:route.nearby?.ip || 'wan://'+route.id,
+  peer_name:peer.name,sender:'Windows Host',text,mine:true,at:new Date(),status:'Queued',
+  ...(chatReply?{reply_to_id:chatReply.id,reply_to_sender:chatReply.sender,reply_to_text:chatReply.text || chatReply.file_name || chatReply.attachment?.name || 'Attachment'}:{})});
+ chatReply=null;updateChatReplyPreview();
+ savePersistedMessages(); input.value=''; renderChatMessages();
+ handleUserTyping(false);
+ flushChatOutbox();
 }
 
 function sendPresetText(text) {
@@ -1154,31 +1083,21 @@ function sendPresetText(text) {
   sendChatMessage();
 }
 
-function toggleMessageReaction(msgId, emoji) {
-  const msg = appState.messages.find(m => m.id === msgId);
-  if (!msg) return;
-
-  if (!msg.reactions) msg.reactions = {};
-  if (msg.reactions[emoji]) {
-    delete msg.reactions[emoji];
-  } else {
-    msg.reactions[emoji] = 1;
+async function toggleMessageReaction(msgId,emoji) {
+ const msg=appState.messages.find(m=>m.id===msgId),peer=appState.activePeer;
+ if(!msg || !peer || !NearMitraChat.matches(msg,peer,appState.peers,chatDeviceLinks)) return;
+ const route=resolveChatRoute(peer), selected=msg.local_reaction===emoji?'':emoji;
+ try {
+  if(route.mode==='offline') throw new Error('Recipient is offline');
+  if(route.mode==='wan') {
+   const dc=await ensureWanChannel(route.id,peer.name);
+   // Send the selected value explicitly, including an empty value for removal.
+   dc.send(JSON.stringify({type:'control',timestamp:Date.now(),payload:{action:'reaction',messageId:msgId,reaction:selected}}));
   }
-
-  savePersistedMessages();
-
-  const targetIP = appState.activePeer ? appState.activePeer.ip : "";
-  fetch("/api/chat/react", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      target_ip: targetIP,
-      msg_id: msgId,
-      emoji: emoji
-    })
-  });
-
-  renderChatMessages();
+  const response=await fetch('/api/chat/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_ip:route.nearby?.ip || '',msg_id:msgId,emoji:selected})});
+  if(!response.ok) throw new Error(await response.text());
+  msg.local_reaction=selected;savePersistedMessages();renderChatMessages();
+ } catch(error) {showToast('Reaction could not be sent: '+error.message);}
 }
 
 async function clearActivePeerChat() {
@@ -1305,9 +1224,11 @@ function openFile(filePath) {
   showToast("Opening file with default system application...");
 }
 
-function showInFolder(filePath) {
-  fetch(`/api/recents/show-in-folder?path=${encodeURIComponent(filePath)}`);
-  showToast("[Explorer] Highlighting file in Windows Explorer");
+async function showInFolder(filePath) {
+ try {
+  const response=await fetch('/api/recents/show-in-folder?path='+encodeURIComponent(filePath));
+  if(!response.ok)throw new Error(await response.text());
+ } catch(error) {showToast('Could not open Explorer: '+error.message);}
 }
 
 function renderRecentCalls() {
@@ -1385,15 +1306,16 @@ async function handleChatDrop(e) {
   }
 
   // 1. WAN PEER: Stream directly over WebRTC Data Channel to remote mobile / peer
-  if (targetPeer.is_wan) {
+  const fileRoute = resolveChatRoute(targetPeer);
+  if (fileRoute.mode === 'wan') {
     for (let i = 0; i < files.length; i++) {
-      await streamFileOverWan(files[i], targetPeer.id, targetPeer.name);
+      await streamFileOverWan(files[i], fileRoute.id, targetPeer.name);
     }
     return;
   }
 
   // 2. LOCAL LAN PEER: Upload over local HTTP/TCP socket
-  const targetIP = targetPeer.ip;
+  const targetIP = resolveChatRoute(targetPeer).nearby?.ip || "";
   const targetID = targetPeer.id;
   const targetName = targetPeer.name || "Peer";
 
@@ -1448,9 +1370,9 @@ function handleUserTyping(isTyping = true) {
   if (typingTimeout) clearTimeout(typingTimeout);
   const targetPeer = appState.activePeer;
   if (!targetPeer) return;
-  const targetIP = targetPeer.ip || "";
+  const targetIP = resolveChatRoute(targetPeer).nearby?.ip || "";
   const targetID = targetPeer.id || "";
-  const isWanPeer = !!targetPeer.is_wan;
+  const isWanPeer = resolveChatRoute(targetPeer).mode === 'wan';
 
   // Send over WAN DataChannel if WAN peer
   if (isWanPeer && wanDataChannel && wanDataChannel.readyState === "open") {
@@ -1584,7 +1506,9 @@ function selectAttachCategory(category) {
   }
 
   // If WAN Peer: Use direct HTML file / folder picker to stream file over WebRTC DataChannel
-  if (targetPeer.is_wan) {
+  const fileRoute = resolveChatRoute(targetPeer);
+  if (fileRoute.mode === 'wan') {
+    if(category==='folder') {triggerSendFolder();return;}
     let fileInput = document.getElementById("wanFileInput");
     if (!fileInput) {
       fileInput = document.createElement("input");
@@ -1610,7 +1534,7 @@ function selectAttachCategory(category) {
     fileInput.onchange = async (e) => {
       if (e.target.files && e.target.files.length > 0) {
         for (let i = 0; i < e.target.files.length; i++) {
-          await streamFileOverWan(e.target.files[i], targetPeer.id, targetPeer.name);
+          await streamFileOverWan(e.target.files[i], fileRoute.id, targetPeer.name);
         }
         fileInput.value = "";
       }
@@ -1629,50 +1553,49 @@ function selectAttachCategory(category) {
 // -----------------------------------------------------------------------------
 // FILE & FOLDER TRANSFERS (Targeted to Selected Peer)
 // -----------------------------------------------------------------------------
-function triggerSendFile(category) {
-  const targetPeer = appState.activePeer;
-  const targetIP = targetPeer ? targetPeer.ip : "";
-  const targetID = targetPeer ? targetPeer.id : "";
-  const targetName = targetPeer ? targetPeer.name : "Active Peer";
-
-  const catParam = category ? `&type=${encodeURIComponent(category)}` : "";
-  fetch(`/api/send-file?ip=${encodeURIComponent(targetIP)}${catParam}`)
-    .then(r => r.json())
-    .then(data => {
-      if (data && data.file) {
-        showToast(`Sending ${data.file} to ${targetName}...`);
-        const fileMsg = {
-          id: "msg_" + Date.now(),
-          peer_id: targetID,
-          peer_ip: targetIP,
-          sender: "Windows Host",
-          mine: true,
-          at: new Date(),
-          attachment: {
-            name: data.file.split(/[\\/]/).pop(),
-            size: "15.2 MB",
-            type: category || "file"
-          },
-          status: "Sent",
-          reactions: {}
-        };
-        appState.messages.push(fileMsg);
-        savePersistedMessages();
-        renderChatMessages();
-      }
-    });
+async function triggerSendFile(category) {
+ const peer=appState.activePeer;if(!peer) {showToast('Select a device first');return}
+ const route=resolveChatRoute(peer);
+ if(!route.nearby) {showToast('Select an available Nearby device');return}
+ try {
+  const response=await fetch('/api/send-file?ip='+encodeURIComponent(route.nearby.ip)+'&type='+encodeURIComponent(category || 'file'));
+  const text=await response.text();if(!response.ok) throw new Error(text);
+  if(!text) return;
+  const data=JSON.parse(text);if(data.error) throw new Error(data.error);
+  acceptSentAttachment(data);
+ } catch(error) {showToast('File could not be sent: '+error.message);}
+}
+function acceptSentAttachment(data) {
+ if(!data?.message) return;
+ const stored=NearMitraChat.normalize(data.message);
+ appState.messages=NearMitraChat.merge(appState.messages,[stored]);
+ savePersistedMessages();renderChatMessages();showToast('Sent '+stored.file_name);
 }
 
-function triggerSendFolder() {
+async function triggerSendFolder() {
+  const selected=appState.activePeer;
+  if(!selected) return;
+  const route=resolveChatRoute(selected);
+  if(route.mode==='wan') {
+    try {
+      const response=await fetch('/api/chat/folder-archive');
+      if(response.status===204) return;
+      if(!response.ok) throw new Error(await response.text());
+      const name=response.headers.get('X-Folder-Name') || 'Folder.zip';
+      await streamFileOverWan(new File([await response.blob()],name),route.id,selected.name,true);
+    } catch(error) {showToast(error.message);}
+    return;
+  }
   const targetPeer = appState.activePeer;
-  const targetIP = targetPeer ? targetPeer.ip : "";
-  fetch(`/api/send-folder?ip=${encodeURIComponent(targetIP)}`)
-    .then(r => r.json())
-    .then(data => {
-      if (data && data.folder) {
-        showToast(`Sending folder ${data.folder}...`);
-      }
-    });
+  const targetIP = targetPeer ? (resolveChatRoute(targetPeer).nearby?.ip || "") : "";
+  try {
+    const response=await fetch('/api/send-folder?ip='+encodeURIComponent(targetIP));
+    const text=await response.text();if(!response.ok) throw new Error(text);
+    if(!text) return;
+    const data=JSON.parse(text);if(data.error) throw new Error(data.error);
+    acceptSentAttachment(data);
+  } catch(error) {showToast('Folder could not be sent: '+error.message);}
+
 }
 
 function handleDropFile(e) {
@@ -1682,9 +1605,11 @@ function handleDropFile(e) {
   handleChatDrop(e);
 }
 
-function openSaveDirectory() {
-  fetch("/api/open-save-dir");
-  showToast("Opening NearMitra Received Files in File Explorer...");
+async function openSaveDirectory() {
+ try {
+  const response=await fetch('/api/open-save-dir');
+  if(!response.ok)throw new Error(await response.text());
+ } catch(error) {showToast('Could not open folder: '+error.message);}
 }
 
 // -----------------------------------------------------------------------------
@@ -2581,6 +2506,7 @@ function setStreamerRole(role) {
 }
 
 async function toggleHostCameraStream() {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting CCTV');return;}
   const btn = document.getElementById("btnStartHostCamera");
   const btnLabel = document.getElementById("btnHostCameraLabel");
   const localVid = document.getElementById("localCctvVideo");
@@ -2700,7 +2626,7 @@ function populateCctvPeerSelect() {
   const sel = document.getElementById("cctvPeerSelect");
   if (!sel) return;
   const peers = appState.peers || [];
-  const activeIP = appState.activePeer ? appState.activePeer.ip : "";
+  const activeIP = sel.value || (appState.activePeer ? appState.activePeer.ip : "");
 
   if (peers.length === 0) {
     sel.innerHTML = `<option value="">No peers discovered yet (Broadcasting UDP...)</option>`;
@@ -2748,7 +2674,9 @@ async function sendWebRTCSignalToTarget(targetIP, header) {
 
 function startStreamSignalPoller() {
   if (streamSignalPollerInterval) return;
+  let polling=false;
   streamSignalPollerInterval = setInterval(async () => {
+    if(polling)return;polling=true;
     try {
       const res = await fetch("/api/cctv/poll-signals");
       if (!res.ok) return;
@@ -2757,14 +2685,23 @@ function startStreamSignalPoller() {
       for (const sig of signals) {
         await handleIncomingStreamSignal(sig);
       }
-    } catch (e) { }
+    } catch (e) { } finally {polling=false;}
   }, 200);
 }
 
 async function handleIncomingStreamSignal(sig) {
   const hdr = sig.header || sig;
   if (!hdr || !hdr.type) return;
+  if(hdr.type.startsWith('wireless_audio_')) {
+    if(wirelessAudio)await wirelessAudio.handle(sig.peer_ip || sig.sender_ip,hdr);
+    return;
+  }
 
+  if(hdr.type.startsWith('webrtc_') || hdr.type.startsWith('call_')) {
+    try {await desktopCall.handle(sig.peer_ip || sig.sender_ip,hdr);}
+    catch(error){await desktopCall.fail(error);}
+    return;
+  }
   console.log("📥 [WebRTC Signal Received]", hdr.type, hdr);
 
   if (hdr.type === 'stream_answer') {
@@ -2851,6 +2788,7 @@ async function handleIncomingStreamSignal(sig) {
 }
 
 async function handleIncomingStreamOffer(sig) {
+ if(wirelessAudio?.session){await sendWebRTCSignalToTarget(sig.peer_ip || sig.sender_ip,{type:'stream_rejected',reason:'Wireless audio is active'});return;}
   const hdr = sig.header;
   const senderIP = sig.sender_ip;
   if (!hdr || !hdr.sdp || !senderIP) return;
@@ -2953,6 +2891,7 @@ function disconnectRemoteCctv(reason = "") {
 }
 
 async function toggleRemoteCctvConnection() {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting CCTV');return;}
   const btn = document.getElementById("btnConnectRemoteCctv");
   const btnLabel = document.getElementById("btnConnectRemoteLabel");
   const hwBox = document.getElementById("remoteHwTriggersBox");
@@ -3368,6 +3307,7 @@ let incomingCallData = null;
 let testMicStream = null;
 let testMicInterval = null;
 
+let retainedAudioTarget = null;
 function populateAudioPeerSelect() {
   const sel = document.getElementById("audioPeerSelect");
   if (!sel) return;
@@ -3384,8 +3324,13 @@ function populateAudioPeerSelect() {
     }
   });
 
+  const sessionPeer = wirelessAudio?.session?.peer;
+  if (sessionPeer && !map.has(sessionPeer.ip)) map.set(sessionPeer.ip, {ip:sessionPeer.ip,name:sessionPeer.name,isPhone:true});
+  const previous = sel.value;
+  if(retainedAudioTarget?.ip===previous && !map.has(previous))map.set(previous,retainedAudioTarget);
   const list = Array.from(map.values());
-  const activeIP = appState.activePeer ? appState.activePeer.ip : "";
+  const activeIP = sessionPeer?.ip || (map.has(previous) ? previous : appState.activePeer?.ip || '');
+  retainedAudioTarget=map.get(activeIP) || list[0] || retainedAudioTarget;
 
   if (list.length === 0) {
     sel.innerHTML = `<option value="">No devices discovered yet (Scanning LAN...)</option>`;
@@ -3400,6 +3345,7 @@ function populateAudioPeerSelect() {
 }
 
 function onAudioTargetPeerChanged(ip) {
+  renderWirelessAudio();
   const matched = (appState.peers || []).find(p => p.ip === ip) ||
     (appState.lanDevices || []).find(d => d.ip === ip);
   if (matched) {
@@ -3424,87 +3370,52 @@ function getSelectedAudioTarget() {
       id: matched.id || matched.ip
     };
   }
+  if (selectedIP) return NearMitraCall.resolvePeer({ip:selectedIP,name:selectedIP},appState.peers || [],appState.lanDevices || []);
   if (appState.activePeer && appState.activePeer.ip) return appState.activePeer;
   if (appState.peers && appState.peers.length > 0) return appState.peers[0];
   return null;
 }
 
 function startSelectedAudioAction(actionType) {
-  const target = getSelectedAudioTarget();
-  if (!target || !target.ip) {
-    showToast("Please select a target device from the dropdown first.");
-    return;
-  }
-
-  appState.activePeer = target;
-  isCallActive = true;
-
-  const dashboard = document.getElementById("voiceDashboardView");
-  const activeCallView = document.getElementById("voiceActiveCallView");
-  const peerTitle = document.getElementById("callPeerTitle");
-  const peerStatus = document.getElementById("callPeerStatus");
-
-  if (dashboard) dashboard.style.display = "none";
-  if (activeCallView) activeCallView.style.display = "flex";
-
-  if (peerTitle) peerTitle.innerText = target.name;
-
-  if (actionType === 'voice_call') {
-    if (peerStatus) peerStatus.innerText = "Active Two-Way Encrypted Voice Intercom";
-    setCallMode('audio');
-    startCallWithPeer(target.ip, target.name, false);
-    showToast(`[Voice Intercom] Connecting to ${target.name}...`);
-  } else if (actionType === 'listen_mic') {
-    if (peerStatus) peerStatus.innerText = "Surveillance Audio: Listening to Remote Device Mic";
-    setCallMode('audio');
-    startCallWithPeer(target.ip, target.name, false);
-    showToast(`[Remote Mic] Connecting to ${target.name} room microphone...`);
-  } else if (actionType === 'broadcast_voice') {
-    if (peerStatus) peerStatus.innerText = "PA Intercom: Broadcasting PC Mic to Remote Speaker";
-    setCallMode('audio');
-    startCallWithPeer(target.ip, target.name, false);
-    showToast(`[PA Broadcast] Broadcasting voice to ${target.name}...`);
-  } else if (actionType === 'video_call') {
-    if (peerStatus) peerStatus.innerText = "Active 1080P WebRTC HD Video Call";
-    setCallMode('video');
-    startCallWithPeer(target.ip, target.name, true);
-    showToast(`[Video Call] Ringing ${target.name}...`);
-  }
+ const target=getSelectedAudioTarget();
+ if(!target){showToast('Select a Nearby device first');return;}
+ return startCallWithPeer(target.ip,target.name,actionType==='video_call',actionType==='listen_mic'?'listen':actionType==='broadcast_voice'?'broadcast':'duplex');
 }
 
-async function testLocalMicInput() {
-  const btn = document.getElementById("btnTestLocalMic");
-  const bar = document.getElementById("localMicVuBar");
-  const txt = document.getElementById("localMicVuText");
-
-  if (testMicInterval) {
-    clearInterval(testMicInterval);
-    testMicInterval = null;
-    if (testMicStream) {
-      testMicStream.getTracks().forEach(t => t.stop());
-      testMicStream = null;
-    }
-    if (btn) btn.innerHTML = "<span>🎙️ Test PC Mic Level</span>";
-    if (bar) bar.style.width = "0%";
-    if (txt) txt.innerText = "0 dB";
-    showToast("[Mic Test] Microphone VU level test stopped");
-    return;
-  }
-
-  try {
-    testMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (btn) btn.innerHTML = "<span style='color:#EF4444;'>⏹️ Stop Mic Test</span>";
-
-    testMicInterval = setInterval(() => {
-      const randVu = Math.floor(35 + Math.random() * 55);
-      if (bar) bar.style.width = `${randVu}%`;
-      if (txt) txt.innerText = `-${Math.round((100 - randVu) / 2)} dB (Normal)`;
-    }, 120);
-
-    showToast("[Mic Test] Speaking into PC mic... VU meter active");
-  } catch (e) {
-    showToast("[Mic Test Error] Could not access PC microphone: " + e.message);
-  }
+let testMicContext=null;
+async function loadPcMicrophones(){
+ const selected=callElement('pcMicrophoneDevice');if(!selected)return;
+ const previous=selected.value;
+ try{
+  const devices=await navigator.mediaDevices.enumerateDevices();
+  selected.replaceChildren(new Option(devices.some(device=>device.kind==='audioinput')?'Windows default microphone':'No PC microphone listed (receive-only)',''));
+  for(const device of devices.filter(d=>d.kind==='audioinput'))selected.add(new Option(device.label || 'Microphone '+(selected.options.length),device.deviceId));
+  selected.value=[...selected.options].some(option=>option.value===previous)?previous:'';
+  callText('pcMediaStatus',devices.some(device=>device.kind==='audioinput')?'Microphone list refreshed. Normal calls use PC microphone/camera.':'No PC microphone is listed. Calls can receive phone audio; connect a microphone to send your voice.');
+ }catch(error){callText('pcMediaStatus','Could not list PC microphones: '+describePcMediaError(error));console.warn('Microphone list unavailable',error);}
+}
+async function stopPcMicTest(){
+ if(testMicInterval)clearInterval(testMicInterval);testMicInterval=null;
+ if(testMicStream)testMicStream.getTracks().forEach(t=>t.stop());testMicStream=null;
+ if(testMicContext)await testMicContext.close().catch(()=>{});testMicContext=null;
+ callText('btnTestLocalMic','Test PC Mic Level');callText('localMicVuText','Stopped');const bar=callElement('localMicVuBar');if(bar)bar.style.width='0%';
+}
+async function testLocalMicInput(){
+ if(testMicInterval){await stopPcMicTest();return;}
+ try{
+  const deviceId=callElement('pcMicrophoneDevice')?.value;
+  testMicStream=await navigator.mediaDevices.getUserMedia({audio:deviceId?{deviceId:{exact:deviceId}}:true});
+  testMicContext=new AudioContext();await testMicContext.resume();
+  const analyser=testMicContext.createAnalyser();analyser.fftSize=1024;
+  testMicContext.createMediaStreamSource(testMicStream).connect(analyser);
+  const samples=new Float32Array(analyser.fftSize);callText('btnTestLocalMic','Stop Mic Test');
+  await loadPcMicrophones();
+  testMicInterval=setInterval(()=>{
+   analyser.getFloatTimeDomainData(samples);const rms=Math.sqrt(samples.reduce((sum,value)=>sum+value*value,0)/samples.length);
+   const db=20*Math.log10(Math.max(rms,0.000001));const bar=callElement('localMicVuBar');if(bar)bar.style.width=Math.max(0,Math.min(100,(db+60)/60*100))+'%';
+   callText('localMicVuText',rms<0.00001?'No mic signal':db.toFixed(1)+' dBFS');
+  },100);
+ }catch(error){await stopPcMicTest();showToast('PC microphone test failed: '+describePcMediaError(error));}
 }
 
 function setCallMode(mode) {
@@ -3526,11 +3437,6 @@ function setCallMode(mode) {
   const camBtn = document.getElementById("btnCallCam");
   if (camBtn) camBtn.classList.toggle("active-ctrl", isVideo);
 
-  if (isVideo) {
-    acquireLocalCamera();
-  } else {
-    stopLocalCameraTrack();
-  }
 }
 
 async function acquireLocalCamera() {
@@ -3599,52 +3505,6 @@ function startCallTimer() {
     const vidBadge = document.getElementById("videoDurationBadge");
     if (vidBadge) vidBadge.innerText = `00:${mins}:${secs}`;
   }, 1000);
-}
-
-function startCallWithPeer(ip, name, isVideo = false) {
-  isCallActive = true;
-  appState.activePeer = { ip, name: name || ip, id: ip };
-  updateDetailViewForPeer(appState.activePeer);
-
-  const dashboard = document.getElementById("voiceDashboardView");
-  const activeCallView = document.getElementById("voiceActiveCallView");
-  const peerTitle = document.getElementById("callPeerTitle");
-  const peerStatus = document.getElementById("callPeerStatus");
-
-  if (dashboard) dashboard.style.display = "none";
-  if (activeCallView) activeCallView.style.display = "flex";
-  if (peerTitle) peerTitle.innerText = name || ip;
-  if (peerStatus) peerStatus.innerText = isVideo ? "Active 1080P WebRTC HD Video Call" : "Active Encrypted Voice Stream";
-
-  appState.voice.callDuration = 0;
-  startCallTimer();
-  startEqualizerLoop();
-
-  fetch("/api/call/invite", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      target_ip: ip,
-      peer_id: ip,
-      peer_name: name || ip,
-      is_video: isVideo
-    })
-  }).catch(() => {});
-
-  switchTab('voice', true);
-  setCallMode(isVideo ? 'video' : 'audio');
-
-  const callRecord = {
-    id: "call_" + Date.now(),
-    peerName: name || ip,
-    peerIP: ip,
-    type: isVideo ? "WebRTC HD Video Call" : "WebRTC HD Voice Call",
-    status: "Connected",
-    duration: "00m 01s",
-    at: new Date()
-  };
-  appState.callHistory.unshift(callRecord);
-  savePersistedCalls();
 }
 
 function toggleVoiceMute() {
@@ -3775,147 +3635,37 @@ async function revokeTrustedDevice(peerId) {
   }
 }
 
-function toggleVideoCamera() {
-  const currentMode = appState.voice.mode || 'audio';
-  if (currentMode === 'audio') {
-    setCallMode('video');
-    showToast("Switched to HD Video Call");
-  } else {
-    setCallMode('audio');
-    showToast("Switched to Audio Call");
-  }
+async function toggleVideoCamera() {
+ try {await desktopCall.camera(!desktopCall.session?.video);}
+ catch(error){showToast(error.message);}
 }
 
-async function toggleScreenShare() {
-  if (isScreenSharing) {
-    isScreenSharing = false;
-    const lbl = document.getElementById("screenLabel");
-    if (lbl) lbl.innerText = "Share";
-    const btn = document.getElementById("btnCallScreen");
-    if (btn) btn.classList.remove("active-ctrl");
-    acquireLocalCamera();
-    showToast("Screen sharing stopped");
-  } else {
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      isScreenSharing = true;
-      const lbl = document.getElementById("screenLabel");
-      if (lbl) lbl.innerText = "Sharing";
-      const btn = document.getElementById("btnCallScreen");
-      if (btn) btn.classList.add("active-ctrl");
-
-      const localVid = document.getElementById("localVideo");
-      if (localVid) localVid.srcObject = screenStream;
-
-      screenStream.getVideoTracks()[0].onended = () => {
-        toggleScreenShare();
-      };
-      showToast("Live Screen Sharing started over P2P WebRTC");
-    } catch (err) {
-      showToast("Screen sharing cancelled or unavailable");
-    }
-  }
+async function toggleScreenShare(){
+ try {await desktopCall.screen(!desktopCall.session?.sharing);}
+ catch(error){showToast('Screen sharing: '+error.message);}
+}
+function syncCallMedia(session){
+ if(!session)return;
+ isScreenSharing=session.sharing;
+ setCallMode(session.video || session.sharing || session.peerVideo?'video':'audio');
+ callElement('btnCallCam')?.classList.toggle('active-ctrl',session.video);
+ callElement('btnCallScreen')?.classList.toggle('active-ctrl',session.sharing);
+ callText('camLabel',session.video?'Camera On':'Camera Off');
+ callText('screenLabel',session.sharing?'Stop Sharing':'Share');
+ for(const id of ['btnCallCam','btnCallScreen']){const button=callElement(id);if(button)button.disabled=!session.connected || session.mediaBusy;}
+ const local=callElement('localVideo');if(local){local.style.objectFit=session.sharing?'contain':'cover';local.style.transform=session.sharing?'none':'';}
+ const remote=callElement('remoteVideo');if(remote)remote.style.objectFit='contain';
+ callDisplay('localVideoPip',session.video || session.sharing?'block':'none');
+ callDisplay('remoteVideoPlaceholder',session.peerVideo?'none':'flex');
+}
+function toggleSpeaker(){
+ appState.voice.speaker=!appState.voice.speaker;
+ const audio=callElement('remoteCallAudio');if(audio)audio.muted=!appState.voice.speaker;
+ callText('speakerLabel',appState.voice.speaker?'Speaker On':'Speaker Off');
 }
 
-function toggleSpeaker() {
-  appState.voice.speaker = !appState.voice.speaker;
-  const lbl = document.getElementById("speakerLabel");
-  if (lbl) lbl.innerText = appState.voice.speaker ? "Speaker" : "Earpiece";
-  showToast(appState.voice.speaker ? "Audio Output: Speakerphone" : "Audio Output: Earpiece");
-}
+function endVoiceCall() {return desktopCall.stop(true);}
 
-function endVoiceCall() {
-  isCallActive = false;
-
-  try {
-    if (localMediaStream) {
-      localMediaStream.getTracks().forEach(t => {
-        try { t.stop(); } catch (e) { }
-      });
-      localMediaStream = null;
-    }
-    if (peerConnection) {
-      try { peerConnection.close(); } catch (e) { }
-      peerConnection = null;
-    }
-    if (callDurationInterval) {
-      clearInterval(callDurationInterval);
-      callDurationInterval = null;
-    }
-    if (equalizerInterval) {
-      clearInterval(equalizerInterval);
-      equalizerInterval = null;
-    }
-    stopLocalCameraTrack();
-  } catch (err) {
-    console.error("endVoiceCall cleanup error:", err);
-  } finally {
-    const dashboard = document.getElementById("voiceDashboardView");
-    const activeCallView = document.getElementById("voiceActiveCallView");
-    if (dashboard) dashboard.style.display = "flex";
-    if (activeCallView) activeCallView.style.display = "none";
-
-    const stageAudio = document.getElementById("stageAudioCall");
-    const stageVideo = document.getElementById("stageVideoCall");
-    if (stageAudio) stageAudio.style.display = "flex";
-    if (stageVideo) stageVideo.style.display = "none";
-
-    const statusBadge = document.getElementById("callDurationBadge");
-    if (statusBadge) statusBadge.innerText = "00:00:00";
-    const vidBadge = document.getElementById("videoDurationBadge");
-    if (vidBadge) vidBadge.innerText = "00:00:00";
-
-    document.querySelectorAll(".audio-wave-visualizer .eq-bar").forEach(b => b.style.height = "4px");
-
-    populateAudioPeerSelect();
-    fetch("/api/call/end", { method: "POST" }).catch(() => { });
-    fetch("/api/voice/end", { method: "POST" }).catch(() => { });
-    showToast("Call session ended.");
-  }
-}
-
-function showIncomingCallOverlay(peerName, peerIP, isVideo) {
-  incomingCallData = { peerName, peerIP, isVideo };
-  const overlay = document.getElementById("incomingCallOverlay");
-  const nameEl = document.getElementById("icPeerName");
-  const avatarEl = document.getElementById("icAvatar");
-  const typeEl = document.getElementById("icCallType");
-
-  if (nameEl) nameEl.innerText = peerName || "Unknown Peer";
-  if (avatarEl) avatarEl.innerText = getInitials(peerName || "Peer");
-  if (typeEl) typeEl.innerText = isVideo ? "HD Video • P2P WebRTC" : "Audio • P2P WebRTC";
-  if (overlay) overlay.style.display = "flex";
-}
-
-function hideIncomingCallOverlay() {
-  incomingCallData = null;
-  const overlay = document.getElementById("incomingCallOverlay");
-  if (overlay) overlay.style.display = "none";
-}
-
-async function answerIncomingCall() {
-  const data = incomingCallData;
-  hideIncomingCallOverlay();
-  try {
-    await fetch("/api/call/answer", { method: "POST" });
-  } catch (e) { }
-
-  if (data) {
-    startCallWithPeer(data.peerIP, data.peerName, data.isVideo);
-  } else {
-    switchTab('voice', true);
-  }
-}
-
-async function declineIncomingCall() {
-  hideIncomingCallOverlay();
-  try {
-    await fetch("/api/call/decline", { method: "POST" });
-  } catch (e) { }
-  showToast("Incoming call declined.");
-}
-
-// -----------------------------------------------------------------------------
 // AI FLEET HUB
 // -----------------------------------------------------------------------------
 function setAIModel(provider, model, el) {
@@ -4042,30 +3792,13 @@ function setChatSubTab(tab) {
     if (btnAI) btnAI.classList.add("active");
     if (viewPeer) viewPeer.style.display = "none";
     if (viewAI) viewAI.style.display = "flex";
-    updateAIChatHeader();
+    updateNearbyAIChat();
   } else {
     if (btnPeer) btnPeer.classList.add("active");
     if (btnAI) btnAI.classList.remove("active");
     if (viewPeer) viewPeer.style.display = "flex";
     if (viewAI) viewAI.style.display = "none";
   }
-}
-
-function updateAIChatHeader() {
-  const badge = document.getElementById("aiSubtabProviderBadge");
-  const modelBadge = document.getElementById("aiChatModelBadge");
-  const shareInd = document.getElementById("aiShareIndicator");
-  const prov = appState.ai.provider || "gemini";
-  const mod = appState.ai.model || "Gemini 2.0 Flash";
-
-  if (badge) badge.innerText = prov.toUpperCase();
-  if (modelBadge) modelBadge.innerText = `${prov.toUpperCase()}: ${mod}`;
-  if (shareInd) shareInd.style.display = appState.ai.shareAI ? "inline-flex" : "none";
-
-  ['gemini', 'openai', 'groq', 'ollama'].forEach(p => {
-    const pill = document.getElementById(`aiProvPill${p.charAt(0).toUpperCase() + p.slice(1)}`);
-    if (pill) pill.classList.toggle("active", prov === p);
-  });
 }
 
 // -----------------------------------------------------------------------------
@@ -4922,7 +4655,9 @@ async function toggleShareAI(checked) {
       body: JSON.stringify({ enabled: checked })
     });
     const data = await res.json();
+    if(!res.ok)throw new Error('Could not update AI sharing');
     appState.ai.shareAI = checked;
+    nearbyAISharing=null;if(nearbyAIKey())loadSelectedAISharing();
     updateAIChatHeader();
     showToast(data.share_ai ? "Host AI Compute shared with P2P Mesh Nodes" : "Host AI Compute sharing disabled");
   } catch (e) {
@@ -5032,7 +4767,10 @@ async function togglePeerAIPermission(peerId, allow) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ peer_id: peerId, allow: allow })
     });
+    if(!res.ok)throw new Error(await res.text());
     const data = await res.json();
+    nearbyAISharing=null;
+    if(nearbyAIKey())loadSelectedAISharing();
     showToast(`AI Access ${allow ? 'Granted' : 'Revoked'} for peer`);
     loadAIAnalytics();
   } catch (e) {
@@ -5043,18 +4781,7 @@ async function togglePeerAIPermission(peerId, allow) {
 // -----------------------------------------------------------------------------
 // IOT & WINDOWS HARDWARE VIRTUALIZATION HUB
 // -----------------------------------------------------------------------------
-let isAudioMirrorActive = false;
-let audioMirrorStream = null;
-let audioMirrorContext = null;
-let audioMirrorAnalyser = null;
-let audioMirrorAnimId = null;
-let audioMirrorMediaRecorder = null;
 
-let isAudioCasting = false;
-let audioCastContext = null;
-let audioCastOscillator = null;
-let micVuInterval = null;
-let remoteMicLinked = false;
 let remoteSensorPollTimer = null;
 
 // Subview Navigation Switcher (Virtual Hub / Local Bus / Agri Relays & POS)
@@ -5081,13 +4808,15 @@ function switchHwSubView(viewKey) {
     populateHwPeerSelects();
     pollRemoteSensors();
   } else if (viewKey === "agri") {
-    pollSensorData();
+    loadIotConfiguration();
     updateGatePassPreview();
   }
 }
 
 // ── Local Windows PnP Hardware Scanner ──
+let hardwareScanPending=false;
 async function scanHardwareNow() {
+  if(hardwareScanPending)return;hardwareScanPending=true;
   const btn = document.getElementById("btnHwScanNow");
   if (btn) {
     btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin-animation" style="width:16px;height:16px;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg> <span>Scanning Hardware...</span>`;
@@ -5095,14 +4824,13 @@ async function scanHardwareNow() {
   showToast("Scanning physical Windows USB, Audio, Camera, and NFC ports...");
   try {
     const res = await fetch("/api/iot/hardware-scan?refresh=1");
-    if (res.ok) {
-      const data = await res.json();
-      renderHardwareDiagnostics(data);
-      showToast("Windows Hardware & Port Diagnostics Updated.");
-    }
+    if (!res.ok) throw new Error(await res.text());
+    const data=await res.json();renderHardwareDiagnostics(data);
+    showToast(data.hardware?.scan_error || "Windows hardware diagnostics updated");
   } catch (e) {
-    console.error("Hardware scan error:", e);
+    showToast("Hardware scan failed: "+e.message);callText("hwScanStatus",e.message);
   } finally {
+    hardwareScanPending=false;
     if (btn) {
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg> <span>Scan Windows Hardware</span>`;
     }
@@ -5118,18 +4846,22 @@ async function loadHardwareDiagnostics() {
       renderHardwareDiagnostics(data);
     }
   } catch (e) {
-    console.error("loadHardwareDiagnostics error:", e);
+    callText("hwScanStatus","Hardware scan failed: "+e.message);
   }
 }
 
 function renderHardwareDiagnostics(data) {
   const hw = data.hardware || {};
+  callText("hwScanStatus",hw.scan_error || "Last scanned: "+(hw.last_scanned?new Date(hw.last_scanned).toLocaleTimeString():"Not scanned"));
   const usbList = hw.usb_devices || [];
   const audioList = hw.audio_devices || [];
   const camList = hw.camera_devices || [];
   const scanList = hw.scanner_devices || [];
   const serialList = hw.serial_com_ports || [];
 
+  for(const [id,label,ready] of [['chipNetworkStatus','Local network',hw.lan_online || hw.wifi_online],['chipBluetoothStatus','Bluetooth',hw.bluetooth_ble]]) {
+    const chip=callElement(id);if(chip){chip.innerText=label+': '+(ready?'Detected':'Not detected');chip.className='hw-chip '+(ready?'active':'standby');}
+  }
   // Update Status Chips
   const chipUsb = document.getElementById("chipUsbBus");
   if (chipUsb) {
@@ -5140,10 +4872,10 @@ function renderHardwareDiagnostics(data) {
   if (chipNfc) {
     if (hw.nfc_supported) {
       chipNfc.className = "hw-chip active";
-      chipNfc.innerHTML = `<span class="status-dot-pulse"></span> NFC: ${hw.nfc_reader_name || 'Active'}`;
+      chipNfc.innerHTML = `<span class="status-dot-pulse"></span> NFC: ${escapeHTML(hw.nfc_reader_name || 'Detected')}`;
     } else {
       chipNfc.className = "hw-chip standby";
-      chipNfc.innerText = "NFC Proximity: Standby (Use Mobile Bridge)";
+      chipNfc.innerText = "NFC: no reader detected";
     }
   }
 
@@ -5211,7 +4943,7 @@ function renderHardwareDiagnostics(data) {
     if (combined.length === 0) {
       elCam.innerHTML = `
         <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:12px;">
-          Integrated DirectShow Webcam Active • Ready for Live Camera Test.
+          No camera or scanner detected. Connect a device and scan again.
         </div>
       `;
     } else {
@@ -5221,7 +4953,7 @@ function renderHardwareDiagnostics(data) {
             <div class="hw-device-name">${escapeHTML(d.name)}</div>
             <div class="hw-device-meta">${escapeHTML(d.description)}</div>
           </div>
-          <span class="badge badge-emerald">Ready</span>
+          <span class="badge ${d.status==='OK'?'badge-emerald':'badge-amber'}">${escapeHTML(d.status || 'Unknown')}</span>
         </div>
       `).join("");
     }
@@ -5233,7 +4965,7 @@ function renderHardwareDiagnostics(data) {
     if (serialList.length === 0) {
       elSerial.innerHTML = `
         <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:12px;">
-          COM1 / Virtual Serial Bridge Active (115200 Baud) • Arduino / ESP32 / Weighing Scale Ready.
+          No serial ports detected. Connect your device and scan again.
         </div>
       `;
     } else {
@@ -5243,7 +4975,7 @@ function renderHardwareDiagnostics(data) {
             <div class="hw-device-name">${escapeHTML(d.name)}</div>
             <div class="hw-device-meta">${escapeHTML(d.description)}</div>
           </div>
-          <span class="badge badge-purple">115200 Baud</span>
+          <span class="badge badge-purple">Detected</span>
         </div>
       `).join("");
     }
@@ -5251,438 +4983,108 @@ function renderHardwareDiagnostics(data) {
 }
 
 function populateHwPeerSelects() {
-  const peers = appState.peers || [];
-  const selAudio = document.getElementById("audioCastPeerSelect");
-  const selMic = document.getElementById("remoteMicPeerSelect");
-
-  const opts = peers.length > 0
-    ? peers.map(p => `<option value="${p.ip}">${escapeHTML(p.name)} (${p.ip}) • 50+ MB/s</option>`).join("")
-    : `<option value="192.168.1.7">Nearby Mesh Phone (SM-M045F) • 50+ MB/s</option>`;
-
-  if (selAudio) selAudio.innerHTML = opts;
-  if (selMic) selMic.innerHTML = opts;
-}
-
-// ── Wireless Live PC Audio & YouTube Sound Mirror ──
-function updateAudioCastVolume(val) {
-  const lbl = document.getElementById("audioCastVolumeLabel");
-  if (lbl) lbl.innerText = `${val}%`;
-}
-
-function onAudioSourceModeChanged(val) {
-  const wrapTrack = document.getElementById("wrapCastTrackSelect");
-  if (wrapTrack) {
-    wrapTrack.style.display = (val === "preset_tone") ? "block" : "none";
-  }
-  if (val === "local_file") {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "audio/*";
-    input.onchange = (e) => {
-      const file = e.target.files[0];
-      if (file) {
-        showToast(`[Audio] Selected "${file.name}" for remote audio casting`);
-      }
-    };
-    input.click();
-  }
-  if (isAudioMirrorActive) {
-    stopLiveAudioMirror();
-    showToast("Restarting audio stream with new source...");
-    setTimeout(() => toggleLiveAudioMirror(), 400);
+  const peers=(appState.peers || []).filter(p=>p.ip && p.is_online!==false && p.online!==false);
+  for(const id of ['audioCastPeerSelect','remoteMicPeerSelect']) {
+    const select=document.getElementById(id);if(!select)continue;
+    const previous=select.value;
+    select.innerHTML=peers.length ? peers.map(p=>`<option value="${escapeHTML(p.ip)}">${escapeHTML(p.name)} (${escapeHTML(p.ip)})</option>`).join('') : '<option value="">No Nearby devices connected</option>';
+    if(peers.some(p=>p.ip===previous))select.value=previous;
+    select.disabled=!peers.length;
   }
 }
 
+function onAudioSourceModeChanged() {
+  if(desktopCall.session?.mode==='broadcast')showToast('Stop the current stream before changing its source.');
+}
 async function toggleLiveAudioMirror() {
-  const btn = document.getElementById("btnStartLiveAudioMirror");
-  const badge = document.getElementById("audioCastLiveBadge");
-  const sel = document.getElementById("audioCastPeerSelect");
-  const targetIP = sel ? sel.value : "";
-  const peerName = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : "Remote Phone";
-
-  if (isAudioMirrorActive) {
-    stopLiveAudioMirror();
-    return;
-  }
-
-  const srcMode = document.getElementById("audioCastSourceMode") ? document.getElementById("audioCastSourceMode").value : "system_mirror";
-
-  if (srcMode === "preset_tone") {
-    triggerAudioCast("play");
-    return;
-  }
-
-  try {
-    showToast("🔊 Select YouTube tab or System Screen with 'Share Audio' checked...");
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: 1, height: 1, frameRate: 1 },
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        channelCount: 2,
-        autoGainControl: false
-      }
-    });
-
-    const audioTracks = stream.getAudioTracks();
-    if (!audioTracks || audioTracks.length === 0) {
-      stream.getTracks().forEach(t => t.stop());
-      showToast("⚠️ No audio track selected! Please check 'Share system audio'.");
-      return;
-    }
-
-    audioMirrorStream = stream;
-    isAudioMirrorActive = true;
-
-    // Web Audio Analyser for FFT spectrum
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    audioMirrorContext = new AudioCtx();
-    const sourceNode = audioMirrorContext.createMediaStreamSource(stream);
-    audioMirrorAnalyser = audioMirrorContext.createAnalyser();
-    audioMirrorAnalyser.fftSize = 64;
-    sourceNode.connect(audioMirrorAnalyser);
-
-    startAudioSpectrumVisualizer();
-
-    fetch("/api/iot/live-audio-stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        target_ip: targetIP,
-        peer_name: peerName,
-        streaming: true,
-        source: "youtube_tab"
-      })
-    }).catch(() => { });
-
-    if (btn) {
-      btn.className = "btn btn-danger";
-      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><rect width="18" height="18" x="3" y="3" rx="2"/></svg> <span>Stop Live Audio Mirror</span>`;
-    }
-    if (badge) {
-      badge.className = "badge badge-danger";
-      badge.innerText = "STREAMING LIVE";
-    }
-
-    showToast(`[Audio] Streaming YouTube & PC Sound to ${peerName}'s Speaker`);
-
-    stream.getVideoTracks().forEach(t => t.onended = () => stopLiveAudioMirror());
-    audioTracks.forEach(t => t.onended = () => stopLiveAudioMirror());
-
-  } catch (err) {
-    if (err.name !== "NotAllowedError") {
-      // Fallback to local audio synth if display media not supported
-      triggerAudioCast("play");
-    }
-  }
+  if(desktopCall.session?.mode==='broadcast')return stopLiveAudioMirror();
+  if(desktopCall.session){showToast('End the current call before starting an audio stream.');return;}
+  const ip=callElement('audioCastPeerSelect')?.value;
+  if(!ip){showToast('Connect a Nearby phone first.');return;}
+  const source=callElement('pcAudioSource');
+  if(source)source.value=callElement('audioCastSourceMode')?.value || 'system';
+  await startCallWithPeer(ip,'Nearby phone',false,'broadcast');
 }
-
 function stopLiveAudioMirror() {
-  isAudioMirrorActive = false;
-  if (audioMirrorMediaRecorder && audioMirrorMediaRecorder.state !== "inactive") {
-    try { audioMirrorMediaRecorder.stop(); } catch (e) { }
-  }
-  if (audioMirrorStream) {
-    audioMirrorStream.getTracks().forEach(t => t.stop());
-    audioMirrorStream = null;
-  }
-  if (audioMirrorContext) {
-    try { audioMirrorContext.close(); } catch (e) { }
-    audioMirrorContext = null;
-  }
-  if (audioMirrorAnimId) {
-    cancelAnimationFrame(audioMirrorAnimId);
-    audioMirrorAnimId = null;
-  }
-
-  stopLocalAudioSynth();
-
-  const canvas = document.getElementById("audioSpectrumCanvas");
-  if (canvas) {
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-
-  const btn = document.getElementById("btnStartLiveAudioMirror");
-  const badge = document.getElementById("audioCastLiveBadge");
-  if (btn) {
-    btn.className = "btn btn-primary";
-    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><polygon points="5 3 19 12 5 21 5 3"/></svg> <span>Live Stream PC / YouTube Audio to Phone</span>`;
-  }
-  if (badge) {
-    badge.className = "badge badge-slate";
-    badge.innerText = "Standby";
-  }
-
-  fetch("/api/iot/live-audio-stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ streaming: false })
-  }).catch(() => { });
-
-  showToast("⏹ Live Audio Stream Stopped.");
+  if(desktopCall.session?.mode==='broadcast')return desktopCall.stop(true);
 }
-
-function startAudioSpectrumVisualizer() {
-  const canvas = document.getElementById("audioSpectrumCanvas");
-  if (!canvas || !audioMirrorAnalyser) return;
-  const ctx = canvas.getContext("2d");
-  const bufferLength = audioMirrorAnalyser.frequencyBinCount;
-  const dataArray = new Uint8Array(bufferLength);
-
-  function draw() {
-    if (!isAudioMirrorActive) return;
-    audioMirrorAnimId = requestAnimationFrame(draw);
-    audioMirrorAnalyser.getByteFrequencyData(dataArray);
-
-    ctx.fillStyle = "rgba(10, 15, 30, 0.4)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const barWidth = (canvas.width / bufferLength) * 0.8;
-    let x = 4;
-
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * (canvas.height - 8);
-      const grad = ctx.createLinearGradient(0, canvas.height, 0, 0);
-      grad.addColorStop(0, "#10B981");
-      grad.addColorStop(0.6, "#06B6D4");
-      grad.addColorStop(1, "#8B5CF6");
-
-      ctx.fillStyle = grad;
-      ctx.fillRect(x, canvas.height - barHeight - 2, barWidth, barHeight);
-      x += barWidth + 3;
-    }
-  }
-  draw();
+async function toggleRemoteMicBridge() {
+  if(desktopCall.session?.mode==='listen')return desktopCall.stop(true);
+  if(desktopCall.session){showToast('End the current call before listening to the phone.');return;}
+  const ip=callElement('remoteMicPeerSelect')?.value;
+  if(!ip){showToast('Connect a Nearby phone first.');return;}
+  await startCallWithPeer(ip,'Nearby phone',false,'listen');
 }
-
-function triggerAudioCast(action) {
-  const sel = document.getElementById("audioCastPeerSelect");
-  const targetIP = sel ? sel.value : "";
-  const peerName = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : "Remote Speaker";
-  const trackSel = document.getElementById("audioCastTrackSelect");
-  const trackTitle = trackSel ? trackSel.value : "Kisan Mandi Gate Sound";
-  const vol = parseInt(document.getElementById("audioCastVolume").value) / 100 || 0.85;
-
-  const btn = document.getElementById("btnStartLiveAudioMirror");
-  const badge = document.getElementById("audioCastLiveBadge");
-
-  if (action === "stop") {
-    stopLiveAudioMirror();
-    return;
+function syncIotAudioState(state,session) {
+  for(const [mode,badgeId,buttonId,labelId,idleLabel] of [
+    ['broadcast','audioCastLiveBadge','btnStartLiveAudioMirror','btnLiveAudioLabel','Stream selected PC audio to phone'],
+    ['listen','remoteMicBadge','btnToggleRemoteMic','btnRemoteMicLabel','Listen to phone microphone']]) {
+    const active=state!=='ended' && session?.mode===mode;
+    const badge=callElement(badgeId),button=callElement(buttonId);
+    if(badge){badge.innerText=active?(state==='connected'?'Connected':state==='ringing'?'Waiting for phone to answer':'Connecting…'):'Standby';badge.className='badge '+(active && state==='connected'?'badge-emerald':'badge-slate');}
+    if(button)button.className=active?'btn btn-danger':'btn btn-primary';
+    callText(labelId,active?'Stop connection':idleLabel);
   }
-
-  isAudioMirrorActive = true;
-  isAudioCasting = true;
-
-  if (badge) {
-    badge.className = "badge badge-danger";
-    badge.innerText = "Casting Live";
-  }
-  if (btn) {
-    btn.className = "btn btn-danger";
-    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><rect width="18" height="18" x="3" y="3" rx="2"/></svg> <span>Stop Live Audio Mirror</span>`;
-  }
-
-  playLocalAudioSynth(trackTitle, vol);
-
-  fetch("/api/iot/audio-cast", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "play",
-      target_ip: targetIP,
-      peer_name: peerName,
-      track_title: trackTitle,
-      volume: vol
-    })
-  });
-
-  showToast(`🔊 Casting "${trackTitle}" to ${peerName} at ${(vol * 100).toFixed(0)}% volume...`);
-}
-
-function playLocalAudioSynth(track, vol) {
-  try {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return;
-    if (audioCastContext) audioCastContext.close();
-    audioCastContext = new AudioCtx();
-
-    const osc = audioCastContext.createOscillator();
-    const gain = audioCastContext.createGain();
-
-    if (track.includes("Alarm")) {
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(880, audioCastContext.currentTime);
-      osc.frequency.linearRampToValueAtTime(440, audioCastContext.currentTime + 0.5);
-    } else if (track.includes("Flute")) {
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(523.25, audioCastContext.currentTime);
-    } else {
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(659.25, audioCastContext.currentTime);
-    }
-
-    gain.gain.setValueAtTime(vol * 0.25, audioCastContext.currentTime);
-    osc.connect(gain);
-    gain.connect(audioCastContext.destination);
-    osc.start();
-    audioCastOscillator = osc;
-  } catch (e) { }
-}
-
-function stopLocalAudioSynth() {
-  try {
-    if (audioCastOscillator) {
-      audioCastOscillator.stop();
-      audioCastOscillator.disconnect();
-      audioCastOscillator = null;
-    }
-    if (audioCastContext) {
-      audioCastContext.close();
-      audioCastContext = null;
-    }
-  } catch (e) { }
-}
-
-// ── Wireless Remote Microphone Bridge ──
-function toggleRemoteMicBridge() {
-  remoteMicLinked = !remoteMicLinked;
-  const sel = document.getElementById("remoteMicPeerSelect");
-  const targetIP = sel ? sel.value : "";
-  const peerName = sel && sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : "Remote Phone";
-
-  const badge = document.getElementById("remoteMicBadge");
-  const btn = document.getElementById("btnToggleRemoteMic");
-  const lbl = document.getElementById("btnRemoteMicLabel");
-  const bar = document.getElementById("remoteMicLevelBar");
-  const lvlText = document.getElementById("remoteMicLevelText");
-
-  if (remoteMicLinked) {
-    if (badge) {
-      badge.className = "badge badge-emerald";
-      badge.innerText = "Linked (Mic Online)";
-    }
-    if (btn) btn.className = "btn btn-danger";
-    if (lbl) lbl.innerText = "Disconnect Wireless Mic";
-
-    micVuInterval = setInterval(() => {
-      const randLevel = Math.floor(45 + Math.random() * 45);
-      if (bar) bar.style.width = `${randLevel}%`;
-      if (lvlText) lvlText.innerText = `-${(100 - randLevel) / 2} dB`;
-    }, 200);
-
-    fetch("/api/iot/remote-mic", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: true, target_ip: targetIP, peer_name: peerName })
-    });
-    showToast(`🎙️ ${peerName} linked as Wireless Microphone Input for Windows.`);
-  } else {
-    if (badge) {
-      badge.className = "badge badge-slate";
-      badge.innerText = "Offline";
-    }
-    if (btn) btn.className = "btn btn-secondary";
-    if (lbl) lbl.innerText = "Connect Phone as Wireless PC Mic";
-    if (bar) bar.style.width = "0%";
-    if (lvlText) lvlText.innerText = "0 dB";
-    if (micVuInterval) clearInterval(micVuInterval);
-
-    fetch("/api/iot/remote-mic", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active: false, target_ip: targetIP, peer_name: peerName })
-    });
-    showToast("[Mic] Wireless microphone disconnected");
+  if(state==='ended'){
+    callText('audioCastStreamStats','No active stream');callText('remoteMicLevelText','No audio');
+    const bar=callElement('remoteMicLevelBar');if(bar)bar.style.width='0%';
   }
 }
-
-// ── Remote Mobile Camera Bridge ──
 function toggleRemoteCamVirtual() {
-  switchTab('cctv', true);
-  setStreamerRole('remote');
-  showToast("📹 Linked Mobile Camera Lens as DirectShow Virtual PC Input.");
+  switchTab('cctv',true);setStreamerRole('remote');
+  showToast('Select a Nearby device in CCTV to view its camera.');
 }
-
-// ── Remote Sensors (GPS, Battery Telemetry) ──
+let phoneSensorRequestPending=false;
 async function fetchLiveGPS() {
-  showToast("🛰️ Querying remote device GNSS/GPS Satellite Coords...");
-  const sel = document.getElementById("audioCastPeerSelect");
-  const targetIP = sel ? sel.value : "";
-  try {
-    const res = await fetch("/api/iot/sensors/trigger", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target_ip: targetIP, action: "fetch_gps" })
-    });
-    const data = await res.json();
-    const latEl = document.getElementById("gpsLatVal");
-    const lngEl = document.getElementById("gpsLngVal");
-    const lockEl = document.getElementById("gpsLockBadge");
-    if (latEl) latEl.innerText = "28.6139° N";
-    if (lngEl) lngEl.innerText = "77.2090° E";
-    if (lockEl) lockEl.innerText = "GPS Locked (2.8m)";
-    showToast("[GPS] High-precision GPS coordinates refreshed");
-  } catch (e) {
-    showToast("[GPS] GPS fetched from device network cache");
-  }
+ if(phoneSensorRequestPending)return;
+ const ip=callElement('audioCastPeerSelect')?.value;
+ if(!ip){showToast('Select a Nearby phone first');return;}
+ phoneSensorRequestPending=true;callText('phoneSensorStatus','Waiting for phone approval…');
+ try {
+  const data=await iotRequest('/api/iot/sensors/trigger',{target_ip:ip});
+  callText('phoneSensorStatus',data.sensors?.location_status || 'Approved sensor snapshot received');
+  await pollRemoteSensors();
+ }catch(error){callText('phoneSensorStatus',error.message);showToast(error.message);}
+ finally{phoneSensorRequestPending=false;}
 }
-
 async function pollRemoteSensors() {
   try {
-    const res = await fetch("/api/iot/sensors/poll");
-    if (res.ok) {
-      const data = await res.json();
-      const s = data.sensors || {};
-      const batVal = document.getElementById("phoneBatLevelText");
-      const batFill = document.getElementById("phoneBatFill");
-      if (batVal) batVal.innerText = `${s.battery_level || 86}%`;
-      if (batFill) batFill.style.width = `${s.battery_level || 86}%`;
-    }
-  } catch (e) { }
+    const response=await fetch('/api/iot/sensors/poll');
+    if(!response.ok)throw new Error('Could not load phone telemetry');
+    const data=await response.json(),s=data.sensors || {};
+    const ip=callElement('audioCastPeerSelect')?.value;
+    const age=Date.now()-Date.parse(s.last_seen);
+    const fresh=!!ip && s.device_ip===ip && Number.isFinite(age) && age>=0 && age<60000;
+    const battery=fresh && s.battery_available && Number.isFinite(s.battery_level)?Math.max(0,Math.min(100,s.battery_level)):null;
+    callText('phoneBatLevelText',battery===null?'—':battery+'%');
+    callText('phoneBatBadge',battery===null?'Awaiting phone telemetry':s.is_charging?'Charging':'On battery');
+    callText('phoneBatHealthText',battery===null?'No recent battery reading':s.battery_temp_c+'°C');
+    const fill=callElement('phoneBatFill');if(fill)fill.style.width=(battery ?? 0)+'%';
+    const gps=fresh && s.gps_locked;
+    callText('gpsLockBadge',gps?'Location received':fresh?'Location unavailable':'Awaiting phone location');
+    callText('gpsLatVal',gps?s.gps_latitude.toFixed(6)+'°':'—');
+    callText('gpsLngVal',gps?s.gps_longitude.toFixed(6)+'°':'—');
+    callText('gpsAltVal',gps?s.gps_altitude+' m':'—');
+    callText('gpsLocName',gps?(s.gps_location_name || s.location_status || 'Phone location'):(fresh?s.location_status || 'Phone did not supply a location fix':'No recent location received'));
+    if(fresh && s.location_status && !phoneSensorRequestPending)callText('phoneSensorStatus',s.location_status);
+    const map=callElement('gpsMapLink');if(map){if(gps)map.href='https://www.google.com/maps?q='+s.gps_latitude+','+s.gps_longitude;else map.removeAttribute('href');map.setAttribute('aria-disabled',String(!gps));}
+  }catch(error){showToast(error.message);}
 }
-
-// ── NFC & SmartCard Station ──
 async function triggerNFCRead() {
-  showToast("Tap NFC SmartCard or Phone to reader / antenna...");
   try {
-    const res = await fetch("/api/iot/nfc-read", { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      const uidEl = document.getElementById("nfcLastTagUID");
-      const dataEl = document.getElementById("nfcLastDataPreview");
-      if (uidEl) uidEl.innerText = `${data.tag_id} (${data.tag_type})`;
-      if (dataEl) dataEl.innerText = data.ndef_data;
-      showToast(`[NFC] Tag [${data.tag_id}] Read Successfully`);
-    }
-  } catch (e) {
-    showToast("NFC Read complete.");
-  }
+    const response=await fetch('/api/iot/nfc-read',{method:'POST'});
+    if(!response.ok)throw new Error(await response.text());
+    const data=await response.json();callText('nfcLastTagUID',data.tag_id);callText('nfcLastDataPreview',data.ndef_data || 'No application data returned');callText('nfcStatusBadge','Tag read');
+  }catch(error){showToast(error.message);}
 }
 
 // ── Document Scanner (WIA/TWAIN & OCR) ──
-function triggerDocScan() {
-  const dpi = document.getElementById("docScanDpiSelect") ? document.getElementById("docScanDpiSelect").value : "300";
-  const color = document.getElementById("docScanColorSelect") ? document.getElementById("docScanColorSelect").value : "color";
-  showToast(`📄 Acquiring ${dpi} DPI (${color}) Document Scan from WIA Flatbed Scanner...`);
-  fetch("/api/iot/scan", { method: "POST" })
-    .then(() => {
-      setTimeout(() => {
-        showToast("✅ Document scanned successfully! Saved to Recents & Storage.");
-      }, 1200);
-    })
-    .catch(() => {
-      showToast("Document scan completed.");
-    });
+async function triggerDocScan() {
+  try {await callRequest('/api/iot/scan');showToast('Windows scanner opened. Choose scan settings and save the document there.');}
+  catch(error){showToast('Cannot open scanner: '+error.message);}
 }
 
-function triggerDocOcr() {
-  showToast("🔍 Running Tesseract OCR Neural Text Extraction on scanned document...");
-  setTimeout(() => {
-    showToast("✅ OCR Extracted: 'Kisan Credit Card (KCC) #88492 - Basmati Paddy'");
-  }, 1000);
-}
+function triggerDocOcr() {showToast('OCR is not connected yet. Scan and save a document using Windows first.');}
 
 function testCameraPreview() {
   switchTab('cctv', true);
@@ -5690,90 +5092,93 @@ function testCameraPreview() {
 }
 
 // ── 4-Channel Agricultural Relays & Smart Irrigation ──
-let agriRelayStates = { 1: false, 2: false, 3: false, 4: false };
+let agriRelayStates = {};
 
 function togglePumpRelay() {
   toggleAgriRelay(1);
 }
 
-function toggleAgriRelay(ch) {
-  agriRelayStates[ch] = !agriRelayStates[ch];
-  const isOn = agriRelayStates[ch];
-
-  if (ch === 1) {
-    const status = document.getElementById("pumpStatusText");
-    const btn = document.getElementById("btnPumpToggle");
-    const curr = document.getElementById("pumpCurrentText");
-    const flow = document.getElementById("pumpFlowText");
-
-    if (isOn) {
-      if (status) { status.innerText = "[ ON ]"; status.style.color = "#10B981"; }
-      if (btn) { btn.innerText = "Turn OFF"; btn.className = "btn btn-sm btn-danger"; }
-      if (curr) curr.innerText = "6.2 A";
-      if (flow) flow.innerText = "45.0 L/min";
-      showToast("💧 Main Submersible Irrigation Pump #1 started (228V • 45 L/min).");
-    } else {
-      if (status) { status.innerText = "[ OFF ]"; status.style.color = "var(--text-muted)"; }
-      if (btn) { btn.innerText = "Turn ON"; btn.className = "btn btn-sm btn-primary"; }
-      if (curr) curr.innerText = "0.0 A";
-      if (flow) flow.innerText = "0.0 L/min";
-      showToast("⏹ Submersible pump turned OFF.");
-    }
-  } else {
-    const status = document.getElementById(`relay${ch}StatusText`);
-    const btn = document.getElementById(`btnRelay${ch}Toggle`);
-    if (isOn) {
-      if (status) { status.innerText = "[ ON ]"; status.style.color = "#10B981"; }
-      if (btn) { btn.innerText = "Turn OFF"; btn.className = "btn btn-sm btn-danger"; }
-      showToast(`[Relay] Agricultural Relay CH-${ch} switched ON`);
-    } else {
-      if (status) { status.innerText = "[ OFF ]"; status.style.color = "var(--text-muted)"; }
-      if (btn) { btn.innerText = "Turn ON"; btn.className = "btn btn-sm btn-secondary"; }
-      showToast(`⏹ Agricultural Relay CH-${ch} switched OFF.`);
-    }
+const relayPending=new Set();
+async function toggleAgriRelay(ch) {return setAgriRelay(ch,agriRelayStates[ch]!==true);}
+async function setAgriRelay(ch,power) {
+ if(relayPending.has(ch))return;relayPending.add(ch);
+ try {
+  const state=await iotRequest('/api/iot/toggle',{channel:ch,state:power});
+  agriRelayStates[ch]=state.power;
+  callText(ch===1?'pumpStatusText':`relay${ch}StatusText`,state.power?'[ ON ]':'[ OFF ]');
+  if(ch===1){
+   for(const [id,key,unit] of [['pumpVoltageText','voltage',' V'],['pumpCurrentText','current_a',' A'],['pumpFlowText','flow_rate_lpm',' L/min'],['pumpTotalWater','total_water_l',' L']])callText(id,Number.isFinite(state[key])?state[key]+unit:'—');
   }
-
-  fetch("/api/iot/toggle", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device: `relay_ch_${ch}`, state: isOn })
-  }).catch(() => { });
+  showToast('Relay '+ch+' confirmed '+(state.power?'ON':'OFF'));
+ }catch(error){showToast(error.message);callText(ch===1?'pumpStatusText':`relay${ch}StatusText`,'[ Unknown ]');delete agriRelayStates[ch];}
+ finally{relayPending.delete(ch);}
 }
-
-function pollSensorData() {
-  fetch("/api/iot/poll", { method: "POST" });
-  const valEl = document.getElementById("soilMoistVal");
-  if (valEl) {
-    const newMoist = (34.0 + Math.random() * 2.0).toFixed(1);
-    valEl.innerText = `${newMoist}%`;
+async function pollSensorData() {
+ try {
+  const data=await iotRequest('/api/iot/poll');
+  callText('soilMoistVal',data.moisture_pct+'%');
+  callText('soilTempVal',Number.isFinite(data.temp_c)?data.temp_c+'°C':'—');
+  callText('soilHumidityVal',Number.isFinite(data.humidity_pct)?data.humidity_pct+'%':'—');
+  callText('soilSensorStatus','Reading received '+new Date().toLocaleTimeString());
+ }catch(error){callText('soilMoistVal','—');callText('soilTempVal','—');callText('soilHumidityVal','—');callText('soilSensorStatus',error.message);showToast(error.message);}
+}
+let scaleReading=null;
+async function tareWeighScale() {
+ try {
+  const data=await iotRequest('/api/iot/scale',{action:'tare'});
+  scaleReading=data.weight_kg;callText('weighScaleValue',scaleReading.toFixed(2)+' KG');
+ }catch(error){scaleReading=null;callText('weighScaleValue','No reading');showToast(error.message);}
+}
+async function captureWeightToGatePass() {
+ try {
+  const data=await iotRequest('/api/iot/scale');scaleReading=data.weight_kg;
+  callText('weighScaleValue',scaleReading.toFixed(2)+' KG');
+  const input=callElement('gatePassWeightKg');if(input)input.value=scaleReading;
+  updateGatePassPreview();
+ }catch(error){scaleReading=null;callText('weighScaleValue','No reading');showToast(error.message);}
+}
+async function iotRequest(path,body) {
+ const response=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(!response.ok)throw new Error(await response.text());return response.json();
+}
+async function loadIotConfiguration() {
+ try {
+  const cfg=await iotRequest('/api/iot/config');
+  for(let ch=1;ch<=4;ch++){
+   const input=callElement('iotRelayURL'+ch);if(input && document.activeElement!==input)input.value=cfg.relays?.[ch-1] || '';
+   const button=callElement(ch===1?'btnPumpToggle':`btnRelay${ch}Toggle`);if(button)button.disabled=!cfg.relays?.[ch-1];
+   const off=callElement("btnRelayOff"+ch);if(off)off.disabled=!cfg.relays?.[ch-1];
   }
-  showToast("Polled real-time volumetric soil telemetry: Optimal moisture.");
+  for(const [id,key] of [['iotSensorURL','sensor_url'],['iotNFCURL','nfc_url'],['iotScaleURL','scale_url']]){const input=callElement(id);if(input && document.activeElement!==input)input.value=cfg[key] || '';}
+  callText('pumpBadgeOnline',cfg.relays?.some(Boolean)?'Configured • state requires confirmation':'No relay configured');
+  await loadRelaySchedules();
+ }catch(error){callText('iotConfigStatus',error.message);}
 }
-
-// ── Mandi Weighing Scale & Gate Pass Thermal Printer ──
-function tareWeighScale() {
-  const el = document.getElementById("weighScaleValue");
-  if (el) el.innerText = "0.00 KG";
-  showToast("⚖️ Mandi Digital Weighing Scale Zeroed (Tare Reset).");
-  setTimeout(() => {
-    if (el) el.innerText = "2,450.00 KG";
-  }, 2000);
+async function saveIotConfiguration() {
+ const cfg={relays:[1,2,3,4].map(ch=>callElement('iotRelayURL'+ch)?.value.trim() || ''),sensor_url:callElement('iotSensorURL')?.value.trim() || '',nfc_url:callElement('iotNFCURL')?.value.trim() || '',scale_url:callElement('iotScaleURL')?.value.trim() || ''};
+ try {await iotRequest('/api/iot/config',cfg);callText('iotConfigStatus','Device connections saved');await loadIotConfiguration();}
+ catch(error){callText('iotConfigStatus',error.message);}
 }
-
-function captureWeightToGatePass() {
-  const wInput = document.getElementById("gatePassWeightKg");
-  if (wInput) {
-    wInput.value = "2450";
-    updateGatePassPreview();
-    showToast("[Scale] Applied 2,450 KG (24.50 Quintals) to Mandi Gate Pass");
-  }
+async function addRelaySchedule() {
+ const date=callElement('relayScheduleTime')?.value;
+ if(!date || !Number.isFinite(Date.parse(date))){showToast('Choose a future start time');return;}
+ try {
+  await iotRequest('/api/iot/schedule',{channel:Number(callElement('relayScheduleChannel').value),at:new Date(date).toISOString(),duration_seconds:Math.round(Number(callElement('relayScheduleMinutes').value)*60)});
+  await loadRelaySchedules();
+ }catch(error){showToast(error.message);}
+}
+async function loadRelaySchedules() {
+ const parent=callElement('relayScheduleList');if(!parent)return;
+ const schedules=await iotRequest('/api/iot/schedule');
+ parent.innerHTML=schedules.length?schedules.map(s=>`<div class="hw-device-row"><span>CH-${s.channel} • ${s.power?'ON':'OFF'} • ${escapeHTML(new Date(s.at).toLocaleString())}</span><span>${escapeHTML(s.status)}${s.error?' • '+escapeHTML(s.error):''}</span>${s.power && !['cancelled','skipped'].includes(s.status)?'<button class="btn btn-sm btn-secondary" data-cancel-timer="'+escapeHTML(s.id)+'">Cancel / stop</button>':''}</div>`).join(''):'No relay schedules';
+ parent.querySelectorAll('[data-cancel-timer]').forEach(button=>button.onclick=async()=>{try{const response=await fetch('/api/iot/schedule?id='+encodeURIComponent(button.dataset.cancelTimer),{method:'DELETE'});if(!response.ok)throw new Error(await response.text());await loadRelaySchedules();}catch(error){showToast(error.message);}});
 }
 
 function updateGatePassPreview() {
   const farmer = document.getElementById("gatePassFarmerName") ? document.getElementById("gatePassFarmerName").value : "Ramesh Kumar Sharma";
   const crop = document.getElementById("gatePassCropType") ? document.getElementById("gatePassCropType").value : "Basmati Paddy (Grade A)";
-  const weightKg = parseFloat(document.getElementById("gatePassWeightKg")?.value) || 2450;
-  const rateQtl = parseFloat(document.getElementById("gatePassRateQtl")?.value) || 3850;
+  const weightKg = parseFloat(document.getElementById("gatePassWeightKg")?.value) || 0;
+  const rateQtl = parseFloat(document.getElementById("gatePassRateQtl")?.value) || 0;
 
   const qtl = (weightKg / 100).toFixed(2);
   const total = (parseFloat(qtl) * rateQtl).toLocaleString('en-IN', { maximumFractionDigits: 2 });
@@ -5792,15 +5197,15 @@ MSP Rate: Rs. ${rateQtl.toFixed(2)} / Qtl
 --------------------------------
 TOTAL:    Rs. ${total}
 --------------------------------
- [ QR: NEARMITRA-PAY-DIRECT ]`;
+ Payment QR is not configured`;
   }
 }
 
 async function printMandiGatePass() {
   const farmer = document.getElementById("gatePassFarmerName") ? document.getElementById("gatePassFarmerName").value : "Ramesh Kumar Sharma";
   const crop = document.getElementById("gatePassCropType") ? document.getElementById("gatePassCropType").value : "Basmati Paddy (Grade A)";
-  const weightKg = parseFloat(document.getElementById("gatePassWeightKg")?.value) || 2450;
-  const rateQtl = parseFloat(document.getElementById("gatePassRateQtl")?.value) || 3850;
+  const weightKg = parseFloat(document.getElementById("gatePassWeightKg")?.value) || 0;
+  const rateQtl = parseFloat(document.getElementById("gatePassRateQtl")?.value) || 0;
 
   showToast("[Print] Sending ESC/POS Gate Pass to Thermal Receipt Printer...");
   try {
@@ -5811,14 +5216,15 @@ async function printMandiGatePass() {
         farmer_name: farmer,
         crop_type: crop,
         weight_kg: weightKg,
-        mandi_rate: rateQtl
+        mandi_rate: rateQtl,
+        printer_ip: callElement("gatePassPrinterIP")?.value.trim() || ""
       })
     });
     if (res.ok) {
-      showToast("[Print] Mandi Gate Pass Printed & Auto-Cut successfully");
-    }
+      showToast("Receipt sent to the configured printer.");
+    } else {showToast(await res.text());}
   } catch (e) {
-    showToast("Gate pass print job dispatched.");
+    showToast("Print failed: "+e.message);
   }
 }
 
@@ -5833,23 +5239,14 @@ function renderLogs(logs) {
 }
 
 function renderTransfers(transfers) {
-  const el = document.getElementById("transfersList");
-  if (!el || !transfers) return;
-  if (transfers.length === 0) {
-    el.innerHTML = `<div style="color:var(--text-muted); font-size:12px; padding:8px 0;">No active socket file transfers.</div>`;
-    return;
-  }
-  el.innerHTML = transfers.map(t => `
-    <div style="background:var(--bg-app); border:1px solid var(--border-color); border-radius:6px; padding:10px; margin-bottom:8px;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-        <span style="font-weight:600; font-size:12.5px;">${escapeHTML(t.FileName)}</span>
-        <span style="font-size:11px; color:var(--primary-emerald);">${t.SpeedMBps ? t.SpeedMBps.toFixed(1) + ' MB/s' : 'Done'}</span>
-      </div>
-      <div style="height:6px; background:var(--bg-input); border-radius:3px; overflow:hidden;">
-        <div style="width:${t.Complete ? 100 : 65}%; height:100%; background:var(--primary-emerald);"></div>
-      </div>
-    </div>
-  `).join("");
+ const el=document.getElementById('transfersList');if(!el || !transfers)return;
+ if(!transfers.length){el.innerHTML='<div class="transfer-empty">No file transfers.</div>';return;}
+ el.innerHTML=transfers.map(t=>{
+  const percent=t.Complete?100:t.BytesTotal>0?Math.min(99,Math.floor(t.BytesSent/t.BytesTotal*100)):0;
+  const status=t.Error?'Failed':t.Complete?'Received':t.BytesSent>=t.BytesTotal&&t.BytesTotal>0?'Saving…':'Receiving '+percent+'%';
+  const detail=typeof NearMitraTransfers==='undefined'?'':NearMitraTransfers.detail(NearMitraTransfers.message(t).attachment,formatFileSize);
+  return '<div class="live-transfer-row"><strong>'+escapeHTML(t.PeerName || 'Device')+' · '+escapeHTML(t.FileName)+'</strong><span>'+escapeHTML(status)+'</span><progress max="100" value="'+percent+'"></progress><small>'+escapeHTML(detail)+'</small></div>';
+ }).join('');
 }
 
 function clearLogs() {
@@ -6180,86 +5577,6 @@ function escapePath(str) {
 // =============================================================================
 let _incomingRingtoneInterval = null;
 
-function showIncomingCallOverlay(peerName, peerIP, isVideo) {
-  const overlay = document.getElementById("incomingCallOverlay");
-  const nameEl = document.getElementById("icPeerName");
-  const typeEl = document.getElementById("icCallType");
-  const avatarEl = document.getElementById("icAvatar");
-  if (!overlay) return;
-
-  if (nameEl) nameEl.innerText = peerName || "Unknown";
-  if (typeEl) typeEl.innerText = isVideo ? "Video Call • P2P WebRTC" : "Audio Call • P2P WebRTC";
-  if (avatarEl) avatarEl.innerText = getInitials(peerName || "?");
-
-  overlay.style.display = "flex";
-  overlay.classList.add("ring-animate");
-
-  // Pulse vibration via notification badge
-  const badge = document.getElementById("badgePeerCount");
-  if (badge) {
-    _incomingRingtoneInterval = setInterval(() => badge.style.transform = badge.style.transform === "scale(1.3)" ? "scale(1)" : "scale(1.3)", 500);
-  }
-
-  // Store incoming call info
-  appState._incomingCallPeer = { ip: peerIP, name: peerName, isVideo };
-  showToast(`📞 Incoming ${isVideo ? 'Video' : 'Audio'} Call from ${peerName}`);
-}
-
-function hideIncomingCallOverlay() {
-  const overlay = document.getElementById("incomingCallOverlay");
-  if (overlay) {
-    overlay.style.display = "none";
-    overlay.classList.remove("ring-animate");
-  }
-  if (_incomingRingtoneInterval) {
-    clearInterval(_incomingRingtoneInterval);
-    _incomingRingtoneInterval = null;
-  }
-  const badge = document.getElementById("badgePeerCount");
-  if (badge) badge.style.transform = "scale(1)";
-}
-
-function answerIncomingCall() {
-  const peer = appState._incomingCallPeer;
-  hideIncomingCallOverlay();
-  fetch("/api/call/answer", { method: "POST" });
-  if (peer) {
-    appState.activePeer = { ip: peer.ip, name: peer.name, id: peer.ip };
-    appState.voice.callDuration = 0;
-    startCallTimer();
-    switchTab('voice', true);
-    setCallMode(peer.isVideo ? 'video' : 'audio');
-    const callRecord = {
-      id: "call_" + Date.now(),
-      peerName: peer.name, peerIP: peer.ip,
-      type: peer.isVideo ? "Incoming Video Call" : "Incoming Audio Call",
-      status: "Answered", duration: "00m 00s", at: new Date()
-    };
-    appState.callHistory.unshift(callRecord);
-    savePersistedCalls();
-  }
-  showToast("Call connected via P2P WebRTC");
-}
-
-function declineIncomingCall() {
-  const peer = appState._incomingCallPeer;
-  hideIncomingCallOverlay();
-  fetch("/api/call/decline", { method: "POST" });
-  if (peer) {
-    const callRecord = {
-      id: "call_" + Date.now(),
-      peerName: peer.name, peerIP: peer.ip,
-      type: peer.isVideo ? "Missed Video Call" : "Missed Audio Call",
-      status: "Declined", duration: "—", at: new Date()
-    };
-    appState.callHistory.unshift(callRecord);
-    savePersistedCalls();
-  }
-  showToast("Call declined");
-}
-
-
-// -----------------------------------------------------------------------------
 // CCTV LLM VISION REASONER & SECURITY COPILOT
 // -----------------------------------------------------------------------------
 async function runCctvAiAudit(auditType = 'full_security') {
@@ -7212,7 +6529,7 @@ function selectWanPeerForChat(id, name, avatar, platform) {
   renderChatMessages();
   switchTab('chat', true);
 
-  if (isOnline) {
+  if (isOnline && resolveChatRoute(wanPeer).mode === 'wan') {
     updateWanChatStatus("Connecting…", "#F59E0B");
     connectWanWebRTC(id, name);
   } else {
@@ -7243,7 +6560,7 @@ let wanSessionPollInterval = null;
 let wanIncomingPollInterval = null;
 let wanReconnectTimer = null;
 
-let currentWanReceivingFile = null;
+
 let wanReceivedBlobs = new Map(); // fileId -> { url, name }
 
 function initWanWebRTC() {
@@ -7267,6 +6584,7 @@ async function connectWanWebRTC(peerId, peerName) {
   if (wanConnectedPeerId === peerId && wanDataChannel && wanDataChannel.readyState === "open") {
     return;
   }
+  if(wanConnectedPeerId===peerId && wanPeerConnection && ['new','connecting','connected'].includes(wanPeerConnection.connectionState)) return;
   closeWanWebRTC();
 
   try {
@@ -7483,6 +6801,7 @@ async function acceptWanIncomingSession(session) {
 }
 
 function setupWanDataChannel(dc, peerId, peerName) {
+  let currentWanReceivingFile = null;
   try {
     dc.binaryType = "arraybuffer";
   } catch (_) {}
@@ -7492,6 +6811,7 @@ function setupWanDataChannel(dc, peerId, peerName) {
     try {
       dc.send(JSON.stringify({
         type: "handshake_syn",
+        deliveryAck: true,
         senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
       }));
     } catch (_) {}
@@ -7506,7 +6826,7 @@ function setupWanDataChannel(dc, peerId, peerName) {
     }
   };
 
-  dc.onmessage = async (event) => {
+  const receiveMessage = async (event) => {
     // 1. Binary chunk received for file transfer
     if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
       let arrayBuffer = event.data;
@@ -7533,6 +6853,16 @@ function setupWanDataChannel(dc, peerId, peerName) {
       const rawType = (data.type || '').toString();
       const msgType = rawType.toUpperCase().replace(/_/g, '');
 
+      if (msgType==='HANDSHAKESYN' || msgType==='HANDSHAKEACK') {
+        dc.deliveryAck=data.deliveryAck===true;dc.handshakeReceived=true;
+        if(msgType==='HANDSHAKESYN') dc.send(JSON.stringify({type:'handshake_ack',deliveryAck:true}));
+        return;
+      }
+      if(msgType==='DELIVERYACK') {
+        const pending=wanDeliveryWaiters.get(data.id);
+        if(pending) {wanDeliveryWaiters.delete(data.id);pending(data.status==='delivered');}
+        return;
+      }
       // Handle ping
       if (msgType === 'PING') {
         try { dc.send(JSON.stringify({ protocolVersion: 1, type: 'PONG', timestamp: Date.now() })); } catch (_) {}
@@ -7542,6 +6872,16 @@ function setupWanDataChannel(dc, peerId, peerName) {
       // Handle typing control from Flutter (WanDataMessage.control('typing', ...))
       if (msgType === 'CONTROL') {
         const payload = data.payload || {};
+        if(payload.action==='reaction') {
+          const msg=appState.messages.find(m=>m.id===payload.messageId && NearMitraChat.canonical(m.peer_id,chatDeviceLinks)===NearMitraChat.canonical(peerId,chatDeviceLinks));
+          if(msg) {
+            const emoji=payload.reaction || '';
+            const response=await fetch('/api/chat/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({incoming:true,peer_id:peerId,msg_id:msg.id,emoji})});
+            if(!response.ok) throw new Error(await response.text());
+            msg.reaction=emoji;savePersistedMessages();renderChatMessages();
+          }
+          return;
+        }
         if (payload.action === 'typing') {
           const isTyping = payload.isTyping !== false;
           if (isTyping) {
@@ -7576,6 +6916,8 @@ function setupWanDataChannel(dc, peerId, peerName) {
           fileName: fileName,
           fileSize: fileSize,
           bytesReceived: 0,
+          folder: payload.folder === true,
+          isForwarded:payload.isForwarded===true,
           chunks: []
         };
 
@@ -7607,51 +6949,28 @@ function setupWanDataChannel(dc, peerId, peerName) {
 
       // Handle File End (Completed incoming file transfer)
       if (msgType === 'FILEEND') {
-        if (currentWanReceivingFile) {
-          const fileId = currentWanReceivingFile.fileId;
-          const fileName = currentWanReceivingFile.fileName;
-          const fileSize = currentWanReceivingFile.fileSize;
-          const blob = new Blob(currentWanReceivingFile.chunks);
-          const blobUrl = URL.createObjectURL(blob);
-          wanReceivedBlobs.set(fileId, { url: blobUrl, name: fileName });
-
-          const msg = appState.messages.find(m => m.id === fileId);
-          if (msg && msg.attachment) {
-            msg.attachment.status = "Delivered";
-            msg.attachment.progress = 100;
-            msg.status = "Delivered";
-          }
-          savePersistedMessages();
-          renderChatMessages();
-          showToast(`✅ Received ${fileName}! Click to download/open`);
-
-          // Also save to Go backend
-          fetch("/api/chat/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: fileId,
-              peer_id: peerId,
-              peer_ip: "wan://" + peerId,
-              sender: peerName || "Peer",
-              text: `[File Attachment: ${fileName}]`,
-              mine: false,
-              at: new Date().toISOString(),
-              status: "Delivered",
-              is_wan: true,
-              attachment: {
-                name: fileName,
-                size: formatBytes(fileSize),
-                type: getFileType(fileName),
-                status: "Delivered",
-                progress: 100
-              }
-            })
-          }).catch(() => {});
-
-          currentWanReceivingFile = null;
+        const file=currentWanReceivingFile;
+        if (!file) return;
+        currentWanReceivingFile=null;
+        const msg=appState.messages.find(m=>m.id===file.fileId);
+        try {
+          if (file.bytesReceived!==file.fileSize) throw new Error('Incomplete file transfer');
+          const form=new FormData();
+          form.append('file',new Blob(file.chunks),file.fileName);
+          form.append('message',JSON.stringify({id:file.fileId,peer_id:peerId,peer_ip:'wan://'+peerId,
+            sender:peerName || 'Peer',is_forwarded:file.isForwarded,file_name:file.fileName,file_size:file.fileSize,kind:file.folder?'folder':'file',at:new Date().toISOString(),is_wan:true}));
+          const response=await fetch('/api/chat/receive-file',{method:'POST',body:form});
+          if (!response.ok) throw new Error(await response.text());
+          const stored=NearMitraChat.normalize(await response.json());
+          if (msg) Object.assign(msg,stored);
+          dc.send(JSON.stringify({type:'delivery_ack',id:file.fileId,status:'delivered'}));
+          showToast('Received '+file.fileName);
+        } catch(error) {
+          if (msg) {msg.status='Failed';if(msg.attachment) msg.attachment.status='Failed';}
+          dc.send(JSON.stringify({type:'delivery_ack',id:file.fileId,status:'failed'}));
+          showToast('File could not be saved: '+error.message);
         }
-        return;
+        savePersistedMessages();renderChatMessages();return;
       }
 
       // Handle Text message
@@ -7665,38 +6984,32 @@ function setupWanDataChannel(dc, peerId, peerName) {
             peer_ip: "wan://" + peerId,
             sender: peerName || "Peer",
             text: text,
+            ...chatWireMetadata(data.payload || data),
             mine: false,
             at: new Date(data.timestamp || Date.now()),
             status: "Delivered",
             is_wan: true,
             reactions: {}
           };
-          appState.messages.push(incomingMsg);
+          const previous=appState.messages.find(m=>m.id===incomingMsg.id);
+          if(previous) Object.assign(previous,incomingMsg); else appState.messages.push(incomingMsg);
           savePersistedMessages();
           renderChatMessages();
           showToast(`💬 ${peerName || 'WAN Peer'}: ${text.slice(0, 30)}`);
 
-          // Sync to Go backend persistence
-          fetch("/api/chat/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: msgId,
-              peer_id: peerId,
-              peer_ip: "wan://" + peerId,
-              sender: peerName || "Peer",
-              text: text,
-              mine: false,
-              at: new Date(data.timestamp || Date.now()).toISOString(),
-              status: "Delivered",
-              is_wan: true
-            })
-          }).catch(() => {});
+          const saved=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(incomingMsg)});
+          dc.send(JSON.stringify({type:'delivery_ack',id:msgId,status:saved.ok?'delivered':'failed'}));
+
         }
       }
     } catch (e) {}
   };
+  let pending=Promise.resolve();
+  dc.onmessage = event => {
+    pending=pending.then(()=>receiveMessage(event)).catch(error=>console.error('Incoming WAN message failed',error));
+  };
 }
+
 
 function updateWanChatStatus(text, color) {
   const el = document.getElementById("chatHeaderStatus");
@@ -7711,7 +7024,7 @@ function closeWanWebRTC() {
     wanSessionPollInterval = null;
   }
   if (wanDataChannel) {
-    try { wanDataChannel.close(); } catch (_) {}
+    try { wanDataChannel.onclose=null;wanDataChannel.close(); } catch (_) {}
     wanDataChannel = null;
   }
   if (wanPeerConnection) {
@@ -7728,60 +7041,34 @@ function closeWanWebRTC() {
   }
 }
 
-function sendWanChatMessage(targetId, text, msgId) {
-  const payload = {
-    id: msgId || ("msg_" + Date.now()),
-    type: "text",
-    timestamp: Date.now(),
-    payload: { text: text }
-  };
-
-  if (wanDataChannel && wanDataChannel.readyState === "open") {
-    wanDataChannel.send(JSON.stringify(payload));
-  } else {
-    // Attempt auto-connect and send
-    connectWanWebRTC(targetId, appState.activePeer ? appState.activePeer.name : "Peer");
-    showToast("Connecting WebRTC P2P DataChannel…");
-    setTimeout(() => {
-      if (wanDataChannel && wanDataChannel.readyState === "open") {
-        wanDataChannel.send(JSON.stringify(payload));
-      }
-    }, 2500);
-  }
-
-  // Sync to Go backend persistence
-  fetch("/api/chat/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id: msgId || ("msg_" + Date.now()),
-      peer_id: targetId,
-      peer_ip: "wan://" + targetId,
-      sender: "Windows Host",
-      text: text,
-      mine: true,
-      at: new Date().toISOString(),
-      status: "Sent",
-      is_wan: true
-    })
-  }).catch(() => {});
+async function ensureWanChannel(peerId, peerName) {
+ if (wanConnectedPeerId===peerId && wanDataChannel?.readyState==='open') return wanDataChannel;
+ await connectWanWebRTC(peerId,peerName || 'Peer');
+ const started=Date.now();
+ while (Date.now()-started<40000) {
+  if (!appState.wanState?.internet_mode_enabled) throw new Error('Internet mode is disabled');
+  if (wanConnectedPeerId===peerId && wanDataChannel?.readyState==='open') return wanDataChannel;
+  await new Promise(resolve=>setTimeout(resolve,100));
+ }
+ throw new Error('Connection timed out');
+}
+async function sendWanChatMessage(targetId,text,msgId,metadata={}) {
+ const dc=await ensureWanChannel(targetId,'Peer');
+ await sendConfirmedWan(dc,{id:msgId,type:'text',timestamp:Date.now(),payload:{text,replyToId:metadata.reply_to_id,replyToSender:metadata.reply_to_sender,replyToText:metadata.reply_to_text,isForwarded:metadata.is_forwarded===true}},msgId);
+ const response=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+  ...metadata,id:msgId,peer_id:targetId,peer_ip:'wan://'+targetId,sender:'Windows Host',text,mine:true,at:new Date().toISOString(),status:'Sent',is_wan:true})});
+ if (!response.ok) throw new Error('Could not persist sent message');
 }
 
 // -----------------------------------------------------------------------------
 // WAN WEBRTC FILE STREAMING SENDER & PROGRESS CONTROLLER
 // -----------------------------------------------------------------------------
-async function streamFileOverWan(file, peerId, peerName) {
+async function streamFileOverWanInternal(file, peerId, peerName, folder = false, metadata={}) {
   if (!file) return;
 
-  if (!wanDataChannel || wanDataChannel.readyState !== "open") {
-    connectWanWebRTC(peerId, peerName);
-    showToast("Connecting WebRTC P2P DataChannel before file transfer…");
-    await new Promise(r => setTimeout(r, 2000));
-    if (!wanDataChannel || wanDataChannel.readyState !== "open") {
-      showToast("DataChannel connecting, please retry in a moment");
-      return;
-    }
-  }
+  let channel;
+  try { channel=await ensureWanChannel(peerId,peerName); }
+  catch(error) {showToast(error.message);return;}
 
   const fileId = "f_" + Date.now();
   const chunkSize = 64 * 1024; // 64 KB chunk matching Flutter
@@ -7789,6 +7076,8 @@ async function streamFileOverWan(file, peerId, peerName) {
 
   // 1. Create file message with initial sending progress
   const fileMsg = {
+    ...metadata,
+    kind:folder?'folder':'file',file_name:file.name,file_size:file.size,
     id: fileId,
     peer_id: peerId,
     peer_ip: "wan://" + peerId,
@@ -7816,12 +7105,13 @@ async function streamFileOverWan(file, peerId, peerName) {
 
   // 2. Send File Meta
   try {
-    wanDataChannel.send(JSON.stringify({
+    channel.send(JSON.stringify({
       id: "meta_" + fileId,
       type: "fileMeta",
       timestamp: Date.now(),
       payload: {
         transferId: fileId,
+        folder: folder,isForwarded:metadata.is_forwarded===true,
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type || "application/octet-stream",
@@ -7841,7 +7131,7 @@ async function streamFileOverWan(file, peerId, peerName) {
   // 3. Stream binary chunks with backpressure
   let offset = 0;
   while (offset < file.size) {
-    if (!wanDataChannel || wanDataChannel.readyState !== "open") {
+    if (!channel || channel.readyState !== "open") {
       fileMsg.attachment.status = "Failed";
       fileMsg.status = "Failed";
       renderChatMessages();
@@ -7849,14 +7139,15 @@ async function streamFileOverWan(file, peerId, peerName) {
       return;
     }
 
-    while (wanDataChannel.bufferedAmount > 1024 * 1024) {
+    while (channel.bufferedAmount > 1024 * 1024) {
+      if(channel.readyState!=='open') throw new Error('Connection lost during file transfer');
       await new Promise(r => setTimeout(r, 10));
     }
 
     const chunkBlob = file.slice(offset, offset + chunkSize);
     const buffer = await chunkBlob.arrayBuffer();
     try {
-      wanDataChannel.send(buffer);
+      channel.send(buffer);
     } catch (err) {
       fileMsg.attachment.status = "Failed";
       fileMsg.status = "Failed";
@@ -7875,17 +7166,11 @@ async function streamFileOverWan(file, peerId, peerName) {
     }
   }
 
-  // 4. Send File End
   try {
-    wanDataChannel.send(JSON.stringify({
-      id: "end_" + fileId,
-      type: "fileEnd",
-      timestamp: Date.now(),
-      payload: {
-        transferId: fileId
-      }
-    }));
-  } catch (_) {}
+    await sendConfirmedWan(channel,{id:'end_'+fileId,type:'fileEnd',timestamp:Date.now(),payload:{transferId:fileId}},fileId);
+  } catch(error) {
+    fileMsg.status='Failed';fileMsg.attachment.status='Failed';savePersistedMessages();renderChatMessages();showToast(error.message);return;
+  }
 
   fileMsg.attachment.status = "Sent";
   fileMsg.attachment.progress = 100;
@@ -7894,22 +7179,18 @@ async function streamFileOverWan(file, peerId, peerName) {
   renderChatMessages();
   showToast(`✅ Sent ${file.name} successfully!`);
 
-  // Persist to Go backend
-  fetch("/api/chat/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id: fileId,
-      peer_id: peerId,
-      peer_ip: "wan://" + peerId,
-      sender: "Windows Host",
-      text: `[File Attachment: ${file.name}]`,
-      mine: true,
-      at: new Date().toISOString(),
-      status: "Sent",
-      is_wan: true
-    })
-  }).catch(() => {});
+  let saved;
+  if(metadata.file_path) {
+    saved=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...fileMsg,at:new Date(fileMsg.at).toISOString()})});
+  } else {
+    const form=new FormData();form.append('file',file,file.name);
+    form.append('message',JSON.stringify({...fileMsg,attachment:undefined,at:new Date(fileMsg.at).toISOString()}));
+    saved=await fetch('/api/chat/cache-attachment',{method:'POST',body:form});
+  }
+  if(!saved.ok) throw new Error('Sent, but attachment could not be saved for forwarding');
+  Object.assign(fileMsg,NearMitraChat.normalize(await saved.json()));
+  savePersistedMessages();renderChatMessages();
+  return fileMsg;
 }
 
 // -----------------------------------------------------------------------------
@@ -7948,6 +7229,8 @@ function updateFileProgressInUI(fileId, progress) {
 }
 
 function handleAttachmentClick(msgId) {
+  const stored=appState.messages.find(m=>m.id===msgId);
+  if(stored && stored.file_path) {openFile(stored.file_path);return;}
   const received = wanReceivedBlobs.get(msgId);
   if (received) {
     const a = document.createElement('a');
@@ -7988,47 +7271,487 @@ async function handleChatDrop(e) {
 
   if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
     const file = e.dataTransfer.files[0];
-    if (targetPeer.is_wan) {
-      streamFileOverWan(file, targetPeer.id, targetPeer.name);
+    const fileRoute = resolveChatRoute(targetPeer);
+  if (fileRoute.mode === 'wan') {
+      streamFileOverWan(file, fileRoute.id, targetPeer.name);
     } else {
-      uploadDroppedFileToPeer(file, targetPeer.ip, targetPeer.id);
+      uploadDroppedFileToPeer(file, fileRoute.nearby?.ip || "", targetPeer.id);
     }
   }
 }
 
-function uploadDroppedFileToPeer(file, targetIP, targetID) {
-  const formData = new FormData();
-  formData.append("file", file);
-  showToast(`Uploading ${file.name} to peer...`);
-
-  fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP || "")}`, {
-    method: "POST",
-    body: formData
-  }).then(r => r.json()).then(data => {
-    const fileMsg = {
-      id: "msg_" + Date.now(),
-      peer_id: targetID,
-      peer_ip: targetIP,
-      sender: "Windows Host",
-      mine: true,
-      at: new Date(),
-      attachment: {
-        name: file.name,
-        size: formatBytes(file.size),
-        type: getFileType(file.name),
-        status: "Sent"
-      },
-      status: "Sent",
-      reactions: {}
-    };
-    appState.messages.push(fileMsg);
-    savePersistedMessages();
-    renderChatMessages();
-    showToast(`✅ File ${file.name} sent successfully!`);
-  }).catch(() => {
-    showToast("Error uploading file");
-  });
+async function uploadDroppedFileToPeer(file,targetIP,targetID) {
+ const form=new FormData();form.append('file',file);
+ try {
+  const response=await fetch('/api/send-file-upload?ip='+encodeURIComponent(targetIP || ''),{method:'POST',body:form});
+  if(!response.ok) throw new Error(await response.text());
+  const data=await response.json();if(data.error) throw new Error(data.error);
+  acceptSentAttachment(data);
+ } catch(error) {showToast('File could not be sent: '+error.message);}
 }
 
 
+let chatDeviceLinks = {};
+try { chatDeviceLinks = JSON.parse(localStorage.getItem('nearmitra_chat_device_links') || '{}'); } catch (_) {}
+function resolveChatRoute(peer) {
+ NearMitraChat.learn(appState.peers, chatDeviceLinks);
+ localStorage.setItem('nearmitra_chat_device_links',JSON.stringify(chatDeviceLinks));
+ return NearMitraChat.resolve(peer,appState.peers,appState.wanState,chatDeviceLinks,
+  wanDataChannel && wanDataChannel.readyState==='open' ? wanConnectedPeerId : null);
+}
+let chatOutboxBusy = false;
+async function flushChatOutbox() {
+ if (chatOutboxBusy) return;
+ chatOutboxBusy=true;
+ try {
+  for (const msg of appState.messages.filter(m => m.mine && m.status==='Queued' && !m.attachment)) {
+   const peer={id:msg.peer_id,name:msg.peer_name || 'Peer',ip:msg.peer_ip};
+   const route=resolveChatRoute(peer);
+   if (route.mode==='offline') continue;
+   msg.status='Sending'; renderChatMessages();
+   try {
+    let delivered=false;
+    if (route.nearby) {
+     const response=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...msg,peer_ip:route.nearby.ip,is_wan:false})});
+     delivered=response.ok;
+    }
+    if (!delivered && route.internet && appState.wanState.internet_mode_enabled) {
+     await sendWanChatMessage(route.internet.id,msg.text,msg.id,msg);
+     delivered=true;
+    }
+    msg.status=delivered?'Sent':'Queued';
+   } catch(error) { msg.status='Queued'; console.warn('Chat delivery deferred',error); }
+   savePersistedMessages(); renderChatMessages();
+  }
+ } finally { chatOutboxBusy=false; }
+}
+setInterval(flushChatOutbox,3000);
 
+const wanDeliveryWaiters=new Map();
+async function sendConfirmedWan(channel,message,id) {
+ const start=Date.now();
+ while(!channel.handshakeReceived && Date.now()-start<2000) {await new Promise(resolve=>setTimeout(resolve,25));}
+ let timer;
+ const confirmation=channel.deliveryAck ? new Promise((resolve,reject)=>{
+  wanDeliveryWaiters.set(id,resolve);
+  timer=setTimeout(()=>reject(new Error('Receiver did not confirm delivery')),60000);
+ }) : Promise.resolve(true);
+ try {
+  channel.send(JSON.stringify(message));
+  if(!await confirmation) throw new Error('Receiver could not save the transfer');
+ } finally {clearTimeout(timer);wanDeliveryWaiters.delete(id);}
+}
+
+let wanFileSendQueue=Promise.resolve();
+function streamFileOverWan(file,peerId,peerName,folder=false) {
+ const send=wanFileSendQueue.then(()=>streamFileOverWanInternal(file,peerId,peerName,folder));
+ wanFileSendQueue=send.catch(error=>showToast(error.message));
+ return send;
+}
+
+async function callRequest(path,body) {
+ const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body || {})});
+ if(!response.ok)throw new Error(await response.text());
+}
+function callElement(id){return document.getElementById(id);}
+function callText(id,text){const element=callElement(id);if(element)element.innerText=text;}
+function callDisplay(id,display){const element=callElement(id);if(element)element.style.display=display;}
+const pcAudioCapture=new NearMitraAudioCapture({
+ media:{getUserMedia:constraints=>navigator.mediaDevices.getUserMedia(constraints),getDisplayMedia:constraints=>navigator.mediaDevices.getDisplayMedia(constraints),enumerateDevices:()=>navigator.mediaDevices.enumerateDevices()},
+ createStream:tracks=>new MediaStream(tracks),createAudioContext:()=>new AudioContext(),
+ onSourceEnded:(message,stream)=>{showToast(message);if(desktopCall.session?.stream===stream)desktopCall.stop(true).catch(error=>console.warn(error));}
+});
+let callAudioStatsTimer=null;
+async function updateCallAudioStats(){
+ const session=desktopCall.session;if(!session?.pc?.getStats)return;
+ try{
+  const report=await session.pc.getStats();if(desktopCall.session!==session)return;
+  let sent=0,received=0,input=null;
+  report.forEach(stat=>{
+   const audio=stat.kind==='audio' || stat.mediaType==='audio';
+   if(audio && stat.type==='outbound-rtp' && !stat.isRemote)sent+=stat.bytesSent || 0;
+   if(audio && stat.type==='inbound-rtp' && !stat.isRemote){
+    received+=stat.bytesReceived || 0;
+    if(session.mode==='listen'){
+     const level=stat.audioLevel;
+     callText('remoteMicLevelText',level===undefined?'Audio received':level>0?(20*Math.log10(level)).toFixed(1)+' dBFS':'Silent');
+     const bar=callElement('remoteMicLevelBar');if(bar)bar.style.width=(level===undefined?0:Math.min(100,Math.max(0,level)*100))+'%';
+    }
+   }
+   if(audio && stat.type==='media-source' && stat.audioLevel!==undefined)input=stat.audioLevel;
+  });
+  callText('audioCastStreamStats','Sent '+Math.round(sent/1024)+' KB • Received '+Math.round(received/1024)+' KB');
+  const source=session.mode==='listen'?'Listening to phone mic':session.sourceLabel || 'PC microphone';
+  callText('callAudioStatus',(session.mediaWarnings?.length?session.mediaWarnings.join(' ')+' • ':'')+source+' • Sent '+Math.round(sent/1024)+' KB • Received '+Math.round(received/1024)+' KB'+(input===null?'':input<0.00001?' • No source audio detected':' • Input active'));
+ }catch(error){console.warn('Audio statistics unavailable',error);}
+}
+function startCallAudioStats(){
+ if(callAudioStatsTimer)clearInterval(callAudioStatsTimer);
+ callAudioStatsTimer=setInterval(updateCallAudioStats,1000);updateCallAudioStats();
+}
+const desktopCall=new NearMitraCall({
+ createPeerConnection:config=>new RTCPeerConnection(config),
+ getUserMedia:async constraints=>{
+  const session=desktopCall.session;
+  const source=session?.mode==='broadcast' && !session.incoming ? callElement('pcAudioSource')?.value || 'mic' : 'mic';
+  if(desktopCall.session)desktopCall.session.sourceLabel=source==='both'?'PC microphone + system audio':source==='system'?'System audio':'PC microphone';
+  const stream=await pcAudioCapture.capture(constraints,source,callElement('pcMicrophoneDevice')?.value || '');
+  if(session){if(!stream.getAudioTracks().length)session.sourceLabel='Receiving phone audio only';session.mediaWarnings=pcAudioCapture.warnings.get(stream) || [];if(session.mediaWarnings.length)showToast(session.mediaWarnings.join(' '));}
+  return stream;
+ },
+ getDisplayMedia:constraints=>navigator.mediaDevices.getDisplayMedia(constraints),
+ onMedia:session=>syncCallMedia(session),
+ createStream:tracks=>new MediaStream(tracks),
+ releaseMedia:stream=>pcAudioCapture.release(stream),
+ invite:(peer,video)=>callRequest('/api/call/invite',{target_ip:peer.ip,peer_id:peer.id,peer_name:peer.name,is_video:video}),
+ answer:()=>callRequest('/api/call/answer'),
+ end:()=>callRequest('/api/call/end'),
+ sendSignal:(ip,header)=>callRequest('/api/cctv/signal',{target_ip:ip,...header}),
+ onLocal:stream=>{localMediaStream=stream;peerConnection=desktopCall.session?.pc;const video=callElement('localVideo');if(video)video.srcObject=stream;},
+ onRemote:stream=>{
+  let audio=callElement('remoteCallAudio');
+  if(!audio){audio=document.createElement('audio');audio.id='remoteCallAudio';audio.autoplay=true;document.body.appendChild(audio);}
+  audio.srcObject=stream;audio.muted=false;audio.play().catch(()=>showToast('Click the call window to enable audio playback'));
+  const video=callElement('remoteVideo');if(video){video.srcObject=stream;video.muted=true;video.play().catch(()=>{});}
+  syncCallMedia(desktopCall.session);
+ },
+ onError:error=>showToast(error.message),
+ onState:(state,session)=>{
+  syncIotAudioState(state,session);
+  isCallActive=state!=='ended';appState.voice.active=state==='connected';
+  if(state==='ended'){
+   if(callAudioStatsTimer)clearInterval(callAudioStatsTimer);callAudioStatsTimer=null;callText('callAudioStatus','Audio stopped');
+   isScreenSharing=false;
+   localMediaStream=null;peerConnection=null;appState._ringingShown=false;hideIncomingCallOverlay();
+   if(callDurationInterval)clearInterval(callDurationInterval);callDurationInterval=null;
+   if(equalizerInterval)clearInterval(equalizerInterval);equalizerInterval=null;
+   ['localVideo','remoteVideo','remoteCallAudio'].forEach(id=>{const element=callElement(id);if(element)element.srcObject=null;});
+   callDisplay('voiceDashboardView','flex');callDisplay('voiceActiveCallView','none');callText('callPeerStatus','Call ended');return;
+  }
+  if(session){
+   if(!callElement('callAudioStatus')){const status=document.createElement('p');status.id='callAudioStatus';status.setAttribute('role','status');const parent=callElement('voiceActiveCallView');if(parent)parent.appendChild(status);}
+   callText('callPeerTitle',session.peer.name);callDisplay('voiceDashboardView','none');callDisplay('voiceActiveCallView','flex');}
+  if(session?.mediaWarnings?.length)callText('callAudioStatus',session.mediaWarnings.join(' '));
+  callText('callPeerStatus',({permissions:'Requesting microphone/camera permission…',ringing:'Ringing…',connecting:'Connecting…',connected:'Connected'})[state] || state);
+  syncCallMedia(session);
+  if(state==='connected'){appState.voice.callDuration=0;startCallTimer();startEqualizerLoop();startCallAudioStats();}
+ }
+});
+async function startCallWithPeer(ip,name,isVideo=false,mode='duplex') {
+ if(wirelessAudio?.session){showToast('Stop wireless audio before starting a call');return;}
+ const peer=(appState.peers || []).find(p=>p.ip===ip || p.id===ip);
+ const nearby=NearMitraCall.resolvePeer(peer || {id:ip,ip,name},appState.peers || [],appState.lanDevices || []);
+ if(!nearby){showToast('Select a Nearby device with a local IP address. Internet-only calling is unavailable.');return;}
+ try {switchTab('voice',true);setCallMode(isVideo?'video':'audio');await desktopCall.start(nearby,isVideo,mode);}
+ catch(error){showToast('Could not start call: '+describePcMediaError(error));}
+}
+function showIncomingCallOverlay(name,ip,isVideo) {
+ if(wirelessAudio?.session){callRequest('/api/call/decline').catch(()=>{});return;}
+ incomingCallData={peerName:name,peerIP:ip,isVideo};
+ callText('icPeerName',name);callText('icAvatar',getInitials(name || 'Peer'));callText('icCallType',isVideo?'Nearby video call':'Nearby audio call');
+ callDisplay('incomingCallOverlay','flex');
+}
+function hideIncomingCallOverlay(){incomingCallData=null;callDisplay('incomingCallOverlay','none');}
+async function answerIncomingCall(){
+ const incoming=incomingCallData;if(!incoming)return;hideIncomingCallOverlay();
+ try{
+  switchTab('voice',true);setCallMode(incoming.isVideo?'video':'audio');
+  const peer=(appState.peers || []).find(p=>p.ip===incoming.peerIP) || {id:incoming.peerIP,ip:incoming.peerIP,name:incoming.peerName};
+  await desktopCall.accept(peer,incoming.isVideo);
+ }catch(error){await callRequest('/api/call/decline').catch(()=>{});showToast('Could not answer call: '+error.message);}
+}
+async function declineIncomingCall(){hideIncomingCallOverlay();await callRequest('/api/call/decline').catch(error=>showToast(error.message));}
+
+function describePcMediaError(error){
+ if(['NotFoundError','DevicesNotFoundError','OverconstrainedError'].includes(error?.name))return 'A PC microphone/camera could not be opened. The selected Nearby phone was not the missing device. Refresh the microphone list or enable a capture device in Windows.';
+ if(error?.name==='NotAllowedError')return 'PC microphone/camera permission was denied. Allow access for NearMitra in the browser and Windows privacy settings, or use Listen Remote Mic.';
+ if(error?.name==='NotReadableError')return 'Windows could not open the PC microphone/camera. Check its connection and whether another app is using it.';
+ return error?.message || String(error);
+}
+
+const nativeSystemAudio = typeof NearMitraNativeAudio === 'undefined' ? null : new NearMitraNativeAudio({
+ fetch:(url,options)=>fetch(url,options),
+ createAudioContext:()=>new AudioContext({latencyHint:'interactive'}),
+ createWorklet:(context,name,options)=>new AudioWorkletNode(context,name,options),
+ onEnded:(message,stream)=>{const s=wirelessAudio?.session;if(s?.local?.getAudioTracks().some(t=>stream.getAudioTracks().includes(t)))wirelessAudio.stop(true,message);}
+});
+async function loadWirelessOutputs(){
+ const el=callElement('wirelessOutputDevice');if(!el || wirelessAudio?.session)return;
+ try{
+  const response=await fetch('/api/audio/devices');if(!response.ok)throw new Error(await response.text());
+  const data=await response.json(),selected=el.value;
+  const help=callElement('nativeAudioOutputHelp');if(help)help.hidden=!!(data.devices || []).length;
+  el.innerHTML='<option value="">Windows default output</option>'+(data.devices || []).map(d=>'<option value="'+escapeHTML(d.id)+'">'+escapeHTML(d.name)+(d.is_default?' (default)':'')+'</option>').join('');
+  if((data.devices || []).some(d=>d.id===selected))el.value=selected;
+  callText('nativeAudioDeviceStatus',(data.devices || []).length?'Ready: '+((data.devices || []).find(d=>d.id===selected || (!selected&&d.is_default))?.name || 'Select the player’s Windows playback output'):'No active Windows playback output. Connect headphones/USB audio, or install a virtual playback device. Browser-tab mode is still available.');
+ }catch(error){showToast('Could not list Windows playback outputs: '+error.message);}
+}
+const wirelessAudioCapture = typeof NearMitraWirelessAudio === 'undefined' ? null : new NearMitraAudioCapture({
+ musicAudio:true,
+ captureScope:()=>callElement('wirelessCaptureScope')?.value || 'system',
+ captureSystemAudio:()=>{if(!nativeSystemAudio)throw new Error('Native system audio did not load. Restart the updated app.');return nativeSystemAudio.capture(callElement('wirelessOutputDevice')?.value || '');},
+ releaseSystemAudio:stream=>nativeSystemAudio?.release(stream),
+ media:{getUserMedia:c=>navigator.mediaDevices.getUserMedia(c),getDisplayMedia:c=>navigator.mediaDevices.getDisplayMedia(c),enumerateDevices:()=>navigator.mediaDevices.enumerateDevices()},
+ createStream:tracks=>new MediaStream(tracks),createAudioContext:()=>new AudioContext({latencyHint:'interactive'}),
+ onSourceEnded:(message,stream)=>{if(wirelessAudio?.session?.local===stream)wirelessAudio.stop(true,message);}
+});
+const wirelessAudio = typeof NearMitraWirelessAudio === 'undefined' ? null : new NearMitraWirelessAudio({
+ newID:()=>crypto.randomUUID(), createPeerConnection:c=>new RTCPeerConnection(c), createStream:tracks=>new MediaStream(tracks),
+ isOccupied:()=>!!(desktopCall.session || remotePeerConnection || hostPeerConnection || localHostCameraStream),
+ capture:source=>wirelessAudioCapture.capture({audio:true,video:false},source,callElement('pcMicrophoneDevice')?.value || ''),
+ release:stream=>wirelessAudioCapture.release(stream),
+ send:(ip,header)=>callRequest('/api/cctv/signal',{target_ip:ip,...header}),
+ play:async stream=>{const audio=callElement('wirelessAudioPlayback');if(!audio)throw new Error('Playback control unavailable');audio.srcObject=stream;audio.muted=false;await audio.play();},
+ stopPlayback:()=>{const audio=callElement('wirelessAudioPlayback');if(audio){audio.pause();audio.srcObject=null;}},
+ onChange:service=>{renderWirelessAudio();if(service.session?.pending)switchTab('voice',true);}
+});
+function requireWirelessAudio(){
+ if(!wirelessAudio)throw new Error('Wireless audio did not load. Exit NearMitra from the system tray, install the latest setup, then reopen the app.');
+ return wirelessAudio;
+}
+function renderWirelessAudio(){
+ if(!wirelessAudio){
+  callText('wirelessAudioStatus','Wireless audio did not load. Restart the updated NearMitra app.');
+  for(const id of ['wirelessAudioSend','wirelessAudioMic','wirelessAudioConnect','wirelessAudioReceive']){const el=callElement(id);if(el)el.disabled=true;}
+  const stop=callElement('wirelessAudioStop');if(stop)stop.hidden=true;
+  return;
+ }
+ const s=wirelessAudio.session;
+ callText('wirelessAudioStatus',wirelessAudio.status+(s?' • '+s.peer.name:''));
+ callText('wirelessAudioSignal',s?.audioStatus || '');
+ for(const id of ['wirelessAudioSend','wirelessAudioMic','wirelessAudioConnect','wirelessAudioReceive','wirelessCaptureScope','wirelessOutputDevice','audioPeerSelect','pcAudioSource','pcMicrophoneDevice']){const el=callElement(id);if(el)el.disabled=!!s;}
+ const stop=callElement('wirelessAudioStop');if(stop){stop.disabled=!s;stop.hidden=!s;}
+ const selected=callElement('audioPeerSelect')?.value;
+ const target=s?.peer || (appState.peers || []).find(p=>p.ip===selected) || (appState.lanDevices || []).find(p=>p.ip===selected);
+ const sourceLabel=({system:'System audio',mic:'PC microphone',both:'System audio + microphone'})[callElement('pcAudioSource')?.value || 'system'];
+ callText('wirelessAudioTarget',target?'Target: '+(target.name || target.hostname || selected)+' • '+target.ip+' • '+sourceLabel:'Select a Nearby / P2P target device above');
+ const consent=callElement('wirelessAudioConsent');if(consent)consent.hidden=!s?.pending;
+ const source=({system:'PC playback audio (Chrome, music or video players)',mic:'PC microphone',both:'system audio and PC microphone'})[s?.source] || 'PC audio';
+ callText('wirelessAudioConsentText',s?.offer?'Allow '+s.peer.name+' to play microphone audio on this PC? This PC microphone stays off.':'Allow '+(s?.peer.name || 'device')+' to receive '+source+'?');
+ const mute=callElement('wirelessAudioMute');if(mute){mute.hidden=!s?.sending;mute.innerText=s?.muted?'Unmute outgoing audio':'Mute outgoing audio';}
+ const play=callElement('wirelessAudioPlay');if(play)play.hidden=!s?.playbackBlocked;
+ const volume=callElement('wirelessAudioVolumeControl');if(volume)volume.hidden=!s || s.sending || s.pending;
+}
+function selectedWirelessPeer(){
+ const ip=callElement('audioPeerSelect')?.value;
+ const peer=NearMitraCall.resolvePeer({ip},appState.peers || [],appState.lanDevices || []);
+ if(!peer)throw new Error('Select a Nearby / P2P device in the Audio target selector first');return peer;
+}
+async function startWirelessPcAudio(){
+ try{await requireWirelessAudio().start(selectedWirelessPeer(),callElement('pcAudioSource')?.value || 'system');}
+ catch(e){showToast(e.message);}
+}
+async function requestWirelessPhoneMic(){try{await requireWirelessAudio().requestMic(selectedWirelessPeer());}catch(e){showToast(e.message);}}
+function setWirelessPlaybackVolume(value){const audio=callElement('wirelessAudioPlayback');if(audio)audio.volume=Math.max(0,Math.min(1,Number(value)/100));}
+window.addEventListener('beforeunload',()=>{if(wirelessAudio?.session)wirelessAudio.stop(true,'Streaming window closed');});
+
+function chatWireMetadata(payload) {
+ return {reply_to_id:payload.replyToId || payload.reply_to_id || '',reply_to_sender:payload.replyToSender || payload.reply_to_sender || '',reply_to_text:payload.replyToText || payload.reply_to_text || '',is_forwarded:payload.isForwarded===true || payload.is_forwarded===true};
+}
+function chatCanAct(message) {
+ return !message._liveTransfer && !message.is_ai && !message.isAi && !['Queued','Sending','Downloading','Failed'].includes(message.status);
+}
+function chatMessageAction(event,action) {
+ event.stopPropagation();
+ const id=event.currentTarget.closest('[data-chat-id]').dataset.chatId;
+ const message=appState.messages.find(m=>m.id===id);
+ if(!message || !chatCanAct(message)) return;
+ if(action==='reply') {
+  chatReply={...message};updateChatReplyPreview();document.getElementById('chatInput')?.focus();
+ } else if(action==='select') {
+  if(chatSelection.has(id)) chatSelection.delete(id);else chatSelection.add(id);
+  renderChatMessages();
+ } else if(action==='forward') openChatForward([id]);
+ else if(action==='copy') copyChatMessage(message);
+}
+async function copyChatMessage(message) {
+ const text=message.text || message.file_name || message.attachment?.name || '';
+ if(!text) {showToast('No text to copy');return;}
+ try {
+  if(globalThis.navigator?.clipboard?.writeText) {
+   await navigator.clipboard.writeText(text);
+  } else {
+   const previousFocus=document.activeElement,field=document.createElement('textarea');
+   field.value=text;field.readOnly=true;field.style.cssText='position:fixed;left:-9999px;top:0';
+   document.body.appendChild(field);
+   try {field.select();if(!document.execCommand('copy')) throw new Error('Copy failed');}
+   finally {field.remove();previousFocus?.focus();}
+  }
+  showToast('Message copied to clipboard');
+ } catch(error) {showToast('Could not copy message. Please try again.');}
+}
+function clearChatSelection() {chatSelection.clear();renderChatMessages();}
+function cancelChatReply() {chatReply=null;updateChatReplyPreview();}
+function updateChatReplyPreview() {
+ const preview=document.getElementById('chatReplyPreview');if(!preview) return;
+ preview.hidden=!chatReply;
+ if(chatReply) preview.innerHTML=`<div><strong>Replying to ${escapeHTML(chatReply.mine?'yourself':chatReply.sender || 'Peer')}</strong><span>${escapeHTML(chatReply.text || chatReply.file_name || chatReply.attachment?.name || 'Attachment')}</span></div><button onclick="cancelChatReply()" aria-label="Cancel reply">✕</button>`;
+}
+function jumpQuotedMessage(event) {
+ const target=document.getElementById(event.currentTarget.dataset.quoteId),stream=document.getElementById('chatStream');
+ if(!target || !stream?.contains(target)) {showToast('Original message is no longer in this chat');return;}
+ target.scrollIntoView({block:'center',behavior:'smooth'});
+ target.animate([{background:'var(--primary-glow)'},{background:'transparent'}],{duration:1500});
+}
+function chatForwardTargets() {
+ const result=new Map();
+ for(const peer of [...appState.peers,...(appState.wanState?.trusted_devices || []).map(p=>({...p,is_wan:true}))]) {
+  const route=resolveChatRoute(peer);
+  if(route.mode!=='offline' && !result.has(route.id)) result.set(route.id,{...peer,id:route.id});
+ }
+ return [...result.values()];
+}
+function openChatForward(ids=[...chatSelection]) {
+ if(chatForwardBusy || !ids.length) return;
+ document.getElementById('chatForwardDialog')?.remove();
+ const messages=appState.messages.filter(m=>ids.includes(m.id) && chatCanAct(m)).sort((a,b)=>new Date(a.at)-new Date(b.at));
+ if(!messages.length) return;
+ const targets=chatForwardTargets(),dialog=document.createElement('dialog');dialog.id='chatForwardDialog';dialog.className='chat-forward-dialog';
+ dialog.innerHTML=`<div class="chat-forward-heading"><h3>Forward ${messages.length===1?'message':messages.length+' messages'}</h3><button data-close aria-label="Close">✕</button></div><p>Choose a connected device</p><input type="search" placeholder="Search devices" aria-label="Search recipients"><div class="chat-forward-targets">${targets.length?targets.map((p,i)=>`<button data-target="${i}"><strong>${escapeHTML(p.name || 'Device')}</strong><span>${resolveChatRoute(p).mode==='nearby'?'Nearby / P2P':'Internet / WAN'}</span></button>`).join(''):'<p>No connected devices available.</p>'}</div><p class="chat-forward-status" role="status"></p>`;
+ document.body.appendChild(dialog);
+ const close=()=>{if(!chatForwardBusy){dialog.close();dialog.remove();}};
+ dialog.querySelector('[data-close]').onclick=close;
+ dialog.addEventListener('cancel',event=>{if(chatForwardBusy)event.preventDefault();else dialog.remove();});
+ dialog.querySelector('input').oninput=event=>dialog.querySelectorAll('[data-target]').forEach(button=>{button.hidden=!targets[Number(button.dataset.target)].name?.toLowerCase().includes(event.target.value.toLowerCase());});
+ dialog.querySelectorAll('[data-target]').forEach(button=>button.onclick=async()=>{
+  if(chatForwardBusy) return;
+  chatForwardBusy=true;dialog.querySelectorAll('button,input').forEach(el=>el.disabled=true);
+  const status=dialog.querySelector('[role=status]'),target=targets[Number(button.dataset.target)];
+  let sent=0;
+  try {
+   for(const message of [...messages]) {
+    status.textContent=`Forwarding ${sent+1} of ${messages.length+sent}…`;
+    await forwardChatMessage(message,target);
+    sent++;messages.splice(messages.indexOf(message),1);chatSelection.delete(message.id);
+   }
+   showToast(`Forwarded to ${target.name || 'device'}`);chatForwardBusy=false;close();renderChatMessages();
+  } catch(error) {
+   chatForwardBusy=false;status.textContent=`${sent?sent+' sent. ':''}${error.message}`;
+   dialog.querySelectorAll('button,input').forEach(el=>el.disabled=false);renderChatMessages();
+  }
+ });
+ dialog.showModal();
+}
+async function forwardChatMessage(message,target) {
+ const route=resolveChatRoute(target);
+ if(route.mode==='offline') throw new Error('Recipient is offline');
+ if(route.mode==='nearby') {
+  const response=await fetch('/api/chat/forward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:message.id,peer_id:route.id})});
+  if(!response.ok) throw new Error(await response.text());
+  const stored=NearMitraChat.normalize(await response.json());
+  appState.messages=NearMitraChat.merge(appState.messages,[stored]);
+ } else if(message.attachment || ['file','folder'].includes(message.kind)) {
+  const response=await fetch('/api/chat/forward-file?id='+encodeURIComponent(message.id));
+  if(!response.ok) throw new Error(await response.text());
+  const folder=message.kind==='folder' || message.attachment?.type==='folder';
+  const name=message.file_name || message.attachment?.name || 'File';
+  const file=new File([await response.blob()],folder && !name.endsWith('.zip')?name+'.zip':name);
+  const result=await streamFileOverWanInternal(file,route.id,target.name,folder,{is_forwarded:true,file_path:message.file_path});
+  if(!result || result.status!=='Sent') throw new Error('File forwarding did not complete');
+ } else {
+  const forwarded={id:crypto.randomUUID(),peer_id:route.id,peer_ip:'wan://'+route.id,sender:'Windows Host',text:message.text,mine:true,at:new Date(),kind:'text',is_wan:true,is_forwarded:true,status:'Sending'};
+  // A forward starts a new message; the original conversation's quote is not copied.
+  await sendWanChatMessage(route.id,forwarded.text,forwarded.id,forwarded);
+  forwarded.status='Sent';appState.messages.push(forwarded);
+ }
+ savePersistedMessages();renderChatMessages();
+}
+
+const nearbyAIConversations=new Map();
+let nearbyAIActiveID='',nearbyAIRequest=null,nearbyAISharing=null,nearbyAIShareLoading=false;
+function nearbyAIKey() {const peer=appState.activePeer;return peer?NearMitraChat.canonical(peer.internet_device_id || peer.id,chatDeviceLinks):'';}
+function syncNearbyAIConversation() {
+ const key=nearbyAIKey();if(key===nearbyAIActiveID){
+  const pane=document.getElementById("chatViewAI");if(pane?.style.display==='flex')updateNearbyAIChat();
+  return;
+ }
+ stopNearbyAIQuery();nearbyAIActiveID=key;nearbyAISharing=null;nearbyAIShareLoading=false;
+ renderNearbyAIConversation();updateNearbyAIChat();
+}
+function renderNearbyAIConversation() {
+ const stream=document.getElementById('aiChatStream');if(!stream)return;
+ const items=nearbyAIConversations.get(nearbyAIKey()) || [];
+ stream.innerHTML=items.length?items.map(m=>`<div class="msg-row ${m.mine?'outgoing':'incoming'}"><div class="msg-bubble-wrap"><div class="msg-bubble"><div class="msg-sender">${escapeHTML(m.mine?'You':m.sender)}</div><div class="msg-text">${escapeHTML(m.text || 'Waiting for the device…')}</div>${m.error?'<div class="nearby-ai-error">Request failed</div>':''}</div></div></div>`).join(''):'<div class="ai-welcome-bubble"><p>Ask the selected device’s shared AI. Its owner must allow this Windows device. Configure your own engine in My AI settings.</p></div>';
+ stream.scrollTop=stream.scrollHeight;
+}
+function updateNearbyAIChat() {
+ const peer=appState.activePeer,route=resolveChatRoute(peer),available=!!route.nearby;
+ const title=document.getElementById('nearbyAITargetLabel'),status=document.getElementById('nearbyAITargetStatus'),badge=document.getElementById('aiSubtabProviderBadge');
+ if(title)title.textContent=(peer?.name || 'Selected device')+' · Nearby AI';
+ if(status)status.textContent=available?'Runs on '+(peer.name || 'the selected device')+'. The owner must grant access.':'Connect this device through Nearby / P2P to use its AI.';
+ if(badge)badge.textContent='Device';
+ const send=document.getElementById('nearbyAISend');if(send)send.disabled=!available || !!nearbyAIRequest;
+ const stop=document.getElementById('nearbyAIStop');if(stop)stop.hidden=!nearbyAIRequest;
+ renderNearbyAISharing();
+ if(available && !nearbyAISharing && !nearbyAIShareLoading)loadSelectedAISharing();
+}
+async function loadSelectedAISharing() {
+ const key=nearbyAIKey();nearbyAIShareLoading=true;
+ try {
+  const response=await fetch('/api/ai/selected-sharing?peer_id='+encodeURIComponent(key));
+  if(!response.ok)throw new Error(await response.text());
+  const data=await response.json();if(key!==nearbyAIKey())return;
+  nearbyAISharing=data;
+ } catch(error) {if(key===nearbyAIKey())nearbyAISharing={error:error.message};}
+ finally {if(key===nearbyAIKey()){nearbyAIShareLoading=false;renderNearbyAISharing();}}
+}
+function renderNearbyAISharing() {
+ const text=document.getElementById('nearbyAIShareStatus'),button=document.getElementById('nearbyAIShareToggle');
+ const state=nearbyAISharing,peer=appState.activePeer;
+ if(text)text.textContent=!peer?'Select a device':!state?'Checking your sharing settings…':state.error?state.error:!state.ai_enabled?'My AI is disabled. Configure and enable your engine in My AI settings.':state.allowed && state.sharing_enabled?'Allowed: '+peer.name+' can use your '+state.provider+' engine.':state.allowed?'Device allowed, but My AI sharing is off. Enable sharing to serve requests.':'This device cannot use your AI until you allow it.';
+ if(button){button.disabled=!state || !!state.error || !state.ai_enabled || nearbyAIShareLoading;button.textContent=state?.allowed && state?.sharing_enabled?'Revoke':state?.allowed?'Enable sharing':'Allow';}
+}
+async function toggleSelectedAISharing() {
+ const state=nearbyAISharing,key=nearbyAIKey();if(!state || !key)return;
+ const allow=!(state.allowed && state.sharing_enabled);
+ nearbyAIShareLoading=true;renderNearbyAISharing();
+ try {
+  if(allow && !state.sharing_enabled) {
+   const response=await fetch('/api/ai/share-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:true})});
+   if(!response.ok)throw new Error(await response.text());
+  }
+  const response=await fetch('/api/ai/peer-permission',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peer_id:key,allow})});
+  if(!response.ok)throw new Error(await response.text());
+  if(key===nearbyAIKey()) {nearbyAISharing=null;await loadSelectedAISharing();}
+ } catch(error){showToast('AI sharing: '+error.message);}
+ finally {if(key===nearbyAIKey()){nearbyAIShareLoading=false;renderNearbyAISharing();}}
+}
+function stopNearbyAIQuery() {
+ if(!nearbyAIRequest)return;
+ const request=nearbyAIRequest;nearbyAIRequest=null;request.controller.abort();
+ if(!request.answer.text)request.answer.text='Request stopped.';
+ const stop=document.getElementById('nearbyAIStop');if(stop)stop.hidden=true;
+}
+async function sendAIChatMessage(preset) {
+ syncNearbyAIConversation();
+ const input=document.getElementById('aiChatInput'),prompt=(preset || input?.value || '').trim(),peer=appState.activePeer;
+ if(!prompt || !peer || nearbyAIRequest)return;
+ const route=resolveChatRoute(peer);if(!route.nearby){showToast('Nearby AI needs a connected Nearby / P2P device');return;}
+ const key=nearbyAIKey(),items=nearbyAIConversations.get(key) || [];
+ nearbyAIConversations.set(key,items);
+ const answer={mine:false,sender:(peer.name || 'Device')+' AI',text:''};items.push({mine:true,text:prompt},answer);
+ const request={key,answer,controller:new AbortController()};nearbyAIRequest=request;
+ if(input)input.value='';renderNearbyAIConversation();updateNearbyAIChat();
+ let completed=false;
+ const consume=packet=>{
+  if(packet.status==='disabled' || packet.error_code==='ai_disabled') throw new Error(packet.reply || packet.message || 'The selected device has not allowed AI access.');
+  if(packet.status==='error' || packet.error)throw new Error(packet.error || packet.message || packet.reply || 'Remote AI request failed');
+  const chunk=packet.reply ?? packet.response ?? packet.text ?? packet.message ?? packet.content ?? packet.delta ?? '';
+  if(chunk)answer.text+=chunk;
+  if(packet.done===true || ['done','success','ok'].includes(packet.status))completed=true;
+  if(nearbyAIKey()===key)renderNearbyAIConversation();
+ };
+ try {
+  const response=await fetch('/api/ai/nearby-query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({peer_id:route.id,prompt}),signal:request.controller.signal});
+  if(!response.ok)throw new Error(await response.text());
+  const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';
+  try {while(true){const {value,done}=await reader.read();pending+=decoder.decode(value || new Uint8Array(),{stream:!done});let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end).trim();pending=pending.slice(end+1);if(line)consume(JSON.parse(line));}if(done){if(pending.trim())consume(JSON.parse(pending));break;}}}finally{reader.releaseLock();}
+  if(!completed)throw new Error('Nearby AI disconnected before completing its answer');
+ } catch(error) {
+  if(error.name!=='AbortError'){answer.error=true;answer.text+=(answer.text?'\n\n':'')+error.message;}
+ } finally {
+  request.controller.abort();
+  if(nearbyAIRequest===request)nearbyAIRequest=null;
+  if(nearbyAIKey()===key){renderNearbyAIConversation();updateNearbyAIChat();}
+ }
+}

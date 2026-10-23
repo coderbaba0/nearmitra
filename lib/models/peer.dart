@@ -7,6 +7,8 @@ class Peer {
     required this.ip,
     this.avatarEmoji,
     this.platform,
+    this.internetDeviceId,
+    this.supportsDeliveryAck = false,
     DateTime? lastSeen,
     this.unreadCount = 0,
     this.isTyping = false,
@@ -21,6 +23,8 @@ class Peer {
   String ip;
   String? avatarEmoji;
   String? platform;
+  String? internetDeviceId;
+  bool supportsDeliveryAck;
   DateTime lastSeen;
   int unreadCount;
   bool isTyping;

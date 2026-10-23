@@ -37,6 +37,29 @@ class WanService extends ChangeNotifier {
   WanPairCode? _activePairCode;
   Timer? _pairCodeTimer;
   Timer? _cleanupTimer;
+  Timer? _presenceExpiryTimer;
+  StreamSubscription<DatabaseEvent>? _serverTimeOffsetSub;
+  int _serverTimeOffsetMs = 0;
+  DateTime get _presenceNow => DateTime.now().add(Duration(milliseconds: _serverTimeOffsetMs));
+
+  void _expirePeerPresence() {
+    var changed = false;
+    final now = _presenceNow;
+    for (final id in _trustedDevices.keys.toList()) {
+      final device = _trustedDevices[id]!;
+      final current = device.presenceAt(now);
+      if (current.isOnline != device.isOnline) {
+        _trustedDevices[id] = current;
+        changed = true;
+      }
+    }
+    _publicDiscoveredDevices.removeWhere((id, device) {
+      final expired = !device.presenceAt(now).isOnline;
+      if (expired) changed = true;
+      return expired;
+    });
+    if (changed) notifyListeners();
+  }
 
   final StreamController<WanDevice> _onPairSuccessController = StreamController<WanDevice>.broadcast();
   Stream<WanDevice> get onPairSuccess => _onPairSuccessController.stream;
@@ -57,9 +80,9 @@ class WanService extends ChangeNotifier {
   bool get isOnline => _presenceService.isPresenceOnline;
   WanDiscoveryMode get discoveryMode => _discoveryMode;
 
-  List<WanDevice> get trustedDevicesList => _trustedDevices.values.toList();
+  List<WanDevice> get trustedDevicesList => _trustedDevices.values.map((device) => device.presenceAt(_presenceNow)).toList();
   List<WanDevice> get publicDiscoveredDevices => _publicDiscoveredDevices.values
-      .where((d) => d.id != deviceId && !_trustedDevices.containsKey(d.id))
+      .where((d) => d.id != deviceId && !_trustedDevices.containsKey(d.id) && d.presenceAt(_presenceNow).isOnline)
       .map((d) => d.isTrusted ? d.copyWith(isTrusted: false) : d)
       .toList();
   List<WanDevice> get publicDevices => publicDiscoveredDevices;
@@ -67,7 +90,7 @@ class WanService extends ChangeNotifier {
   /// Combined list of devices for Radar: Paired trusted devices + Discovered public peers
   List<WanDevice> get allRadarDevices {
     final list = <WanDevice>[];
-    list.addAll(_trustedDevices.values);
+    list.addAll(trustedDevicesList);
     if (_discoveryMode == WanDiscoveryMode.publicRadar) {
       list.addAll(publicDiscoveredDevices);
     }
@@ -165,6 +188,15 @@ class WanService extends ChangeNotifier {
     await _presenceService.setInternetMode(enable);
 
     if (enable) {
+      await _serverTimeOffsetSub?.cancel();
+      _serverTimeOffsetSub = _dbRef.child('.info/serverTimeOffset').onValue.listen((event) {
+        final value = event.snapshot.value;
+        if (value is num) _serverTimeOffsetMs = value.toInt();
+        _expirePeerPresence();
+      });
+      _presenceExpiryTimer?.cancel();
+      _presenceExpiryTimer = Timer.periodic(const Duration(seconds: 5), (_) => _expirePeerPresence());
+      _expirePeerPresence();
       _listenToTrustedDevices();
       _listenToIncomingPairRequests();
       _listenToIncomingSessions();
@@ -599,21 +631,13 @@ class WanService extends ChangeNotifier {
       final snap = await _dbRef.child('presence/$id').get();
       if (snap.exists && snap.value != null) {
         final map = Map<dynamic, dynamic>.from(snap.value as Map);
-        final online = (map['online'] as bool?) ?? true;
-        final devName = (map['deviceName'] as String?) ?? (map['name'] as String?) ?? name;
-        final devPlatform = (map['platform'] as String?) ?? platform;
         final devAvatar = (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?) ?? avatarEmoji;
-        final lastSeen = map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null;
-        _trustedDevices[id] = WanDevice(
-          id: id,
-          name: devName,
-          platform: devPlatform,
-          avatarEmoji: devAvatar,
-          isOnline: online,
-          lastSeen: lastSeen,
-          isTrusted: true,
-          unreadCount: _unreadCounts[id] ?? 0,
-        );
+        _trustedDevices[id] = WanDevice.fromMap(id, {
+          ...map,
+          'deviceName': map['deviceName'] ?? map['name'] ?? name,
+          'platform': map['platform'] ?? platform,
+          'avatarEmoji': devAvatar,
+        }, isTrusted: true, unreadCount: _unreadCounts[id] ?? 0, now: _presenceNow);
         if (devAvatar != null && devAvatar.isNotEmpty) {
           await prefs.setString('wan_peer_avatar_$id', devAvatar);
         }
@@ -658,6 +682,7 @@ class WanService extends ChangeNotifier {
             peerMap,
             isTrusted: false,
             unreadCount: 0,
+            now: _presenceNow,
           );
         }
       } catch (_) {}
@@ -698,22 +723,14 @@ class WanService extends ChangeNotifier {
     _presenceSubs[peerId] = _dbRef.child('presence/$peerId').onValue.listen((event) async {
       if (event.snapshot.exists && event.snapshot.value != null) {
         final map = Map<dynamic, dynamic>.from(event.snapshot.value as Map);
-        final online = (map['online'] as bool?) ?? false;
-        final name = (map['deviceName'] as String?) ?? (map['name'] as String?) ?? _trustedDevices[peerId]?.name ?? 'Peer';
-        final platform = (map['platform'] as String?) ?? _trustedDevices[peerId]?.platform ?? 'unknown';
-        final avatarEmoji = (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?) ?? _trustedDevices[peerId]?.avatarEmoji;
-        final lastSeen = map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null;
-
-        _trustedDevices[peerId] = WanDevice(
-          id: peerId,
-          name: name,
-          platform: platform,
-          avatarEmoji: avatarEmoji,
-          isOnline: online,
-          lastSeen: lastSeen,
-          isTrusted: true,
-          unreadCount: _unreadCounts[peerId] ?? 0,
-        );
+        final existing = _trustedDevices[peerId];
+        final avatarEmoji = (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?) ?? existing?.avatarEmoji;
+        _trustedDevices[peerId] = WanDevice.fromMap(peerId, {
+          ...map,
+          'deviceName': map['deviceName'] ?? map['name'] ?? existing?.name ?? 'Peer',
+          'platform': map['platform'] ?? existing?.platform ?? 'unknown',
+          'avatarEmoji': avatarEmoji,
+        }, isTrusted: true, unreadCount: _unreadCounts[peerId] ?? 0, now: _presenceNow);
 
         if (avatarEmoji != null && avatarEmoji.isNotEmpty) {
           final prefs = await SharedPreferences.getInstance();
@@ -721,6 +738,12 @@ class WanService extends ChangeNotifier {
         }
 
         notifyListeners();
+      } else {
+        final existing = _trustedDevices[peerId];
+        if (existing != null && existing.isOnline) {
+          _trustedDevices[peerId] = existing.copyWith(isOnline: false);
+          notifyListeners();
+        }
       }
     });
   }
@@ -986,8 +1009,9 @@ class WanService extends ChangeNotifier {
             peerMap,
             isTrusted: _trustedDevices.containsKey(peerId),
             unreadCount: _unreadCounts[peerId] ?? 0,
+            now: _presenceNow,
           );
-          newMap[peerId] = dev;
+          if (dev.isOnline) newMap[peerId] = dev;
         }
       });
 
@@ -1005,6 +1029,10 @@ class WanService extends ChangeNotifier {
   }
 
   void _cancelInternetListeners() {
+    _presenceExpiryTimer?.cancel();
+    _presenceExpiryTimer = null;
+    _serverTimeOffsetSub?.cancel();
+    _serverTimeOffsetSub = null;
     _cleanupTimer?.cancel();
     _cleanupTimer = null;
     _trustedDevicesSub?.cancel();

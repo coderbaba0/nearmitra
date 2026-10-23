@@ -17,6 +17,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : FlutterActivity() {
+    private val phoneTelemetry by lazy { PhoneTelemetry(this) }
     private val networkChannelName = "farmitra_nearby/network"
     private val p2pMethodChannelName = "farmitra_nearby/wifi_p2p"
     private val p2pEventChannelName = "farmitra_nearby/wifi_p2p_events"
@@ -48,6 +49,7 @@ class MainActivity : FlutterActivity() {
         // Multicast & Background Network Lock Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannelName).setMethodCallHandler { call, result ->
             when (call.method) {
+                "requestPhoneTelemetry" -> phoneTelemetry.request(call.argument<String>("peer") ?: "Nearby desktop", result)
                 "acquireMulticastLock" -> {
                     try {
                         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -100,10 +102,69 @@ class MainActivity : FlutterActivity() {
                         result.error("SERVICE_START_ERR", e.message, null)
                     }
                 }
-                "startMediaProjectionService" -> {
+                "startMediaProjectionService", "startWirelessAudioService" -> {
+                    // Dart requests capture consent first. Signal readiness only
+                    // after startForeground succeeds, before WebRTC captures.
+                    val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                    var completed = false
+                    val timeout = Runnable {
+                        if (!completed) {
+                            completed = true
+                            result.error("PROJECTION_TIMEOUT", "Screen sharing service did not start", null)
+                        }
+                    }
+                    val receiver = object : android.os.ResultReceiver(handler) {
+                        override fun onReceiveResult(code: Int, data: android.os.Bundle?) {
+                            if (completed) return
+                            completed = true
+                            handler.removeCallbacks(timeout)
+                            if (code == 1) result.success(true)
+                            else result.error("PROJECTION_SERVICE", "Could not start screen sharing service", null)
+                        }
+                    }
                     try {
                         val intent = Intent(applicationContext, FarmitraForegroundService::class.java).apply {
-                            action = FarmitraForegroundService.ACTION_START_MEDIA_PROJECTION
+                            action = if (call.method == "startWirelessAudioService") FarmitraForegroundService.ACTION_WIRELESS_AUDIO else FarmitraForegroundService.ACTION_START_MEDIA_PROJECTION
+                            putExtra("microphone", call.argument<Boolean>("microphone") ?: false)
+                            putExtra("projectionReady", receiver)
+                        }
+                        handler.postDelayed(timeout, 5000)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            applicationContext.startForegroundService(intent)
+                        } else {
+                            applicationContext.startService(intent)
+                        }
+                    } catch (e: Exception) {
+                        if (!completed) {
+                            completed = true
+                            handler.removeCallbacks(timeout)
+                            result.error("SERVICE_START_ERR", e.message, null)
+                        }
+                    }
+                }
+                "setWirelessAudioOutput" -> {
+                    try {
+                        val audio = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                        val speaker = call.argument<Boolean>("speaker") ?: true
+                        val type = if (speaker) android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER else android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            val device = audio.availableCommunicationDevices.firstOrNull { it.type == type }
+                            result.success(device != null && audio.setCommunicationDevice(device))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            audio.isSpeakerphoneOn = speaker
+                            @Suppress("DEPRECATION")
+                            result.success(audio.isSpeakerphoneOn == speaker)
+                        }
+                    } catch (e: Exception) {
+                        result.error("AUDIO_OUTPUT", e.message, null)
+                    }
+                }
+                "stopMediaProjectionService", "stopWirelessAudioService" -> {
+                    try {
+                        // Keep Nearby discovery/transfers alive after sharing ends.
+                        val intent = Intent(applicationContext, FarmitraForegroundService::class.java).apply {
+                            action = FarmitraForegroundService.ACTION_START_SERVICE
                         }
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             applicationContext.startForegroundService(intent)
@@ -674,7 +735,13 @@ class MainActivity : FlutterActivity() {
         return null
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        phoneTelemetry.onPermissionsResult(requestCode)
+    }
+
     override fun onDestroy() {
+        phoneTelemetry.close()
         try {
             if (p2pReceiver != null) {
                 unregisterReceiver(p2pReceiver)

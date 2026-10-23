@@ -3,8 +3,6 @@ package iot
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -27,39 +25,12 @@ func NewAutomationEngine(mgr *Manager, onEvent func(string)) *AutomationEngine {
 	}
 
 	// Seed default smart agricultural schedules
-	engine.seedDefaultSchedules()
+	// Schedules are created only when explicitly configured.
 
 	// Start schedule evaluation loop
 	go engine.startSchedulerLoop()
 
 	return engine
-}
-
-func (ae *AutomationEngine) seedDefaultSchedules() {
-	ae.mu.Lock()
-	defer ae.mu.Unlock()
-
-	ae.schedules["sched_pump_morning"] = &AITaskSchedule{
-		ID:              "sched_pump_morning",
-		DeviceID:        "relay_pump_01",
-		DeviceName:      "Kisan Smart Irrigation Pump #1",
-		Action:          "turn_on_timer",
-		DurationMinutes: 15,
-		ScheduledAt:     time.Now().Add(10 * time.Minute),
-		AIPromptTrigger: "Auto-irrigate for 15 mins if soil moisture < 35%",
-		IsActive:        true,
-	}
-
-	ae.schedules["sched_sensor_poll"] = &AITaskSchedule{
-		ID:              "sched_sensor_poll",
-		DeviceID:        "sensor_soil_01",
-		DeviceName:      "Field Sector-A Soil Moisture Sensor",
-		Action:          "poll_telemetry",
-		DurationMinutes: 0,
-		ScheduledAt:     time.Now().Add(5 * time.Minute),
-		AIPromptTrigger: "Periodic telemetry sync",
-		IsActive:        true,
-	}
 }
 
 // GetSchedules returns all active or configured automation timers.
@@ -100,48 +71,7 @@ func (ae *AutomationEngine) ToggleSchedule(id string) bool {
 
 // ParseAIPromptSchedule creates a structured schedule from a natural language prompt.
 func (ae *AutomationEngine) ParseAIPromptSchedule(prompt string) (*AITaskSchedule, error) {
-	promptLower := strings.ToLower(prompt)
-
-	task := &AITaskSchedule{
-		ID:              fmt.Sprintf("ai_sched_%d", time.Now().UnixNano()),
-		AIPromptTrigger: prompt,
-		IsActive:        true,
-	}
-
-	// 1. Identify target device
-	if strings.Contains(promptLower, "pump") || strings.Contains(promptLower, "motor") || strings.Contains(promptLower, "water") {
-		task.DeviceID = "relay_pump_01"
-		task.DeviceName = "Kisan Smart Irrigation Pump #1"
-		task.Action = "turn_on_timer"
-	} else if strings.Contains(promptLower, "print") || strings.Contains(promptLower, "receipt") || strings.Contains(promptLower, "gate pass") {
-		task.DeviceID = "printer_thermal_01"
-		task.DeviceName = "Mandi Gate Pass & Receipt Printer"
-		task.Action = "test_print"
-	} else if strings.Contains(promptLower, "scan") || strings.Contains(promptLower, "document") {
-		task.DeviceID = "scanner_doc_01"
-		task.DeviceName = "Document & Invoice Scanner"
-		task.Action = "scan_document"
-	} else {
-		task.DeviceID = "sensor_soil_01"
-		task.DeviceName = "Field Sector-A Soil Moisture Sensor"
-		task.Action = "read_sensor"
-	}
-
-	// 2. Parse duration
-	duration := 15
-	words := strings.Fields(promptLower)
-	for i, w := range words {
-		if (w == "min" || w == "mins" || w == "minute" || w == "minutes") && i > 0 {
-			if num, err := strconv.Atoi(words[i-1]); err == nil && num > 0 {
-				duration = num
-			}
-		}
-	}
-	task.DurationMinutes = duration
-	task.ScheduledAt = time.Now().Add(time.Duration(duration) * time.Minute)
-
-	ae.AddSchedule(*task)
-	return task, nil
+	return nil, fmt.Errorf("use the IoT relay timer to select a configured channel, start time and duration")
 }
 
 func (ae *AutomationEngine) startSchedulerLoop() {
@@ -157,9 +87,9 @@ func (ae *AutomationEngine) startSchedulerLoop() {
 				if s.IsActive && now.After(s.ScheduledAt) {
 					// Execute trigger
 					if s.Action == "turn_on_timer" {
-						ae.mgr.ToggleRelay(s.DeviceID)
-						if ae.onEvent != nil {
-							ae.onEvent(fmt.Sprintf("AI Automation Triggered: %s started for %d mins", s.DeviceName, s.DurationMinutes))
+						_, err := ae.mgr.ToggleRelay(s.DeviceID)
+						if ae.onEvent != nil && err != nil {
+							ae.onEvent("Automation failed: " + err.Error())
 						}
 					} else if s.Action == "test_print" {
 						ae.mgr.TriggerTestPrint(s.DeviceID)

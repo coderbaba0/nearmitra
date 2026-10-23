@@ -34,11 +34,13 @@ import '../services/nearby_service.dart';
 import '../services/notification_service.dart';
 import '../services/wifi_direct_service.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/incoming_call_dialog.dart';
 import '../widgets/p2p_qr_widget.dart';
 import '../widgets/p2p_radar_view.dart';
 import '../widgets/peer_tile.dart';
 import '../widgets/transfer_card.dart';
-import 'wan_active_session_screen.dart';
+import '../providers/conversation_providers.dart';
+import '../models/chat_route.dart';
 import '../models/wan_models.dart';
 import '../services/wan_service.dart';
 import '../services/wan_webrtc_manager.dart';
@@ -61,6 +63,18 @@ enum ChatMode { people, ai }
 enum ConnectionMode { lan, p2p, wan }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
+  ConversationController get _conversations => ref.read(conversationControllerProvider);
+  ChatRoute _route(Peer peer) => ref.read(chatRouteProvider(peer));
+  bool _canCall(Peer peer) => _route(peer).canCall;
+  bool _peerTyping(Peer peer) => _route(peer).transport == ChatTransport.internet
+      ? _wanRtcManager.activePeerId == _route(peer).internet?.id && _wanRtcManager.peerIsTyping
+      : (_route(peer).nearby?.isTyping ?? false);
+  String _routeLabel(Peer peer) => switch (_route(peer).transport) {
+    ChatTransport.nearby => 'Online • Nearby',
+    ChatTransport.internet => 'Online • Internet',
+    ChatTransport.offline => 'Offline • Messages queued',
+  };
+
   final _message = TextEditingController();
   final _scroll = ScrollController();
   final _historyService = HistoryService();
@@ -109,11 +123,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (state == AppLifecycleState.resumed) {
       widget.service.isAppInForeground = true;
       _wanService.isAppInForeground = true;
+      CallService().isAppInForeground=true;
+      _onIncomingCallChanged();
+      _onWirelessAudioChanged();
     } else if (state == AppLifecycleState.paused ||
                state == AppLifecycleState.inactive ||
                state == AppLifecycleState.hidden) {
       widget.service.isAppInForeground = false;
       _wanService.isAppInForeground = false;
+      CallService().isAppInForeground=false;
     }
   }
 
@@ -130,16 +148,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   Future<void> _init() async {
     await AiSettingsService().load();
+    await _conversations.ready;
+    _history.clear();
     _history.addAll(await _historyService.load());
+    _initCallService();
+    widget.service.wirelessAudio.addListener(_onWirelessAudioChanged);
+    widget.service.wirelessAudio.otherMediaBusy = () => _backgroundStreamPc != null;
     await widget.service.start();
     await _wanService.init();
     _wanRtcManager.init();
-    _wanService.addListener(() {
-      if (mounted) setState(() {});
-    });
-    _wanRtcManager.addListener(() {
-      if (mounted) setState(() {});
-    });
     _wanService.onIncomingPairRequest = (request) {
       if (!mounted) return;
       _showIncomingPairRequestDialog(request);
@@ -147,38 +164,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _wanRtcManager.onIncomingSessionRequest = (session) async {
       if (!mounted) return;
       if (_wanService.isDeviceTrusted(session.callerId)) {
-        final peer = _wanService.trustedDevicesList.firstWhere(
-          (d) => d.id == session.callerId,
-          orElse: () => WanDevice(
-            id: session.callerId,
-            name: session.callerName,
-            platform: session.callerPlatform,
-            isOnline: true,
-            isTrusted: true,
-          ),
-        );
         await _wanRtcManager.acceptIncomingSession(session);
-        if (mounted && !WanActiveSessionScreen.isScreenOpen) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => WanActiveSessionScreen(peer: peer),
-            ),
-          ).then((_) async {
-            final updated = await _historyService.load();
-            if (mounted) {
-              setState(() {
-                _history.clear();
-                _history.addAll(updated);
-              });
-            }
-          });
-        }
         return;
       }
       _showIncomingSessionDialog(session);
     };
-    _initCallService();
     _initShareHandler();
 
     final walkthroughDone = await HomeWalkthroughGuide.isCompleted();
@@ -193,114 +183,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
 
     _notificationSub = NotificationService().onNotificationClick.listen((peerId) {
-      if (peerId != null && mounted) {
-        if (peerId.startsWith('wan:')) {
-          final cleanId = peerId.substring(4);
-          final wanDev = _wanService.trustedDevicesList.where((d) => d.id == cleanId).firstOrNull ??
-              _wanService.publicDevices.where((d) => d.id == cleanId).firstOrNull;
-          if (wanDev != null && !WanActiveSessionScreen.isScreenOpen) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => WanActiveSessionScreen(peer: wanDev),
-              ),
-            );
-          }
-          return;
-        }
-
-        final peer = widget.service.peers.where(
-          (p) => p.id == peerId || p.ip == peerId,
-        ).firstOrNull ?? widget.service.getPeer(peerId);
-
-        if (peer != null) {
-          _selectPeer(peer);
-        } else {
-          final wanDev = _wanService.trustedDevicesList.where((d) => d.id == peerId).firstOrNull ??
-              _wanService.publicDevices.where((d) => d.id == peerId).firstOrNull;
-          if (wanDev != null && !WanActiveSessionScreen.isScreenOpen) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => WanActiveSessionScreen(peer: wanDev),
-              ),
-            );
-          }
-        }
-      }
+      if (peerId == null || !mounted) return;
+      final cleanId = _conversations.canonicalId(peerId);
+      final remote = _wanService.trustedDevicesList.where((d) => d.id == cleanId).firstOrNull;
+      final peer = remote != null ? _conversations.peerForWan(remote)
+          : widget.service.getPeer(cleanId);
+      if (peer != null) _selectPeer(peer);
     });
 
     _replySub = NotificationService().onNotificationReply.listen((data) async {
-      final targetPeerId = data['peerId'];
-      final replyText = data['text'];
-      if (targetPeerId == null || replyText == null || replyText.trim().isEmpty) return;
-
-      final trimmedReply = replyText.trim();
-      final isWan = targetPeerId.startsWith('wan:') ||
-          _wanService.isDeviceTrusted(targetPeerId) ||
-          _wanService.publicDevices.any((d) => d.id == targetPeerId) ||
-          (_wanRtcManager.activePeerId != null && _wanRtcManager.activePeerId == targetPeerId);
-
-      if (isWan) {
-        final cleanPeerId = targetPeerId.startsWith('wan:') ? targetPeerId.substring(4) : targetPeerId;
-        await _wanRtcManager.sendDirectMessage(trimmedReply, cleanPeerId);
-        if (mounted) setState(() {});
-        return;
-      }
-
-      // Nearby LAN resolution:
-      Peer? peer = widget.service.peers.where(
-        (p) => p.id == targetPeerId || p.ip == targetPeerId,
-      ).firstOrNull;
-
-      peer ??= widget.service.getPeer(targetPeerId);
-
-      if (peer != null) {
-        final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-        final ok = await widget.service.sendChat(peer, trimmedReply);
-        final status = ok ? 'Sent' : 'Queued';
-
-        if (!ok) {
-          await widget.service.queueOutboxItem(QueuedOutboxItem(
-            id: itemId,
-            peerId: peer.id,
-            peerName: peer.name,
-            kind: ChatKind.text,
-            text: trimmedReply,
-            createdAt: DateTime.now(),
-          ));
-        }
-
-        _history.add(ChatItem(
-          id: itemId,
-          peerId: peer.id,
-          sender: widget.service.deviceName,
-          mine: true,
-          createdAt: DateTime.now(),
-          kind: ChatKind.text,
-          text: trimmedReply,
-          status: status,
-          isAi: false,
-        ));
-        await _historyService.save(_history);
-        if (mounted) setState(() {});
-      }
+      final id = data['peerId'];
+      final text = data['text'];
+      if (id == null || text == null || text.trim().isEmpty) return;
+      final cleanId = _conversations.canonicalId(id);
+      final remote = _wanService.trustedDevicesList.where((d) => d.id == cleanId).firstOrNull;
+      final peer = remote != null ? _conversations.peerForWan(remote)
+          : widget.service.getPeer(cleanId);
+      if (peer != null) await _conversations.sendText(peer, text);
     });
 
-    widget.service.onPeerAutoConnected = (peerId) {
-      if (!mounted) return;
-      setState(() {});
+    widget.service.onPeerAutoConnected = (_) {
+      if (mounted) setState(() {});
     };
 
     widget.service.onReactionReceived = (peerId, msgId, reaction) async {
-      for (final item in _history) {
-        if (item.id == msgId) {
-          item.reaction = (reaction != null && reaction.isNotEmpty) ? reaction : null;
-          break;
-        }
-      }
-      await _historyService.save(_history);
-      if (mounted) setState(() {});
+      final item = _history.where((item) => item.id == msgId).firstOrNull;
+      if (item == null) return;
+      item.reaction = (reaction != null && reaction.isNotEmpty) ? reaction : null;
+      await _historyService.addItem(item);
     };
 
     _wifiDirectService.onP2pConnected = (peerIp, localIp) async {
@@ -315,6 +225,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     widget.service.onStreamOffer = (peerId, offer) async {
       if (!mounted) return;
+      if (widget.service.wirelessAudio.busy) {
+        final ip = offer['remote_ip']?.toString() ?? '';
+        await widget.service.sendWebRtcSignal(Peer(id: peerId, name: 'Peer', ip: ip), 'stream_rejected', {'reason': 'Wireless audio is active'});
+        return;
+      }
       final streamType = offer['stream_type']?.toString() ?? 'camera';
       final remoteIp = offer['remote_ip']?.toString() ?? offer['sender_ip']?.toString() ?? '';
       final senderName = offer['sender']?.toString() ?? offer['name']?.toString() ?? 'Remote Device';
@@ -416,8 +331,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _scan(); // Automatic scan on launch
   }
 
+  RTCPeerConnection? _backgroundStreamPc;
+  MediaStream? _backgroundStreamMedia;
+  Future<void> _closeBackgroundStream() async {
+    final pc = _backgroundStreamPc;
+    final media = _backgroundStreamMedia;
+    _backgroundStreamPc = null; _backgroundStreamMedia = null;
+    if (pc != null) {
+      pc.onConnectionState = null;
+      try { await pc.close(); await pc.dispose(); } catch (_) {}
+    }
+    if (media != null) {
+      for (final track in media.getTracks()) { try { await track.stop(); } catch (_) {} }
+      try { await media.dispose(); } catch (_) {}
+    }
+  }
+
   Future<void> _respondToStreamOffer(
       Peer peer, String streamType, Map<String, dynamic> offer) async {
+    if (widget.service.wirelessAudio.busy) {
+      await widget.service.sendWebRtcSignal(peer, 'stream_rejected', {'reason': 'Wireless audio is active'});
+      return;
+    }
+    await _closeBackgroundStream();
     try {
       final sdp = offer['sdp']?.toString();
       if (sdp == null || sdp.isEmpty) return;
@@ -428,6 +364,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ],
         'sdpSemantics': 'unified-plan',
       });
+
+      _backgroundStreamPc = pc;
+      pc.onConnectionState = (state) {
+        if (_backgroundStreamPc == pc && (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed || state == RTCPeerConnectionState.RTCPeerConnectionStateClosed)) {
+          unawaited(_closeBackgroundStream());
+        }
+      };
+      widget.service.onStreamStopped = (id, _) {
+        if (id == peer.id || id == peer.ip) unawaited(_closeBackgroundStream());
+      };
 
       final mediaConstraints = <String, dynamic>{
         'audio': streamType == 'audio' || streamType == 'camera',
@@ -466,6 +412,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
       final localStream =
           await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      if (_backgroundStreamPc != pc) {
+        for (final track in localStream.getTracks()) { await track.stop(); }
+        await localStream.dispose();
+        return;
+      }
+      _backgroundStreamMedia = localStream;
       for (final track in localStream.getTracks()) {
         track.enabled = true;
         await pc.addTrack(track, localStream);
@@ -514,6 +466,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
       _toast('Streaming live ${streamType.toUpperCase()} to ${peer.name}');
     } catch (e) {
+      await _closeBackgroundStream();
       debugPrint('Error responding to stream offer: $e');
     }
   }
@@ -687,55 +640,103 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   Future<void> _sendExternalFilesToPeer(Peer peer, List<String> paths) async {
     for (final path in paths) {
-      final isDir = await FileSystemEntity.isDirectory(path);
-      if (isDir) {
-        final folderName = path
-                .split(Platform.pathSeparator)
-                .where((s) => s.isNotEmpty)
-                .lastOrNull ??
-            'Folder';
-        _history.add(ChatItem(
-          peerId: peer.id,
-          sender: widget.service.deviceName,
-          mine: true,
-          createdAt: DateTime.now(),
-          kind: ChatKind.folder,
-          fileName: folderName,
-          filePath: path,
-          status: 'Sending…',
-        ));
-        await _historyService.save(_history);
-        if (mounted) setState(() {});
-        final ok = await widget.service.sendFolder(peer, path);
-        if (!ok) _toast('Failed to send folder $folderName');
-      } else {
-        final file = File(path);
-        if (await file.exists()) {
-          final name = path.split(Platform.pathSeparator).last;
-          final size = await file.length();
-          _history.add(ChatItem(
-            peerId: peer.id,
-            sender: widget.service.deviceName,
-            mine: true,
-            createdAt: DateTime.now(),
-            kind: ChatKind.file,
-            fileName: name,
-            filePath: path,
-            fileSize: size,
-            status: 'Sending…',
-          ));
-          await _historyService.save(_history);
-          if (mounted) setState(() {});
-          final ok = await widget.service.sendFile(peer, file);
-          if (!ok) _toast('Failed to send $name');
-        }
+      if (await FileSystemEntity.isDirectory(path)) {
+        await _conversations.sendFolder(peer, path);
+      } else if (await File(path).exists()) {
+        await _conversations.sendFile(peer, File(path));
       }
     }
   }
 
   bool _isCallScreenOpen = false;
 
+  DialogRoute<bool>? _incomingCallRoute;
+  bool _incomingDialogPending=false;
+  void _onIncomingCallChanged() {
+    final call = CallService().incomingCall.value;
+    if (call == null) {
+      final route = _incomingCallRoute;
+      if (route?.isActive == true) route!.navigator?.removeRoute(route);
+      return;
+    }
+    if (!mounted ||
+        _isCallScreenOpen ||
+        _incomingDialogPending ||
+        !CallService().isAppInForeground) {
+      return;
+    }
+    _incomingDialogPending = true;
+    unawaited(SystemSound.play(SystemSoundType.alert));
+    unawaited(HapticFeedback.mediumImpact());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || CallService().incomingCall.value != call) {
+        _incomingDialogPending = false;
+        return;
+      }
+      final navigator = rootNavigatorKey.currentState ?? Navigator.of(context);
+      final route = DialogRoute<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => IncomingCallDialog(
+                callerName: call.peer.name,
+                isVideo: call.isVideo,
+                avatar: _resolvePeerAvatar(call.peer),
+              ));
+      _incomingCallRoute = route;
+      final answer = await navigator.push<bool>(route);
+      _incomingCallRoute = null;
+      _incomingDialogPending = false;
+      if (CallService().incomingCall.value != call) return;
+      if (answer == true) {
+        CallService().acceptPendingIncomingCall();
+      } else {
+        CallService().declinePendingIncomingCall();
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  DialogRoute<bool>? _wirelessAudioRoute;
+  bool _wirelessDialogPending = false;
+  void _onWirelessAudioChanged() {
+    if (!mounted) return;
+    setState(() {});
+    final audio = widget.service.wirelessAudio;
+    if (!audio.needsApproval) {
+      final route = _wirelessAudioRoute;
+      if (route?.isActive == true) route!.navigator?.removeRoute(route);
+      return;
+    }
+    if (_wirelessDialogPending || !CallService().isAppInForeground) return;
+    _wirelessDialogPending = true;
+    final session = audio.session!;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || audio.session != session || !audio.needsApproval) {
+        _wirelessDialogPending = false; return;
+      }
+      final route = DialogRoute<bool>(context: context, barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          icon: Icon(session.offer == null ? Icons.mic_rounded : Icons.speaker_rounded),
+          title: Text(session.offer == null ? 'Share your microphone?' : 'Use this phone as a speaker?'),
+          content: Text(session.offer == null
+            ? '${session.peer.name} wants to receive your microphone audio. Your camera stays off. You can mute or stop from Streaming → Wi-Fi Audio.'
+            : '${session.peer.name} wants to play audio on this phone. Your microphone and camera stay off.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Decline')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Allow'))],
+        ));
+      _wirelessAudioRoute = route;
+      final allowed = await (rootNavigatorKey.currentState ?? Navigator.of(context)).push<bool>(route);
+      _wirelessAudioRoute = null; _wirelessDialogPending = false;
+      if (audio.session != session || !audio.needsApproval) return;
+      if (allowed == true) { await audio.approve(); } else { await audio.decline(); }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
   void _initCallService() {
+    CallService().isAppInForeground=WidgetsBinding.instance.lifecycleState==null || WidgetsBinding.instance.lifecycleState==AppLifecycleState.resumed;
+    CallService().incomingCall.addListener(_onIncomingCallChanged);
+    _onIncomingCallChanged();
     CallService().registerCallAcceptedCallback((peer, isVideoCall, isIncoming) {
       if (!mounted) return;
       _openActiveCallScreen(peer, isVideoCall, true);
@@ -751,7 +752,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final idx = _history.indexWhere((x) => x.id == itemId);
       if (idx != -1) {
         _history[idx].status = newStatus;
-        _historyService.save(_history);
+        _historyService.addItem(_history[idx]);
         if (mounted) setState(() {});
       }
     };
@@ -849,29 +850,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Future<void> _startCall(Peer peer, bool isVideoCall) async {
-    if (_isWindowsDevice(peer)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.info_outline_rounded, color: Colors.white),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                    'Voice & Video calls are supported between mobile devices only (${peer.name} is a Windows PC).'),
-              ),
-            ],
-          ),
-          backgroundColor: const Color(0xFF334155),
-          behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          duration: const Duration(seconds: 4),
-        ),
-      );
+    if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting a call'); return; }
+    if (!_canCall(peer)) {
+      _toast('Calls require a direct Nearby / P2P connection');
       return;
     }
-
+    peer = _route(peer).nearby!;
     final micStatus = await Permission.microphone.request();
     if (!micStatus.isGranted) {
       if (mounted) {
@@ -898,7 +882,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
 
     if (!mounted) return;
-    widget.service.sendCallInvite(peer, isVideoCall);
     _openActiveCallScreen(peer, isVideoCall, false);
   }
 
@@ -942,8 +925,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
+    widget.service.wirelessAudio.removeListener(_onWirelessAudioChanged);
+    unawaited(_closeBackgroundStream());
+    CallService().incomingCall.removeListener(_onIncomingCallChanged);
     WidgetsBinding.instance.removeObserver(this);
     _peerStatusRefreshTimer?.cancel();
+    _typingDebounce?.cancel();
     _notificationSub?.cancel();
     _replySub?.cancel();
     _scroll.removeListener(_onScroll);
@@ -968,19 +955,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
-  bool _isPeerOnline(Peer peer) {
-    if (peer.id == 'local_ai_assistant') return true;
-    final livePeer = widget.service.getPeer(peer.id) ?? widget.service.getPeer(peer.ip);
-    if (livePeer != null) {
-      return livePeer.isOnline;
-    }
-    for (final p in widget.service.peers) {
-      if ((p.id == peer.id || p.ip == peer.ip || (peer.ip.isNotEmpty && p.ip == peer.ip)) && p.isOnline) {
-        return true;
-      }
-    }
-    return peer.isOnline;
-  }
+  bool _isPeerOnline(Peer peer) => peer.id == 'local_ai_assistant' ||
+      _route(peer).transport != ChatTransport.offline;
 
   bool _isUserNearBottom() {
     if (!_scroll.hasClients) return true;
@@ -994,7 +970,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final bool hasNewChat = incoming.isNotEmpty;
     if (hasNewChat) {
       _history.addAll(incoming);
-      _historyService.save(_history);
+      _historyService.addItems(incoming);
     }
     if (mounted) {
       final wasNearBottom = _isUserNearBottom();
@@ -1015,7 +991,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         _lastSelectedPeer = p;
         p.unreadCount = 0;
         _chatDisplayCount = 20;
-        widget.service.activeChatPeerId = p.id;
+        widget.service.activeChatPeerId = _route(p).nearby?.id ?? p.id;
+        final remoteId = _conversations.canonicalId(p.internetDeviceId ?? p.id);
+        _wanService.activeChatPeerId = remoteId;
+        _wanService.clearUnreadCount(remoteId);
       });
       _triggerScrollToBottom();
     }
@@ -1079,26 +1058,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   List<ChatItem> get _fullCurrentChat {
     final peer = _selectedPeer;
     if (peer == null) return [];
-    final pId = peer.id.toLowerCase();
-    final pIp = peer.ip.toLowerCase();
-    final pName = peer.name.toLowerCase();
-
-    return _history.where((e) {
-      final eId = e.peerId.toLowerCase();
-      final eSender = e.sender.toLowerCase();
-
-      final isMatch = eId == pId ||
-          eId == pIp ||
-          (pIp.isNotEmpty && eId == pIp) ||
-          (!e.mine && (
-            eSender == pName ||
-            (pName.isNotEmpty && eSender.contains(pName)) ||
-            (eSender.isNotEmpty && pName.contains(eSender))
-          ));
-      if (!isMatch) return false;
-      if (e.isAi && (e.text == null || e.text!.isEmpty)) return false;
-      return _chatMode == ChatMode.ai ? (e.isAi == true) : (e.isAi != true);
-    }).toList();
+    final aliases = _conversations.aliases(peer);
+    final items = {for (final item in _history) item.id: item}.values.where((item) {
+      if (!aliases.contains(item.peerId)) return false;
+      if (item.isAi && (item.text == null || item.text!.isEmpty)) return false;
+      return _chatMode == ChatMode.ai ? item.isAi : !item.isAi;
+    }).toList()..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return items;
   }
 
   List<ChatItem> get _currentChat {
@@ -1121,10 +1087,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           FilledButton(
             onPressed: () {
               Navigator.pop(context);
-              setState(() {
-                _history.removeWhere((item) => item.peerId == peer.id || item.peerId == peer.ip);
-                _historyService.save(_history);
-              });
+              _conversations.clearConversation(peer);
               _toast('Chat history cleared for ${peer.name}');
             },
             style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
@@ -1153,17 +1116,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (text.isNotEmpty) {
       if (_lastTypingSent == null || now.difference(_lastTypingSent!).inMilliseconds > 1800) {
         _lastTypingSent = now;
-        widget.service.sendTypingStatus(peer, true);
+        _conversations.typing(peer, true);
       }
       _typingDebounce?.cancel();
       _typingDebounce = Timer(const Duration(milliseconds: 3000), () {
         _lastTypingSent = null;
-        widget.service.sendTypingStatus(peer, false);
+        _conversations.typing(peer, false);
       });
     } else {
       _typingDebounce?.cancel();
       _lastTypingSent = null;
-      widget.service.sendTypingStatus(peer, false);
+      _conversations.typing(peer, false);
     }
   }
 
@@ -1173,7 +1136,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (peer == null || text.isEmpty) return;
     _message.clear();
     _typingDebounce?.cancel();
-    widget.service.sendTypingStatus(peer, false);
+    _conversations.typing(peer, false);
 
     if (_chatMode == ChatMode.ai) {
       final userPromptItem = ChatItem(
@@ -1289,72 +1252,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
 
     final replyingTo = _replyingToItem;
-    if (mounted) {
-      setState(() {
-        _replyingToItem = null;
-      });
-    }
-
-    final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}';
-
-    final isOnline = _isPeerOnline(peer);
-    final initialStatus = isOnline ? 'Sent' : 'Queued';
-
-    // 1. Immediately create and show item in chat UI
-    final chatItem = ChatItem(
-      id: itemId,
-      peerId: peer.id,
-      sender: widget.service.deviceName,
-      mine: true,
-      createdAt: DateTime.now(),
-      kind: ChatKind.text,
-      text: text,
-      status: initialStatus,
-      isAi: false,
-      replyToId: replyingTo?.id,
-      replyToSender: replyingTo?.sender,
-      replyToText: replyingTo?.text ?? replyingTo?.fileName,
-    );
-    _history.add(chatItem);
-    await _historyService.save(_history);
-    if (mounted) setState(() {});
+    setState(() => _replyingToItem = null);
+    await _conversations.sendText(peer, text, reply: replyingTo);
     _triggerScrollToBottom();
-
-    // 2. Attempt sending over network
-    final ok = await widget.service.sendChat(
-      peer,
-      text,
-      msgId: itemId,
-      replyToId: replyingTo?.id,
-      replyToSender: replyingTo?.sender,
-      replyToText: replyingTo?.text ?? replyingTo?.fileName,
-    );
-
-    final idx = _history.indexWhere((e) => e.id == itemId);
-    if (ok) {
-      if (idx != -1) _history[idx].status = 'Sent';
-      await _historyService.save(_history);
-      if (mounted) setState(() {});
-    } else {
-      if (idx != -1) _history[idx].status = 'Queued';
-      await widget.service.queueOutboxItem(QueuedOutboxItem(
-        id: itemId,
-        peerId: peer.id,
-        peerName: peer.name,
-        kind: ChatKind.text,
-        text: text,
-        createdAt: DateTime.now(),
-      ));
-      await _historyService.save(_history);
-      _toast('Peer is offline • Message queued (auto-sends when online)');
-      if (mounted) setState(() {});
-    }
   }
 
   Future<void> _cancelQueuedMessage(ChatItem item) async {
-    await widget.service.cancelQueuedItem(item.id);
+    await _conversations.cancel(item.id);
     item.status = 'Cancelled';
-    await _historyService.save(_history);
+    await _historyService.addItem(item);
     if (mounted) {
       setState(() {});
       _toast('Queued message cancelled');
@@ -1365,10 +1271,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     setState(() {
       item.reaction = emoji.isEmpty ? null : emoji;
     });
-    await _historyService.save(_history);
+    await _historyService.addItem(item);
 
-    if (peer.id != 'local_ai_assistant' && peer.ip.isNotEmpty) {
-      widget.service.sendReaction(peer, item.id, item.reaction);
+    if (_route(peer).transport == ChatTransport.internet && _wanRtcManager.activePeerId == _route(peer).internet?.id) {
+      await _wanRtcManager.sendReaction(item.id, emoji);
+    } else if (peer.id != 'local_ai_assistant' && peer.ip.isNotEmpty) {
+      widget.service.sendReaction(_route(peer).nearby ?? peer, item.id, item.reaction);
     }
   }
 
@@ -1385,104 +1293,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
     if (result == null || result.files.isEmpty) return;
 
-    final filesToSend = result.files.where((f) => f.path != null).toList();
-    if (filesToSend.isEmpty) return;
-
-    if (filesToSend.length > 1) {
-      _toast('Sending ${filesToSend.length} files to ${peer.name}…');
+    for (final picked in result.files.where((file) => file.path != null)) {
+      final file = File(picked.path!);
+      if (await file.exists()) await _conversations.sendFile(peer, file);
     }
-
-    for (int i = 0; i < filesToSend.length; i++) {
-      final f = filesToSend[i];
-      final path = f.path!;
-      final file = File(path);
-      if (!await file.exists()) continue;
-
-      final name = f.name;
-      final size = await file.length();
-      final itemId = '${DateTime.now().millisecondsSinceEpoch}_${peer.id}_$i';
-      final isOnline = _isPeerOnline(peer);
-      final initialStatus = isOnline ? 'Sending…' : 'Queued';
-
-      final fileItem = ChatItem(
-        id: itemId,
-        peerId: peer.id,
-        sender: widget.service.deviceName,
-        mine: true,
-        createdAt: DateTime.now(),
-        kind: ChatKind.file,
-        fileName: name,
-        filePath: path,
-        fileSize: size,
-        status: initialStatus,
-      );
-      _history.add(fileItem);
-      await _historyService.save(_history);
-      if (mounted) setState(() {});
-      _triggerScrollToBottom();
-
-      final idx = _history.indexWhere((e) => e.id == itemId);
-      final ok = await widget.service.sendFile(peer, file, displayName: name);
-      if (ok) {
-        if (idx != -1) _history[idx].status = 'Sent';
-        await _historyService.save(_history);
-        if (mounted) setState(() {});
-      } else {
-        if (idx != -1) _history[idx].status = 'Queued';
-        await widget.service.queueOutboxItem(QueuedOutboxItem(
-          id: itemId,
-          peerId: peer.id,
-          peerName: peer.name,
-          kind: ChatKind.file,
-          fileName: name,
-          filePath: path,
-          fileSize: size,
-          createdAt: DateTime.now(),
-        ));
-        await _historyService.save(_history);
-        if (mounted) setState(() {});
-      }
-    }
-
-    if (!widget.service.peers.any((p) => p.id == peer.id && p.ip.isNotEmpty)) {
-      _toast('Peer is offline • ${filesToSend.length > 1 ? "${filesToSend.length} files" : "File"} queued in Outbox');
-    }
+    _triggerScrollToBottom();
   }
 
   Future<void> _pickAndSendFolder() async {
     final peer = _selectedPeer;
-    if (peer == null) {
-      _toast('Select a nearby device first');
-      return;
-    }
-    final folderPath = await FilePicker.platform.getDirectoryPath();
-    if (folderPath == null || folderPath.isEmpty) return;
-
-    final dir = Directory(folderPath);
-    if (!await dir.exists()) return;
-
-    final folderName =
-        dir.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? 'Folder';
-    _toast('Compressing and sending folder: $folderName…');
-
-    final ok = await widget.service.sendFolder(peer, folderPath);
-    if (!ok) {
-      _toast('Failed to send folder');
-      return;
-    }
-
-    _history.add(ChatItem(
-      peerId: peer.id,
-      sender: widget.service.deviceName,
-      mine: true,
-      createdAt: DateTime.now(),
-      kind: ChatKind.folder,
-      fileName: folderName,
-      filePath: folderPath,
-      status: 'Sent',
-    ));
-    await _historyService.save(_history);
-    setState(() {});
+    if (peer == null) return;
+    final path = await FilePicker.platform.getDirectoryPath();
+    if (path == null) return;
+    await _conversations.sendFolder(peer, path);
     _triggerScrollToBottom();
   }
 
@@ -1684,6 +1507,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       setState(() {
         _selectedPeerId = null;
         widget.service.activeChatPeerId = null;
+        _wanService.activeChatPeerId = null;
       });
       return false;
     }
@@ -1728,9 +1552,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(conversationControllerProvider);
     final width = MediaQuery.sizeOf(context).width;
     final compact = width < 760;
     final peer = _selectedPeer;
+    if (peer != null) {
+      widget.service.activeChatPeerId = _route(peer).nearby?.id ?? peer.id;
+      _wanService.activeChatPeerId = _conversations.canonicalId(peer.internetDeviceId ?? peer.id);
+    }
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
@@ -1851,6 +1680,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         child: Column(
           children: [
             if (!compact || peer == null) _topBar(),
+            if (widget.service.wirelessAudio.busy)
+              Material(color: Theme.of(context).colorScheme.primaryContainer,
+                child: ListTile(dense: true,
+                  leading: const Icon(Icons.graphic_eq_rounded),
+                  title: Text(widget.service.wirelessAudio.status, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  onTap: () => _openStreamingHubScreen(initialType: 'wireless'),
+                  trailing: IconButton(tooltip: 'Stop wireless audio', icon: const Icon(Icons.stop_circle_outlined),
+                    onPressed: () => widget.service.wirelessAudio.stop()),
+                )),
             Expanded(
               child: compact
                   ? _mobileBody()
@@ -1880,8 +1718,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 setState(() {
                   _connectionMode = ConnectionMode.lan;
                 });
-                _firebasePresenceService.setInternetMode(false);
-                _wanService.setInternetMode(false);
               }
             },
           ),
@@ -1896,7 +1732,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 setState(() {
                   _connectionMode = ConnectionMode.p2p;
                 });
-                _wanService.setInternetMode(false);
               }
             },
           ),
@@ -2389,6 +2224,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         ],
                       ),
                       const SizedBox(height: 20),
+
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Allow Internet fallback', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: const Text('Use Internet for paired devices when Nearby is unavailable. Calls require Nearby.'),
+                        value: _wanService.isInternetModeEnabled,
+                        onChanged: (enabled) async {
+                          try {
+                            await _wanService.setInternetMode(enabled);
+                            if (!enabled) await _wanRtcManager.disconnect();
+                          } catch (error) {
+                            if (mounted) _toast('Internet mode could not be updated: $error');
+                          }
+                          if (context.mounted) setModalState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 8),
 
                       // 2. Local Notifications Toggle
                       SwitchListTile(
@@ -3260,26 +3112,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
+    final foreground =
+        isDark ? const Color(0xFFE9EDEF) : const Color(0xFF111B21);
+    final secondary =
+        isDark ? const Color(0xFF8696A0) : const Color(0xFF667781);
+    const accent = Color(0xFF008069);
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1F2C34) : const Color(0xFF075E54),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black12,
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
+        color: isDark ? const Color(0xFF111B21) : Colors.white,
+        border: Border(
+            bottom: BorderSide(
+          color: isDark ? const Color(0xFF26343D) : const Color(0xFFE9EDEF),
+        )),
       ),
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
+            icon: Icon(Icons.arrow_back_rounded, color: foreground),
             onPressed: () => setState(() {
               _selectedPeerId = null;
               _lastSelectedPeer = null;
               widget.service.activeChatPeerId = null;
+              _wanService.activeChatPeerId = null;
             }),
           ),
           Builder(
@@ -3290,7 +3146,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 children: [
                   CircleAvatar(
                     radius: 20,
-                    backgroundColor: isOnline ? Colors.white24 : Colors.white12,
+                    backgroundColor: isDark
+                        ? const Color(0xFF263D39)
+                        : const Color(0xFFE2F3ED),
                     child: (avatar != null && avatar.isNotEmpty)
                         ? Center(
                             child: Text(
@@ -3299,12 +3157,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             ),
                           )
                         : (peer.id == 'local_ai_assistant'
-                            ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 20)
+                            ? const Icon(Icons.auto_awesome_rounded,
+                                color: accent, size: 20)
                             : Icon(
                                 _isWindowsDevice(peer)
                                     ? Icons.laptop_windows_rounded
                                     : Icons.smartphone_rounded,
-                                color: Colors.white,
+                                color: accent,
                                 size: 20,
                               )),
                   ),
@@ -3315,7 +3174,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       width: 11,
                       height: 11,
                       decoration: BoxDecoration(
-                        color: isOnline ? const Color(0xFF22C55E) : const Color(0xFF94A3B8),
+                        color: isOnline
+                            ? const Color(0xFF22C55E)
+                            : const Color(0xFF94A3B8),
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 1.5),
                       ),
@@ -3325,11 +3186,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               );
             },
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Builder(
               builder: (context) {
-                final isOnline = _isPeerOnline(peer);
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
@@ -3341,32 +3201,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             peer.name,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: foreground,
                               fontWeight: FontWeight.bold,
                               fontSize: 16,
                             ),
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            _isWindowsDevice(peer) ? 'PC' : 'Mobile',
-                            style: const TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
                       ],
                     ),
-                    peer.isTyping
+                    _peerTyping(peer)
                         ? const Text(
                             'typing…',
                             style: TextStyle(
@@ -3377,11 +3221,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             ),
                           )
                         : Text(
-                            isOnline ? 'Online • ${peer.ip}' : 'Offline • ${peer.ip}',
+                            _routeLabel(peer),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: isOnline ? Colors.white70 : Colors.white54,
+                              color: secondary,
                               fontSize: 12,
-                              fontWeight: isOnline ? FontWeight.w600 : FontWeight.normal,
+                              fontWeight: FontWeight.normal,
                             ),
                           ),
                   ],
@@ -3393,22 +3239,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             IconButton(
               icon: Icon(
                 Icons.call_rounded,
-                color: _isWindowsDevice(peer) ? Colors.white54 : Colors.white,
+                color: !_canCall(peer)
+                    ? secondary.withValues(alpha: .45)
+                    : foreground,
               ),
-              tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Audio call',
-              onPressed: () => _startCall(peer, false),
+              tooltip: !_canCall(peer)
+                  ? 'Calls require a direct Nearby / P2P connection'
+                  : 'Audio call',
+              onPressed: _canCall(peer) ? () => _startCall(peer, false) : null,
             ),
             IconButton(
               icon: Icon(
                 Icons.videocam_rounded,
-                color: _isWindowsDevice(peer) ? Colors.white54 : Colors.white,
+                color: !_canCall(peer)
+                    ? secondary.withValues(alpha: .45)
+                    : foreground,
               ),
-              tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Video call',
-              onPressed: () => _startCall(peer, true),
+              tooltip: !_canCall(peer)
+                  ? 'Calls require a direct Nearby / P2P connection'
+                  : 'Video call',
+              onPressed: _canCall(peer) ? () => _startCall(peer, true) : null,
             ),
           ],
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert_rounded, color: Colors.white),
+            icon: Icon(Icons.more_vert_rounded, color: foreground),
             tooltip: 'More options',
             onSelected: (value) async {
               if (value == 'files') {
@@ -3417,7 +3271,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 setState(() => _showLogs = !_showLogs);
               } else if (value == 'toggle_ai_access') {
                 final aiService = AiSettingsService();
-                final currentlyAllowed = aiService.isPeerAllowed(peer.id, peer.ip);
+                final currentlyAllowed =
+                    aiService.isPeerAllowed(peer.id, peer.ip);
                 await aiService.setPeerAllowed(peer.id, !currentlyAllowed);
                 if (mounted) {
                   setState(() {});
@@ -3430,7 +3285,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               }
             },
             itemBuilder: (context) {
-              final isAiAllowed = AiSettingsService().isPeerAllowed(peer.id, peer.ip);
+              final isAiAllowed =
+                  AiSettingsService().isPeerAllowed(peer.id, peer.ip);
               return [
                 if (peer.id != 'local_ai_assistant')
                   PopupMenuItem(
@@ -3455,9 +3311,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             style: TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
-                              color: isAiAllowed
-                                  ? const Color(0xFF10B981)
-                                  : null,
+                              color:
+                                  isAiAllowed ? const Color(0xFF10B981) : null,
                             ),
                           ),
                         ),
@@ -3468,7 +3323,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   value: 'files',
                   child: Row(
                     children: [
-                      Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                      Icon(Icons.folder_shared_rounded,
+                          size: 18, color: Color(0xFF10B981)),
                       SizedBox(width: 10),
                       Text('View Received Files'),
                     ],
@@ -3478,9 +3334,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   value: 'log',
                   child: Row(
                     children: [
-                      Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                      Icon(
+                          _showLogs
+                              ? Icons.article_rounded
+                              : Icons.article_outlined,
+                          size: 18,
+                          color: Theme.of(context).iconTheme.color),
                       const SizedBox(width: 10),
-                      Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                      Text(_showLogs
+                          ? 'Hide Activity Log'
+                          : 'Show Activity Log'),
                     ],
                   ),
                 ),
@@ -3488,9 +3351,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   value: 'clear',
                   child: Row(
                     children: [
-                      Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                      Icon(Icons.delete_outline_rounded,
+                          size: 18, color: Colors.redAccent),
                       SizedBox(width: 10),
-                      Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                      Text('Clear Chat',
+                          style: TextStyle(color: Colors.redAccent)),
                     ],
                   ),
                 ),
@@ -3501,6 +3366,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       ),
     );
   }
+
 
   Widget _buildConnectionModeSwitch(bool isDark) {
     return Container(
@@ -3517,8 +3383,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               key: _nearbyTabKey,
               onTap: () {
                 setState(() => _connectionMode = ConnectionMode.lan);
-                _firebasePresenceService.setInternetMode(false);
-                _wanService.setInternetMode(false);
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 7),
@@ -3555,7 +3419,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               key: _p2pTabKey,
               onTap: () {
                 setState(() => _connectionMode = ConnectionMode.p2p);
-                _wanService.setInternetMode(false);
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 7),
@@ -3761,14 +3624,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 ),
               );
               await _wanRtcManager.acceptIncomingSession(session);
-              if (mounted) {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => WanActiveSessionScreen(peer: peer),
-                  ),
-                );
-              }
+              if (mounted) _selectPeer(_conversations.peerForWan(peer));
             },
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFF005C4B),
@@ -3830,27 +3686,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   Future<void> _connectToWanPeer(WanDevice peer) async {
     _wanService.clearUnreadCount(peer.id);
-    if (peer.isOnline && _wanService.isOnline) {
-      _wanRtcManager.connectToPeer(peer).catchError((e) {
-        debugPrint('[HomeScreen] WAN connect error: $e');
-      });
-    }
-    if (mounted) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => WanActiveSessionScreen(peer: peer),
-        ),
-      ).then((_) async {
-        final updated = await _historyService.load();
-        if (mounted) {
-          setState(() {
-            _history.clear();
-            _history.addAll(updated);
-          });
-        }
-      });
-    }
+    _selectPeer(_conversations.peerForWan(peer));
   }
 
   Widget _devicePane() {
@@ -4401,7 +4237,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.chat_bubble_outline_rounded, size: 64, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5)),
+            Icon(Icons.chat_bubble_outline_rounded,
+                size: 64,
+                color: Theme.of(context)
+                    .colorScheme
+                    .primary
+                    .withValues(alpha: 0.5)),
             const SizedBox(height: 16),
             const Text(
               'Select a device to start chatting',
@@ -4428,88 +4269,125 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               color: isDark ? const Color(0xFF1F2C34) : Colors.white,
               child: Row(
                 children: [
-                Expanded(
-                  child: Builder(
-                    builder: (context) {
-                      final isOnline = _isPeerOnline(peer);
-                      return Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 20,
-                            backgroundColor: isOnline ? const Color(0xFF10B981) : Colors.grey.shade600,
-                            child: peer.id == 'local_ai_assistant'
-                                ? const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 22)
-                                : Text(
-                                    peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                  ),
-                          ),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                peer.id == 'local_ai_assistant' ? 'My AI' : peer.name,
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                              ),
-                              peer.id == 'local_ai_assistant'
-                                  ? const Text('Configured Local AI • Saved Settings', style: TextStyle(fontSize: 12, color: Color(0xFF10B981), fontWeight: FontWeight.w600))
-                                  : (peer.isTyping
-                                      ? const Text(
-                                          'typing…',
-                                          style: TextStyle(
+                  Expanded(
+                    child: Builder(
+                      builder: (context) {
+                        final isOnline = _isPeerOnline(peer);
+                        return Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 20,
+                              backgroundColor: isOnline
+                                  ? const Color(0xFF10B981)
+                                  : Colors.grey.shade600,
+                              child: peer.id == 'local_ai_assistant'
+                                  ? const Icon(Icons.auto_awesome_rounded,
+                                      color: Colors.white, size: 22)
+                                  : Text(
+                                      peer.name.isNotEmpty
+                                          ? peer.name[0].toUpperCase()
+                                          : '?',
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                            ),
+                            const SizedBox(width: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  peer.id == 'local_ai_assistant'
+                                      ? 'My AI'
+                                      : peer.name,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16),
+                                ),
+                                peer.id == 'local_ai_assistant'
+                                    ? const Text(
+                                        'Configured Local AI • Saved Settings',
+                                        style: TextStyle(
                                             fontSize: 12,
-                                            color: Color(0xFF25D366),
-                                            fontWeight: FontWeight.bold,
-                                            fontStyle: FontStyle.italic,
-                                          ),
-                                        )
-                                      : Row(
-                                          children: [
-                                            Container(
-                                              width: 6,
-                                              height: 6,
-                                              decoration: BoxDecoration(
-                                                shape: BoxShape.circle,
-                                                color: isOnline ? const Color(0xFF10B981) : Colors.grey,
-                                              ),
+                                            color: Color(0xFF10B981),
+                                            fontWeight: FontWeight.w600))
+                                    : (_peerTyping(peer)
+                                        ? const Text(
+                                            'typing…',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Color(0xFF25D366),
+                                              fontWeight: FontWeight.bold,
+                                              fontStyle: FontStyle.italic,
                                             ),
-                                            const SizedBox(width: 5),
-                                            Text(
-                                              isOnline ? 'Online • ${peer.ip}' : 'Offline • ${peer.ip}',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                color: isOnline ? (isDark ? Colors.white70 : Colors.black87) : Colors.grey,
-                                                fontWeight: isOnline ? FontWeight.w600 : FontWeight.normal,
+                                          )
+                                        : Row(
+                                            children: [
+                                              Container(
+                                                width: 6,
+                                                height: 6,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: isOnline
+                                                      ? const Color(0xFF10B981)
+                                                      : Colors.grey,
+                                                ),
                                               ),
-                                            ),
-                                          ],
-                                        )),
-                            ],
-                          ),
-                        ],
-                      );
-                    },
+                                              const SizedBox(width: 5),
+                                              Text(
+                                                _routeLabel(peer),
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: isOnline
+                                                      ? (isDark
+                                                          ? Colors.white70
+                                                          : Colors.black87)
+                                                      : Colors.grey,
+                                                  fontWeight: isOnline
+                                                      ? FontWeight.w600
+                                                      : FontWeight.normal,
+                                                ),
+                                              ),
+                                            ],
+                                          )),
+                              ],
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ),
-                ),
                   if (peer.id != 'local_ai_assistant') ...[
                     IconButton(
                       icon: Icon(
                         Icons.call_rounded,
-                        color: _isWindowsDevice(peer) ? Colors.white54 : Theme.of(context).iconTheme.color,
+                        color: !_canCall(peer)
+                            ? Colors.white54
+                            : Theme.of(context).iconTheme.color,
                       ),
-                      tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Audio call',
-                      onPressed: () => _startCall(peer, false),
+                      tooltip: !_canCall(peer)
+                          ? 'Calls require a direct Nearby / P2P connection'
+                          : 'Audio call',
+                      onPressed:
+                          _canCall(peer) ? () => _startCall(peer, false) : null,
                     ),
                     IconButton(
                       icon: Icon(
                         Icons.videocam_rounded,
-                        color: _isWindowsDevice(peer) ? Colors.white54 : Theme.of(context).iconTheme.color,
+                        color: !_canCall(peer)
+                            ? Colors.white54
+                            : Theme.of(context).iconTheme.color,
                       ),
-                      tooltip: _isWindowsDevice(peer) ? 'Calls supported on mobile only' : 'Video call',
-                      onPressed: () => _startCall(peer, true),
+                      tooltip: !_canCall(peer)
+                          ? 'Calls require a direct Nearby / P2P connection'
+                          : 'Video call',
+                      onPressed:
+                          _canCall(peer) ? () => _startCall(peer, true) : null,
                     ),
-                    IconButton(onPressed: _pickAndSend, tooltip: 'Send file', icon: const Icon(Icons.attach_file_rounded)),
+                    IconButton(
+                        onPressed: _pickAndSend,
+                        tooltip: 'Send file',
+                        icon: const Icon(Icons.attach_file_rounded)),
                   ],
                   PopupMenuButton<String>(
                     icon: const Icon(Icons.more_vert_rounded),
@@ -4519,7 +4397,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         _openReceivedFilesModal();
                       } else if (value == 'ai_toggle') {
                         final aiService = AiSettingsService();
-                        final isCurrentlyAllowed = aiService.isPeerAllowed(peer.id, peer.ip);
+                        final isCurrentlyAllowed =
+                            aiService.isPeerAllowed(peer.id, peer.ip);
                         final nextAllowed = !isCurrentlyAllowed;
                         peer.isAiHostAllowed = nextAllowed;
                         aiService.setPeerAllowed(peer.id, nextAllowed);
@@ -4558,7 +4437,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       }
                     },
                     itemBuilder: (context) {
-                      final isAiAllowed = AiSettingsService().isPeerAllowed(peer.id, peer.ip);
+                      final isAiAllowed =
+                          AiSettingsService().isPeerAllowed(peer.id, peer.ip);
                       final isNotAiPeer = peer.id != 'local_ai_assistant';
 
                       return [
@@ -4566,7 +4446,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           value: 'files',
                           child: Row(
                             children: [
-                              Icon(Icons.folder_shared_rounded, size: 18, color: Color(0xFF10B981)),
+                              Icon(Icons.folder_shared_rounded,
+                                  size: 18, color: Color(0xFF10B981)),
                               SizedBox(width: 10),
                               Text('View Received Files'),
                             ],
@@ -4578,12 +4459,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             child: Row(
                               children: [
                                 Icon(
-                                  isAiAllowed ? Icons.auto_awesome_rounded : Icons.auto_awesome_outlined,
+                                  isAiAllowed
+                                      ? Icons.auto_awesome_rounded
+                                      : Icons.auto_awesome_outlined,
                                   size: 18,
-                                  color: isAiAllowed ? const Color(0xFF10B981) : Colors.grey,
+                                  color: isAiAllowed
+                                      ? const Color(0xFF10B981)
+                                      : Colors.grey,
                                 ),
                                 SizedBox(width: 10),
-                                Text(isAiAllowed ? 'Disable Nearby AI Access' : 'Allow Nearby AI Access'),
+                                Text(isAiAllowed
+                                    ? 'Disable Nearby AI Access'
+                                    : 'Allow Nearby AI Access'),
                               ],
                             ),
                           ),
@@ -4591,7 +4478,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             value: 'cctv',
                             child: Row(
                               children: [
-                                Icon(Icons.videocam_rounded, size: 18, color: Color(0xFF3B82F6)),
+                                Icon(Icons.videocam_rounded,
+                                    size: 18, color: Color(0xFF3B82F6)),
                                 SizedBox(width: 10),
                                 Text('CCTV Stream (Video)'),
                               ],
@@ -4601,7 +4489,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             value: 'audio_stream',
                             child: Row(
                               children: [
-                                Icon(Icons.mic_rounded, size: 18, color: Color(0xFF8B5CF6)),
+                                Icon(Icons.mic_rounded,
+                                    size: 18, color: Color(0xFF8B5CF6)),
                                 SizedBox(width: 10),
                                 Text('Live Audio Stream'),
                               ],
@@ -4612,9 +4501,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           value: 'log',
                           child: Row(
                             children: [
-                              Icon(_showLogs ? Icons.article_rounded : Icons.article_outlined, size: 18, color: Theme.of(context).iconTheme.color),
+                              Icon(
+                                  _showLogs
+                                      ? Icons.article_rounded
+                                      : Icons.article_outlined,
+                                  size: 18,
+                                  color: Theme.of(context).iconTheme.color),
                               const SizedBox(width: 10),
-                              Text(_showLogs ? 'Hide Activity Log' : 'Show Activity Log'),
+                              Text(_showLogs
+                                  ? 'Hide Activity Log'
+                                  : 'Show Activity Log'),
                             ],
                           ),
                         ),
@@ -4622,9 +4518,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           value: 'clear',
                           child: Row(
                             children: [
-                              Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                              Icon(Icons.delete_outline_rounded,
+                                  size: 18, color: Colors.redAccent),
                               SizedBox(width: 10),
-                              Text('Clear Chat', style: TextStyle(color: Colors.redAccent)),
+                              Text('Clear Chat',
+                                  style: TextStyle(color: Colors.redAccent)),
                             ],
                           ),
                         ),
@@ -4637,25 +4535,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ],
 
           // People | Nearby AI Mode Switcher
-          _buildChatModeSwitch(isDark, peer),
+          _buildChatModeSwitch(isDark, peer, compact: isMobile),
 
           Expanded(
             child: (chat.isEmpty && !_aiThinking)
                 ? Center(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                      margin: const EdgeInsets.symmetric(horizontal: 28),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 12),
                       decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF182229) : const Color(0xFFFFF5C4),
+                        color: isDark
+                            ? const Color(0xFF182229)
+                            : const Color(0xFFF7F4EC),
                         borderRadius: BorderRadius.circular(12),
-                        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                        boxShadow: const [
+                          BoxShadow(color: Colors.black12, blurRadius: 4)
+                        ],
                       ),
                       child: Text(
+                        textAlign: TextAlign.center,
                         _chatMode == ChatMode.ai
                             ? 'Nearby AI Mode: Prompts are handled by ${peer.name}'
-                            : 'End-to-end local network chat with ${peer.name}',
+                            : 'Chat with ${peer.name} • Nearby first, Internet when enabled',
                         style: TextStyle(
                           fontSize: 12.5,
-                          color: isDark ? Colors.white70 : const Color(0xFF54656F),
+                          color:
+                              isDark ? Colors.white70 : const Color(0xFF54656F),
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -4664,16 +4570,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 : Builder(
                     builder: (context) {
                       final hasMore = chat.length < _fullCurrentChat.length;
-                      final showTyping = peer.isTyping;
-                      final totalCount = chat.length + (hasMore ? 1 : 0) + (_aiThinking ? 1 : 0) + (showTyping ? 1 : 0);
+                      final showTyping = _peerTyping(peer);
+                      final totalCount = chat.length +
+                          (hasMore ? 1 : 0) +
+                          (_aiThinking ? 1 : 0) +
+                          (showTyping ? 1 : 0);
 
                       return ListView.builder(
                         controller: _scroll,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        padding: EdgeInsets.symmetric(
+                            horizontal: isMobile ? 4 : 10, vertical: 12),
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
                         itemCount: totalCount,
                         itemBuilder: (context, index) {
                           if (hasMore && index == 0) {
-                            final remaining = _fullCurrentChat.length - chat.length;
+                            final remaining =
+                                _fullCurrentChat.length - chat.length;
                             return Center(
                               child: GestureDetector(
                                 onTap: () {
@@ -4683,20 +4596,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 },
                                 child: Container(
                                   margin: const EdgeInsets.only(bottom: 10),
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 14, vertical: 6),
                                   decoration: BoxDecoration(
-                                    color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFE2E8F0),
+                                    color: isDark
+                                        ? const Color(0xFF1F2C34)
+                                        : const Color(0xFFE2E8F0),
                                     borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
+                                    border: Border.all(
+                                        color: isDark
+                                            ? Colors.white12
+                                            : Colors.black12),
                                   ),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.arrow_upward_rounded, size: 14, color: Color(0xFF10B981)),
+                                      const Icon(Icons.arrow_upward_rounded,
+                                          size: 14, color: Color(0xFF10B981)),
                                       const SizedBox(width: 6),
                                       Text(
                                         'Load earlier messages ($remaining more)',
-                                        style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                                        style: const TextStyle(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.bold),
                                       ),
                                     ],
                                   ),
@@ -4709,10 +4631,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           if (_aiThinking && itemIndex == chat.length) {
                             return _buildAiThinkingBubble(isDark, peer);
                           }
-                          if (showTyping && itemIndex == (chat.length + (_aiThinking ? 1 : 0))) {
+                          if (showTyping &&
+                              itemIndex ==
+                                  (chat.length + (_aiThinking ? 1 : 0))) {
                             return _buildTypingBubble(isDark, peer);
                           }
-                          return ChatBubble(
+                          final bubble = ChatBubble(
+                            compact: isMobile,
+                            key: ValueKey(chat[itemIndex].id),
                             item: chat[itemIndex],
                             onCancel: chat[itemIndex].status == 'Queued'
                                 ? () => _cancelQueuedMessage(chat[itemIndex])
@@ -4741,6 +4667,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               );
                             },
                           );
+                          final date = chat[itemIndex].createdAt.toLocal();
+                          final previousDate = itemIndex > 0
+                              ? chat[itemIndex - 1].createdAt.toLocal()
+                              : null;
+                          final newDay = previousDate == null ||
+                              date.year != previousDate.year ||
+                              date.month != previousDate.month ||
+                              date.day != previousDate.day;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (isMobile && newDay)
+                                _chatDateDivider(date, isDark),
+                              bubble,
+                            ],
+                          );
                         },
                       );
                     },
@@ -4749,7 +4691,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           if (_chatMode == ChatMode.people &&
               widget.service.transfer.active &&
               (widget.service.transfer.peerId == peer.id ||
-               widget.service.transfer.peerId == peer.ip))
+                  widget.service.transfer.peerId == peer.ip))
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
               child: TransferCard(state: widget.service.transfer),
@@ -4761,7 +4703,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               padding: const EdgeInsets.all(12),
               color: isDark ? const Color(0xFF1F2C34) : Colors.black87,
               child: ListView(
-                children: widget.service.logs.reversed.take(30).map((e) => Text(e, style: const TextStyle(fontFamily: 'monospace', fontSize: 11.5, color: Colors.greenAccent))).toList(),
+                children: widget.service.logs.reversed
+                    .take(30)
+                    .map((e) => Text(e,
+                        style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 11.5,
+                            color: Colors.greenAccent)))
+                    .toList(),
               ),
             ),
           ],
@@ -4771,11 +4720,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
+                color:
+                    isDark ? const Color(0xFF1F2C34) : const Color(0xFFF0F2F5),
                 borderRadius: BorderRadius.circular(12),
                 border: Border(
                   left: BorderSide(
-                    color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                    color: isDark
+                        ? const Color(0xFF25D366)
+                        : const Color(0xFF00A884),
                     width: 4,
                   ),
                 ),
@@ -4795,11 +4747,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          _replyingToItem!.mine ? 'You' : _replyingToItem!.sender,
+                          _replyingToItem!.mine
+                              ? 'You'
+                              : _replyingToItem!.sender,
                           style: TextStyle(
                             fontSize: 12.5,
                             fontWeight: FontWeight.bold,
-                            color: isDark ? const Color(0xFF25D366) : const Color(0xFF00A884),
+                            color: isDark
+                                ? const Color(0xFF25D366)
+                                : const Color(0xFF00A884),
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -4823,7 +4779,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     icon: const Icon(Icons.close_rounded, size: 18),
                     color: isDark ? Colors.white60 : Colors.black54,
                     padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
                     splashRadius: 16,
                     onPressed: () {
                       setState(() {
@@ -4837,9 +4794,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             ),
           // Floating Input Box
           Container(
-            padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
             color: Colors.transparent,
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Expanded(
                   child: Container(
@@ -4856,7 +4814,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     ),
                     child: Row(
                       children: [
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 4),
                         if (_chatMode == ChatMode.people) ...[
                           IconButton(
                             icon: Icon(Icons.attach_file_rounded,
@@ -4868,21 +4826,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           ),
                         ] else ...[
                           const SizedBox(width: 6),
-                          const Icon(Icons.auto_awesome_rounded, color: Color(0xFF10B981), size: 20),
+                          const Icon(Icons.auto_awesome_rounded,
+                              color: Color(0xFF10B981), size: 20),
                           const SizedBox(width: 8),
                         ],
                         Expanded(
                           child: TextField(
                             controller: _message,
+                            minLines: 1,
+                            maxLines: 5,
+                            textCapitalization: TextCapitalization.sentences,
                             textInputAction: TextInputAction.send,
                             onChanged: _onTextChanged,
                             onSubmitted: (_) => _sendMessage(),
-                            style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 15),
+                            style: TextStyle(
+                                color: isDark ? Colors.white : Colors.black87,
+                                fontSize: 15),
                             decoration: InputDecoration(
-                              hintText: _chatMode == ChatMode.ai ? 'Ask ${peer.name} Nearby AI…' : 'Message…',
-                              hintStyle: TextStyle(color: isDark ? Colors.grey[500] : const Color(0xFF8696A0)),
+                              filled: false,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              hintText: _chatMode == ChatMode.ai
+                                  ? 'Ask ${peer.name} Nearby AI…'
+                                  : 'Message…',
+                              hintStyle: TextStyle(
+                                  color: isDark
+                                      ? Colors.grey[500]
+                                      : const Color(0xFF8696A0)),
                               border: InputBorder.none,
-                              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                              contentPadding:
+                                  const EdgeInsets.fromLTRB(4, 13, 14, 13),
                             ),
                           ),
                         ),
@@ -4891,38 +4864,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   ),
                 ),
                 const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: _sendMessage,
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: _chatMode == ChatMode.ai ? const Color(0xFF10B981) : const Color(0xFF169B62),
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: (_chatMode == ChatMode.ai ? const Color(0xFF10B981) : const Color(0xFF169B62)).withValues(alpha: 0.4),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
+                Semantics(
+                  button: true,
+                  label: 'Send message',
+                  child: Tooltip(
+                    message: 'Send message',
+                    child: Material(
+                      color: const Color(0xFF008069),
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _sendMessage,
+                        child: SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: _aiThinking
+                              ? const Center(
+                                  child: SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.2,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.send_rounded,
+                                  color: Colors.white,
+                                  size: 22,
+                                ),
                         ),
-                      ],
+                      ),
                     ),
-                    child: _aiThinking
-                        ? const Center(
-                            child: SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.2,
-                                color: Colors.white,
-                              ),
-                            ),
-                          )
-                        : const Icon(
-                            Icons.send_rounded,
-                            color: Colors.white,
-                            size: 22,
-                          ),
                   ),
                 ),
               ],
@@ -4933,10 +4907,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _buildChatModeSwitch(bool isDark, Peer peer) {
+  Widget _chatDateDivider(DateTime date, bool isDark) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(date.year, date.month, date.day);
+    final label = day == today
+        ? 'Today'
+        : day == DateTime(today.year, today.month, today.day - 1)
+            ? 'Yesterday'
+            : MaterialLocalizations.of(context).formatMediumDate(date);
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.only(top: 8, bottom: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF18262F) : const Color(0xFFF9F8F5),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w500,
+              color: isDark ? const Color(0xFFB7C3CA) : const Color(0xFF54656F),
+            )),
+      ),
+    );
+  }
+
+  Widget _buildChatModeSwitch(bool isDark, Peer peer, {bool compact = false}) {
     if (peer.id == 'local_ai_assistant') return const SizedBox.shrink();
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
+      margin: EdgeInsets.symmetric(vertical: compact ? 6 : 8),
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1F2C34) : Colors.white,
@@ -4953,7 +4954,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         mainAxisSize: MainAxisSize.min,
         children: [
           _modeSegmentButton(
-            title: 'Normal',
+            title: 'Chat',
             icon: Icons.chat_bubble_outline_rounded,
             mode: ChatMode.people,
             isDark: isDark,
@@ -4989,7 +4990,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
         decoration: BoxDecoration(
           color: active
-              ? (mode == ChatMode.ai ? const Color(0xFF10B981) : const Color(0xFF169B62))
+              ? (mode == ChatMode.ai
+                  ? const Color(0xFF10B981)
+                  : const Color(0xFF169B62))
               : Colors.transparent,
           borderRadius: BorderRadius.circular(18),
         ),
@@ -4999,7 +5002,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             Icon(
               icon,
               size: 16,
-              color: active ? Colors.white : (isDark ? Colors.white60 : Colors.black54),
+              color: active
+                  ? Colors.white
+                  : (isDark ? Colors.white60 : Colors.black54),
             ),
             const SizedBox(width: 6),
             Text(
@@ -5007,7 +5012,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: active ? FontWeight.bold : FontWeight.w500,
-                color: active ? Colors.white : (isDark ? Colors.white70 : Colors.black87),
+                color: active
+                    ? Colors.white
+                    : (isDark ? Colors.white70 : Colors.black87),
               ),
             ),
           ],

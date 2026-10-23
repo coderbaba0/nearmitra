@@ -22,6 +22,7 @@ class FarmitraForegroundService : Service() {
         const val NOTIFICATION_ID = 43888
         const val ACTION_START_SERVICE = "ACTION_START_SERVICE"
         const val ACTION_STOP_SERVICE = "ACTION_STOP_SERVICE"
+        const val ACTION_WIRELESS_AUDIO = "ACTION_WIRELESS_AUDIO"
         const val ACTION_START_MEDIA_PROJECTION = "ACTION_START_MEDIA_PROJECTION"
         private const val TAG = "FarmitraService"
 
@@ -42,18 +43,28 @@ class FarmitraForegroundService : Service() {
             return START_NOT_STICKY
         }
         val isMediaProjection = action == ACTION_START_MEDIA_PROJECTION
-        startForegroundServiceNow(isMediaProjection)
+        val wirelessMode = if (action == ACTION_WIRELESS_AUDIO) {
+            if (intent.getBooleanExtra("microphone", false)) "microphone" else "speaker"
+        } else null
+        val ready = startForegroundServiceNow(isMediaProjection, wirelessMode)
+        @Suppress("DEPRECATION")
+        val receiver = intent?.getParcelableExtra<android.os.ResultReceiver>("projectionReady")
+        receiver?.send(if (ready) 1 else 0, null)
         return START_STICKY
     }
 
-    private fun startForegroundServiceNow(isMediaProjection: Boolean = false) {
+    private fun startForegroundServiceNow(isMediaProjection: Boolean = false, wirelessMode: String? = null): Boolean {
         createNotificationChannel()
-        val notification = buildNotification(isMediaProjection)
+        val notification = buildNotification(isMediaProjection, wirelessMode)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val serviceType = if (isMediaProjection) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                } else if (wirelessMode == "microphone") {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                } else if (wirelessMode == "speaker") {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
                 }
@@ -64,8 +75,10 @@ class FarmitraForegroundService : Service() {
             isRunning = true
             acquireLocks()
             Log.d(TAG, "NearMitra background service started (mediaProjection=$isMediaProjection)")
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Error starting foreground service: ${e.message}", e)
+            return false
         }
     }
 
@@ -130,7 +143,7 @@ class FarmitraForegroundService : Service() {
         }
     }
 
-    private fun buildNotification(isMediaProjection: Boolean = false): Notification {
+    private fun buildNotification(isMediaProjection: Boolean = false, wirelessMode: String? = null): Notification {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -141,8 +154,17 @@ class FarmitraForegroundService : Service() {
             else PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val title = if (isMediaProjection) "NearMitra Screen Casting Active" else "NearMitra Active"
-        val text = if (isMediaProjection) "Broadcasting your phone screen to peer" else "P2P Transfers, Calls & Streams Active"
+        val title = when {
+            wirelessMode == "microphone" -> "NearMitra Wireless Microphone"
+            wirelessMode == "speaker" -> "NearMitra Wireless Speaker"
+            isMediaProjection -> "NearMitra Screen Casting Active"
+            else -> "NearMitra Active"
+        }
+        val text = when (wirelessMode) {
+            "microphone" -> "Sharing microphone audio • Tap to open streaming controls"
+            "speaker" -> "Receiving device audio • Tap to open streaming controls"
+            else -> if (isMediaProjection) "Broadcasting your phone screen to peer" else "P2P Transfers, Calls & Streams Active"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)

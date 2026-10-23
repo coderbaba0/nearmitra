@@ -443,8 +443,8 @@ body {
 
 /* 1. Leftmost Slim Activity Bar */
 .activity-bar {
-  width: 54px;
-  background: var(--bg-activity);
+  width: 62px;
+  background: var(--bg-titlebar);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
@@ -463,34 +463,43 @@ body {
 }
 
 .activity-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 12px;
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   position: relative;
-  transition: all 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .activity-btn:hover {
   background: var(--bg-card-hover);
+  color: var(--text-title);
+}
+
+.activity-btn:focus-visible {
+  outline: 2px solid var(--primary-emerald);
+  outline-offset: 2px;
 }
 
 .activity-btn.active {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--primary-emerald);
+  border-color: rgba(16, 185, 129, 0.22);
 }
 
 .activity-btn.active::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
+  left: -10px;
+  top: 12px;
+  bottom: 12px;
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--primary-emerald);
@@ -503,14 +512,15 @@ body {
 }
 
 .activity-icon-wrap svg {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
 }
 
 .activity-badge {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: -2px;
+  right: -3px;
+  border: 2px solid var(--bg-titlebar);
   background: var(--primary-emerald);
   color: #FFF;
   font-size: 9px;
@@ -4154,7 +4164,7 @@ body.light-theme .typing-text {
 }
 
 .hw-card {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 16px;
@@ -4165,8 +4175,8 @@ body.light-theme .typing-text {
 }
 
 .hw-card:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.045);
+  border-color: var(--border-light);
+  background: var(--bg-card-hover);
 }
 
 .hw-card-header {
@@ -5270,3 +5280,114 @@ body.light-theme .typing-text {
   0%, 100% { border-color: rgba(234, 179, 8, 0.4); }
   50% { border-color: rgba(234, 179, 8, 0.9); box-shadow: 0 0 14px rgba(234, 179, 8, 0.3); }
 }
+
+/* Hardware and Voice surfaces share the active application theme. */
+#tab-iot .form-control, #tab-iot .form-select, #tab-voice .form-select {
+  background: var(--bg-input); color: var(--text-title); border: 1px solid var(--border-color);
+  border-radius: 6px; min-height: 34px; max-width: 100%;
+}
+#tab-iot .form-control:focus, #tab-iot .form-select:focus, #tab-voice .form-select:focus {
+  outline: 2px solid var(--primary-emerald); outline-offset: 2px;
+}
+#tab-iot .hw-device-row, #tab-iot .audio-spectrum-canvas { background: var(--bg-input); }
+.hw-card-header { gap: 10px; flex-wrap: wrap; }
+.hw-card-title-group { min-width: 0; flex: 1; }
+.hw-icon-box { flex-shrink: 0; }
+.hw-card-title, .hw-card-desc { overflow-wrap: anywhere; }
+.hw-grid-2col { grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+.iot-status-notice { grid-column: 1 / -1; color: var(--text-body); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 16px; margin: 0; }
+#tab-iot [aria-disabled="true"] { opacity: .55; pointer-events: none; }
+body.light-theme #tab-iot .badge-emerald, body.light-theme #tab-voice .badge-emerald { color: #047857; }
+body.light-theme #tab-iot .badge-amber { color: #92400e; }
+body.light-theme #tab-iot .hw-chip.active { color: #047857; }
+#tab-voice .audio-source-settings { background: var(--bg-card); color: var(--text-body); }
+
+body.light-theme .voice-feature-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.10); }
+#tab-iot button:disabled { opacity: .5; cursor: not-allowed; }
+
+:root { --feature-green: #10b981; --feature-blue: #38bdf8; --feature-amber: #f59e0b; --feature-purple: #a855f7; --feature-cyan: #06b6d4; }
+body.light-theme { --feature-green: #047857; --feature-blue: #0369a1; --feature-amber: #92400e; --feature-purple: #7e22ce; --feature-cyan: #0e7490; }
+
+.iot-device-settings { margin-bottom: 14px; }
+.iot-device-settings summary { cursor:pointer; padding:4px 0; }
+.iot-device-settings[open] summary { margin-bottom:12px; }
+.iot-settings-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;}
+.iot-settings-grid label {display:flex;flex-direction:column;gap:6px;color:var(--text-body);font-size:12px;}
+#tab-iot .iot-settings-grid .form-control {width:100%;padding:8px 10px;box-sizing:border-box;}
+#relayScheduleList .hw-device-row {gap:12px;flex-wrap:wrap;}
+
+.iot-relay-controls > span {flex-basis:100%;}
+.iot-relay-controls > button {flex:1;min-width:0;}
+#tab-iot input[type="datetime-local"] {color-scheme:dark;}
+body.light-theme #tab-iot input[type="datetime-local"] {color-scheme:light;}
+
+.wireless-audio-panel {background:var(--bg-card);color:var(--text-title);border:1px solid var(--border-color);border-radius:16px;padding:20px;margin:0 0 22px;}
+.wireless-audio-heading,.wireless-audio-actions {display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+.wireless-audio-heading {justify-content:space-between;margin-bottom:16px;}
+.wireless-audio-heading h3 {margin:0 0 6px;font-size:18px;}
+.wireless-audio-heading p,.wireless-audio-note {color:var(--text-muted);font-size:12px;line-height:1.6;margin:0;}
+#wirelessAudioStatus {font-size:13px;color:var(--text-muted);max-width:100%;overflow-wrap:anywhere;}
+.wireless-audio-consent {margin-top:16px;padding:16px;border:1px solid var(--primary-emerald);border-radius:12px;background:var(--bg-card);}
+.wireless-audio-consent p {margin:0 0 12px;}
+.wireless-audio-volume {display:flex;align-items:center;gap:12px;margin:16px 0;font-size:13px;}
+.wireless-audio-volume input {width:180px;max-width:50%;accent-color:var(--primary-emerald);}
+.wireless-audio-actions button:disabled {opacity:.5;cursor:not-allowed;}
+
+/* Action buttons use display:flex; explicitly honour hidden in audio controls. */
+#wirelessAudioPanel [hidden] {display:none !important;}
+#wirelessAudioPanel {margin:0;}
+
+.wireless-audio-guide {color:var(--text-body);font-size:13px;line-height:1.7;margin:0 0 16px;}
+.wireless-audio-actions {margin-bottom:12px;}
+#wirelessAudioStatus {font-size:12px;line-height:1.6;max-width:100%;overflow-wrap:anywhere;color:var(--text-body);}
+
+.wireless-capture-scope {display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px;margin:0 0 10px;}
+.wireless-capture-scope select {width:auto;max-width:100%;min-width:240px;}
+
+.device-unread-count {display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;padding:0 5px;border-radius:10px;background:var(--primary-emerald);color:#fff;font-size:10px;font-weight:700;flex-shrink:0;}
+.incoming-count[hidden] {display:none;}
+.incoming-transfer-detail {display:block;color:var(--text-muted);font-size:11px;line-height:1.6;margin-top:5px;overflow-wrap:anywhere;}
+.live-transfer-row {display:grid;gap:7px;background:var(--bg-card);border:1px solid var(--border-color);border-radius:10px;padding:12px;margin-bottom:8px;font-size:12px;}
+.live-transfer-row span,.live-transfer-row small,.transfer-empty {color:var(--text-muted);}
+.live-transfer-row progress {width:100%;height:6px;accent-color:var(--primary-emerald);}
+
+/* Chat actions follow the active application theme. */
+.msg-chat-actions {display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;margin:0 0 4px;opacity:0;transition:opacity .15s;}
+.msg-row:hover .msg-chat-actions,.msg-row:focus-within .msg-chat-actions {opacity:1;}
+.msg-chat-actions button,.chat-selection-bar button,.chat-forward-dialog button,.chat-reply-preview button {font:inherit;cursor:pointer;border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-body);border-radius:7px;padding:5px 9px;}
+.msg-chat-actions button {font-size:11px;}
+.msg-chat-actions button:hover,.chat-selection-bar button:hover,.chat-forward-dialog button:hover {border-color:var(--primary-emerald);background:var(--item-active-bg);}
+.msg-selected {outline:2px solid var(--primary-emerald);outline-offset:2px;}
+.chat-selection-bar {position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--bg-card);color:var(--text-body);border:1px solid var(--border-color);border-radius:10px;margin-bottom:14px;box-shadow:0 3px 12px #0001;}
+.chat-selection-bar strong {flex:1;}
+.msg-quoted-reply {display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;border:0;border-left:3px solid var(--primary-emerald);border-radius:5px;background:var(--primary-glow);color:inherit;padding:8px 10px;margin-bottom:7px;cursor:pointer;font:inherit;}
+.msg-quoted-reply strong {font-size:12px;}
+.msg-quoted-reply span {font-size:12px;white-space:pre-wrap;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow-wrap:anywhere;}
+.msg-forwarded-label {font-size:11px;font-style:italic;opacity:.75;margin-bottom:6px;}
+.chat-reply-preview {display:flex;align-items:center;gap:10px;margin:0 16px 6px;padding:10px 12px;background:var(--bg-card);border-left:3px solid var(--primary-emerald);border-radius:8px;color:var(--text-body);}
+.chat-reply-preview[hidden] {display:none;}
+.chat-reply-preview div {flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;font-size:12px;}
+.chat-reply-preview span {overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.chat-forward-dialog {position:fixed;inset:0;margin:auto;height:fit-content;width:min(420px,90vw);max-height:75vh;overflow:auto;background:var(--bg-card);color:var(--text-body);border:1px solid var(--border-color);border-radius:16px;padding:22px;box-shadow:0 20px 65px #0005;}
+.chat-forward-dialog::backdrop {background:#0007;}
+.chat-forward-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.chat-forward-dialog h3 {margin:0;font-size:17px;color:var(--text-title);}
+.chat-forward-dialog p {font-size:12px;color:var(--text-muted);margin:12px 0;}
+.chat-forward-dialog input {width:100%;box-sizing:border-box;background:var(--bg-input);color:var(--text-body);border:1px solid var(--border-color);border-radius:8px;padding:10px;margin-bottom:12px;}
+.chat-forward-targets {display:flex;flex-direction:column;gap:7px;}
+.chat-forward-targets button {display:flex;align-items:center;justify-content:space-between;padding:12px;text-align:left;gap:12px;}
+.chat-forward-targets button[hidden] {display:none;}
+.chat-forward-targets span {font-size:11px;color:var(--text-muted);}
+.chat-forward-dialog :disabled {opacity:.55;cursor:wait;}
+.chat-forward-status {overflow-wrap:anywhere;}
+@media (hover:none) {.msg-chat-actions {opacity:1;}}
+@media (prefers-reduced-motion:reduce) {.msg-chat-actions {transition:none;}}
+
+.nearby-ai-toolbar,.nearby-ai-sharing {display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border-color);background:var(--bg-card);color:var(--text-body);}
+.nearby-ai-toolbar div,.nearby-ai-sharing div {flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;}
+.nearby-ai-toolbar strong,.nearby-ai-sharing strong {font-size:12px;}
+.nearby-ai-toolbar span,.nearby-ai-sharing span {font-size:11px;color:var(--text-muted);overflow-wrap:anywhere;}
+.nearby-ai-error {font-size:11px;color:var(--accent-cctv);margin-top:8px;}
+#aiChatStream .msg-text {white-space:pre-wrap;overflow-wrap:anywhere;}
+
+#nearbyAIStop[hidden] {display:none!important;}

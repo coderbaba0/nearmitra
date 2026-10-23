@@ -28,35 +28,35 @@ const (
 )
 
 type MainWindow struct {
-	mu           sync.RWMutex
-	hwnd         uintptr
-	hEditChat    uintptr
-	hEditAI      uintptr
-	currentTab   int
-	isDarkMode   bool
-	theme        FluentPalette
-	hitboxes     []HitBox
+	mu         sync.RWMutex
+	hwnd       uintptr
+	hEditChat  uintptr
+	hEditAI    uintptr
+	currentTab int
+	isDarkMode bool
+	theme      FluentPalette
+	hitboxes   []HitBox
 
-	fontTitle    uintptr
-	fontSubhead  uintptr
-	fontBody     uintptr
-	fontSmall    uintptr
+	fontTitle   uintptr
+	fontSubhead uintptr
+	fontBody    uintptr
+	fontSmall   uintptr
 
-	cfgMgr       *config.ConfigManager
-	discovery    *network.DiscoveryService
-	server       *transfer.TransferServer
-	chatMgr      *chat.HistoryManager
-	aiService    *ai.AIService
-	cctv         *streaming.StreamState
-	signaling    *calling.CallState
-	iotMgr       *iot.Manager
-	iotAuto      *iot.AutomationEngine
-	tray         *TrayManager
+	cfgMgr    *config.ConfigManager
+	discovery *network.DiscoveryService
+	server    *transfer.TransferServer
+	chatMgr   *chat.HistoryManager
+	aiService *ai.AIService
+	cctv      *streaming.StreamState
+	signaling *calling.CallState
+	iotMgr    *iot.Manager
+	iotAuto   *iot.AutomationEngine
+	tray      *TrayManager
 
-	activePeer   *models.Peer
-	typingPeer   string
-	logs         []string
-	transfers    []models.TransferProgress
+	activePeer *models.Peer
+	typingPeer string
+	logs       []string
+	transfers  []models.TransferProgress
 }
 
 var globalWindow *MainWindow
@@ -74,20 +74,20 @@ func NewMainWindow(
 	iotAuto *iot.AutomationEngine,
 ) *MainWindow {
 	mw := &MainWindow{
-		currentTab:  0,
-		isDarkMode:  cfgMgr.GetConfig().ThemeMode == "dark",
-		theme:       DarkTheme,
-		cfgMgr:      cfgMgr,
-		discovery:   discovery,
-		server:      server,
-		chatMgr:     chatMgr,
-		aiService:   aiService,
-		cctv:        cctv,
-		signaling:   signaling,
-		iotMgr:      iotMgr,
-		iotAuto:     iotAuto,
-		logs:        make([]string, 0),
-		transfers:   make([]models.TransferProgress, 0),
+		currentTab: 0,
+		isDarkMode: cfgMgr.GetConfig().ThemeMode == "dark",
+		theme:      DarkTheme,
+		cfgMgr:     cfgMgr,
+		discovery:  discovery,
+		server:     server,
+		chatMgr:    chatMgr,
+		aiService:  aiService,
+		cctv:       cctv,
+		signaling:  signaling,
+		iotMgr:     iotMgr,
+		iotAuto:    iotAuto,
+		logs:       make([]string, 0),
+		transfers:  make([]models.TransferProgress, 0),
 	}
 	if !mw.isDarkMode {
 		mw.theme = LightTheme
@@ -243,13 +243,16 @@ func (mw *MainWindow) Run() error {
 func (mw *MainWindow) setupServerCallbacks() {
 	if mw.server != nil {
 		mw.server.SetCallbacks(transfer.TransferCallbacks{
-			OnIncomingMessage: func(msg models.ChatMessage) {
-				mw.chatMgr.AddMessage(msg)
+			OnIncomingMessage: func(msg models.ChatMessage) error {
+				if err := mw.chatMgr.AddMessage(msg); err != nil {
+					return err
+				}
 				mw.AddLog(fmt.Sprintf("Chat from %s: %s", msg.Sender, msg.Text))
 				if mw.tray != nil {
 					mw.tray.ShowNotification("NearMitra Chat", fmt.Sprintf("%s: %s", msg.Sender, msg.Text))
 				}
 				mw.RequestRepaint()
+				return nil
 			},
 			OnIncomingReaction: func(targetMsgID, reaction, peerID string) {
 				mw.chatMgr.AddReaction(targetMsgID, reaction)
@@ -669,18 +672,20 @@ func (mw *MainWindow) dispatchAction(key string) {
 
 	case strings.HasPrefix(key, "IOT_PRINT_"):
 		devID := strings.TrimPrefix(key, "IOT_PRINT_")
-		_ = mw.iotMgr.TriggerTestPrint(devID)
-		mw.AddLog("Sent sample Mandi Gate Pass / Receipt print job.")
+		if err := mw.iotMgr.TriggerTestPrint(devID); err != nil {
+			mw.AddLog(err.Error())
+		}
 		mw.RequestRepaint()
 
 	case strings.HasPrefix(key, "IOT_SCAN_"):
 		devID := strings.TrimPrefix(key, "IOT_SCAN_")
-		_ = mw.iotMgr.TriggerScan(devID)
-		mw.AddLog("Acquiring document scan from WIA/TWAIN scanner...")
+		if err := mw.iotMgr.TriggerScan(devID); err != nil {
+			mw.AddLog(err.Error())
+		}
 		mw.RequestRepaint()
 
 	case strings.HasPrefix(key, "IOT_POLL_"):
-		mw.AddLog("Polled real-time telemetry from soil moisture & temperature sensor.")
+		mw.AddLog("Use configured sensor polling in the IoT hub.")
 		mw.RequestRepaint()
 
 	case key == "IOT_ADD_AI_SCHEDULE":
@@ -704,13 +709,13 @@ func (mw *MainWindow) sendChatMessage() {
 	pSetWindowText.Call(mw.hEditChat, uintptr(unsafe.Pointer(UTF16Ptr(""))))
 
 	msg := models.ChatMessage{
-		ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		Sender:    mw.cfgMgr.GetConfig().DeviceName,
-		PeerID:    mw.cfgMgr.GetConfig().DeviceID,
-		Text:      text,
-		At:        time.Now(),
-		Mine:      true,
-		Status:    "Sent",
+		ID:     fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+		Sender: mw.cfgMgr.GetConfig().DeviceName,
+		PeerID: mw.cfgMgr.GetConfig().DeviceID,
+		Text:   text,
+		At:     time.Now(),
+		Mine:   true,
+		Status: "Sent",
 	}
 	mw.chatMgr.AddMessage(msg)
 

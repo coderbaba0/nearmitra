@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'wan_presence.dart';
 import 'package:uuid/uuid.dart';
 
 enum WanDiscoveryMode {
@@ -25,6 +26,7 @@ class WanDevice {
   final String? avatarEmoji;
   final bool isOnline;
   final DateTime? lastSeen;
+  final int? presenceLeaseMs;
   final bool isTrusted;
   final int unreadCount;
 
@@ -35,28 +37,48 @@ class WanDevice {
     this.avatarEmoji,
     required this.isOnline,
     this.lastSeen,
+    this.presenceLeaseMs,
     this.isTrusted = false,
     this.unreadCount = 0,
   });
 
-  factory WanDevice.fromMap(String id, Map<dynamic, dynamic> map, {bool isTrusted = false, int unreadCount = 0}) {
+  factory WanDevice.fromMap(String id, Map<dynamic, dynamic> map,
+      {bool isTrusted = false, int unreadCount = 0, DateTime? now}) {
+    final platform = (map['platform'] as String?) ?? 'unknown';
+    final lastSeen = WanPresence.timestamp(map['lastSeen']);
+    final lease = WanPresence.lease(platform, map['presenceLeaseMs']);
     return WanDevice(
       id: id,
-      name: (map['name'] as String?) ?? (map['deviceName'] as String?) ?? 'Unknown Device',
-      platform: (map['platform'] as String?) ?? 'unknown',
+      name: (map['name'] as String?) ??
+          (map['deviceName'] as String?) ??
+          'Unknown Device',
+      platform: platform,
       avatarEmoji: (map['avatarEmoji'] as String?) ?? (map['emoji'] as String?),
-      isOnline: (map['online'] as bool?) ?? false,
-      lastSeen: map['lastSeen'] != null ? DateTime.fromMillisecondsSinceEpoch(map['lastSeen'] as int) : null,
+      isOnline: WanPresence.isAlive(
+        online: map['online'] == true, platform: platform, lastSeen: lastSeen,
+        leaseMs: lease, now: now ?? DateTime.now(),
+      ),
+      lastSeen: lastSeen,
+      presenceLeaseMs: lease,
       isTrusted: isTrusted,
       unreadCount: unreadCount,
     );
+  }
+
+  WanDevice presenceAt(DateTime now) {
+    final online = WanPresence.isAlive(
+      online: isOnline, platform: platform, lastSeen: lastSeen,
+      leaseMs: presenceLeaseMs, now: now,
+    );
+    return online == isOnline ? this : copyWith(isOnline: online);
   }
 
   Map<String, dynamic> toPresenceMap() {
     return {
       'name': name,
       'platform': platform,
-      if (avatarEmoji != null && avatarEmoji!.isNotEmpty) 'avatarEmoji': avatarEmoji,
+      if (avatarEmoji != null && avatarEmoji!.isNotEmpty)
+        'avatarEmoji': avatarEmoji,
       'online': isOnline,
       'lastSeen': DateTime.now().millisecondsSinceEpoch,
     };
@@ -69,6 +91,7 @@ class WanDevice {
     String? avatarEmoji,
     bool? isOnline,
     DateTime? lastSeen,
+    int? presenceLeaseMs,
     bool? isTrusted,
     int? unreadCount,
   }) {
@@ -79,6 +102,7 @@ class WanDevice {
       avatarEmoji: avatarEmoji ?? this.avatarEmoji,
       isOnline: isOnline ?? this.isOnline,
       lastSeen: lastSeen ?? this.lastSeen,
+      presenceLeaseMs: presenceLeaseMs ?? this.presenceLeaseMs,
       isTrusted: isTrusted ?? this.isTrusted,
       unreadCount: unreadCount ?? this.unreadCount,
     );
@@ -144,7 +168,8 @@ class WanPairRequest {
       fromDeviceId: (map['fromDeviceId'] as String?) ?? '',
       fromDeviceName: (map['fromDeviceName'] as String?) ?? 'NearMitra Peer',
       fromPlatform: (map['fromPlatform'] as String?) ?? 'unknown',
-      fromAvatarEmoji: (map['fromAvatarEmoji'] as String?) ?? (map['avatarEmoji'] as String?),
+      fromAvatarEmoji: (map['fromAvatarEmoji'] as String?) ??
+          (map['avatarEmoji'] as String?),
       toDeviceId: (map['toDeviceId'] as String?) ?? '',
       code: (map['code'] as String?) ?? '',
       status: (map['status'] as String?) ?? 'pending',
@@ -161,7 +186,8 @@ class WanPairRequest {
       'fromDeviceId': fromDeviceId,
       'fromDeviceName': fromDeviceName,
       'fromPlatform': fromPlatform,
-      if (fromAvatarEmoji != null && fromAvatarEmoji!.isNotEmpty) 'fromAvatarEmoji': fromAvatarEmoji,
+      if (fromAvatarEmoji != null && fromAvatarEmoji!.isNotEmpty)
+        'fromAvatarEmoji': fromAvatarEmoji,
       'toDeviceId': toDeviceId,
       'code': code,
       'status': status,
@@ -193,7 +219,8 @@ class WanSignalingSession {
     this.answer,
   });
 
-  factory WanSignalingSession.fromMap(String sessionId, Map<dynamic, dynamic> map) {
+  factory WanSignalingSession.fromMap(
+      String sessionId, Map<dynamic, dynamic> map) {
     return WanSignalingSession(
       sessionId: sessionId,
       callerId: (map['callerId'] as String?) ?? '',
@@ -204,8 +231,12 @@ class WanSignalingSession {
       createdAt: (map['createdAt'] is num)
           ? (map['createdAt'] as num).toInt()
           : DateTime.now().millisecondsSinceEpoch,
-      offer: map['offer'] != null ? Map<String, dynamic>.from(map['offer'] as Map) : null,
-      answer: map['answer'] != null ? Map<String, dynamic>.from(map['answer'] as Map) : null,
+      offer: map['offer'] != null
+          ? Map<String, dynamic>.from(map['offer'] as Map)
+          : null,
+      answer: map['answer'] != null
+          ? Map<String, dynamic>.from(map['answer'] as Map)
+          : null,
     );
   }
 
@@ -242,7 +273,8 @@ class WanFileTransferProgress {
     this.filePath,
   });
 
-  double get progressPercentage => totalBytes > 0 ? (bytesTransferred / totalBytes).clamp(0.0, 1.0) : 0.0;
+  double get progressPercentage =>
+      totalBytes > 0 ? (bytesTransferred / totalBytes).clamp(0.0, 1.0) : 0.0;
 }
 
 /// RTCDataChannel Message Framing Protocol
@@ -274,12 +306,14 @@ class WanDataMessage {
 
   static WanDataMessage text(
     String text, {
+    String? id,
     String? replyToId,
     String? replyToSender,
     String? replyToText,
     bool isForwarded = false,
   }) {
     return WanDataMessage(
+      id: id,
       type: WanDataMessageType.text,
       payload: {
         'text': text,
@@ -309,11 +343,13 @@ class WanDataMessage {
     required int chunkSize,
     required int totalChunks,
     String? checksum,
+    bool folder = false,
   }) {
     return WanDataMessage(
       type: WanDataMessageType.fileMeta,
       payload: {
         'transferId': fileId,
+        if (folder) 'folder': true,
         'fileName': fileName,
         'fileSize': fileSize,
         'mimeType': mimeType,
@@ -334,7 +370,8 @@ class WanDataMessage {
     );
   }
 
-  static WanDataMessage fileCancel({required String fileId, required String reason}) {
+  static WanDataMessage fileCancel(
+      {required String fileId, required String reason}) {
     return WanDataMessage(
       type: WanDataMessageType.fileCancel,
       payload: {
@@ -362,7 +399,8 @@ class WanDataMessage {
       final map = jsonDecode(jsonStr) as Map<String, dynamic>;
       final typeStr = (map['type'] as String? ?? 'unknown').toLowerCase();
       final id = map['id'] as String? ?? const Uuid().v4();
-      final timestamp = (map['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
+      final timestamp =
+          (map['timestamp'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
       final payload = map['payload'] as Map<String, dynamic>?;
 
       final type = WanDataMessageType.values.firstWhere(
