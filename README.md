@@ -420,8 +420,8 @@ When distributing covered software or modified versions, comply with GPLv3's sou
 The repository includes **no shared Firebase project or maintainer database endpoint**. Nearby LAN/P2P works without Firebase. For Internet/WAN, follow the [Firebase setup guide](docs/FIREBASE_SETUP.md) and use your own development project on both devices.
 
 1. Register your Android package in Firebase, create a **Realtime Database**, and keep your downloaded `android/app/google-services.json` local (Git-ignored).
-2. Copy `config/firebase.example.json` to `config/firebase.local.json`, fill it with your own Android Firebase values and RTDB URL, then run/build Flutter with `--dart-define-from-file=config/firebase.local.json`.
-3. The native Windows app does **not** use `google-services.json`. Set `NEARMITRA_FIREBASE_RTDB_URL` before launching it, or configure `firebase_rtdb_url` in `%LOCALAPPDATA%\NearMitra\wan_config.json`. Use the same database as the phone.
+2. Keep your own `google-services.json` locally with `project_info.firebase_url` set to your RTDB URL; normal Android run/build commands use it automatically. Alternatively, copy `config/firebase.example.json` to the ignored `config/firebase.local.json` and pass `--dart-define-from-file=config/firebase.local.json`.
+3. The native Windows app does **not** use `google-services.json`. For normal builds, keep your own endpoint in the ignored `internal/wan/firebase_config.local.go` described in the guide. Alternatively, set `NEARMITRA_FIREBASE_RTDB_URL` before launching it, or configure `firebase_rtdb_url` in `%LOCALAPPDATA%\NearMitra\wan_config.json`. Use the same database as the phone.
 4. Use the documented local emulator for integration tests. Current clients lack Firebase Authentication tokens; locked hosted rules reject them. Add authentication/authorization before public hosted deployment; never deploy the permissive emulator rules to production.
 
 See the guide for exact config fields, emulator commands, required data paths and old-release/history limitations. Old APKs/EXEs and previously saved runtime settings can retain the former project; branch cleanup does not revoke access to those copies.

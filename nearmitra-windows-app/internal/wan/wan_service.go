@@ -50,7 +50,7 @@ func GetWanService() *WanService {
 			publicDevices:   make(map[string]*WanDevice),
 			pendingRequests: make(map[string]*WanPairRequest),
 			config: WanConfig{
-				InternetModeEnabled: false,
+				InternetModeEnabled: DefaultFirebaseRTDBUrl != "",
 				DiscoveryMode:       ModePublicRadar,
 				FirebaseRTDBUrl:     DefaultFirebaseRTDBUrl,
 			},
