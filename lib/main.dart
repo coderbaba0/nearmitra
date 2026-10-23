@@ -85,6 +85,10 @@ Future<void> main() async {
 }
 
 void _initFirebaseInBackground(String customName, String customEmoji) {
+  if (!DefaultFirebaseOptions.isConfigured) {
+    debugPrint('[Firebase] WAN not configured; Nearby LAN/P2P remains available.');
+    return;
+  }
   Future.microtask(() async {
     try {
       if (Firebase.apps.isEmpty) {

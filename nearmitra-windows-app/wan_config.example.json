@@ -1,0 +1,5 @@
+{
+  "internet_mode_enabled": true,
+  "discovery_mode": "publicRadar",
+  "firebase_rtdb_url": "https://YOUR_DATABASE_HOST"
+}

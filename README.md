@@ -415,6 +415,17 @@ NearMitra's Android app and Windows desktop source code are licensed under the *
 
 When distributing covered software or modified versions, comply with GPLv3's source-code and license-notice requirements. The software is provided without warranty, as described in the license. Third-party dependencies and bundled components retain their respective licenses.
 
+## Configure your own Firebase for WAN / Internet
+
+The repository includes **no shared Firebase project or maintainer database endpoint**. Nearby LAN/P2P works without Firebase. For Internet/WAN, follow the [Firebase setup guide](docs/FIREBASE_SETUP.md) and use your own development project on both devices.
+
+1. Register your Android package in Firebase, create a **Realtime Database**, and keep your downloaded `android/app/google-services.json` local (Git-ignored).
+2. Copy `config/firebase.example.json` to `config/firebase.local.json`, fill it with your own Android Firebase values and RTDB URL, then run/build Flutter with `--dart-define-from-file=config/firebase.local.json`.
+3. The native Windows app does **not** use `google-services.json`. Set `NEARMITRA_FIREBASE_RTDB_URL` before launching it, or configure `firebase_rtdb_url` in `%LOCALAPPDATA%\NearMitra\wan_config.json`. Use the same database as the phone.
+4. Use the documented local emulator for integration tests. Current clients lack Firebase Authentication tokens; locked hosted rules reject them. Add authentication/authorization before public hosted deployment; never deploy the permissive emulator rules to production.
+
+See the guide for exact config fields, emulator commands, required data paths and old-release/history limitations. Old APKs/EXEs and previously saved runtime settings can retain the former project; branch cleanup does not revoke access to those copies.
+
 ## Contributing
 
 Contributions to the Android and Windows apps are welcome. Read the [contribution guide](CONTRIBUTING.md) for development setup, the `develop` branch workflow, relevant checks, device testing and pull request expectations. Bug reports, documentation, accessibility improvements and regression tests are welcome too.

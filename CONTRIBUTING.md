@@ -46,7 +46,7 @@ flutter devices
 flutter run -d YOUR_DEVICE_ID
 ```
 
-Nearby LAN development should work independently of WAN. For Firebase/WAN or cloud AI work, configure your own development project and provider credentials. Do not use the maintainer's live Firebase project for automated tests, pairing experiments or database cleanup. Keep your local Firebase configuration changes out of the pull request unless the change explicitly concerns configuration.
+Nearby LAN development should work independently of WAN. For Firebase/WAN, follow [Bring your own Firebase](docs/FIREBASE_SETUP.md): download your own Android `google-services.json`, supply the ignored Dart configuration, and point Windows at your own Realtime Database. For cloud AI work, configure your own provider credentials. Do not use the maintainer's live Firebase project for automated tests, pairing experiments or database cleanup. Keep your local Firebase configuration changes out of the pull request unless the change explicitly concerns configuration.
 
 Useful checks:
 
@@ -116,3 +116,9 @@ Respond to review comments and update the same branch. Passing tests help review
 ## Contribution license
 
 By submitting a contribution for inclusion in NearMitra, you agree that your contribution may be distributed under the project's **GPL-3.0-only** license. See [LICENSE](LICENSE). Submit only work you have the right to contribute, preserve existing copyright and license notices, and identify any third-party code and its license in your pull request.
+
+## Firebase / Internet contributions
+
+Read [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md) before testing WAN. The checked-in examples contain placeholders only. `google-services.json`, generated FlutterFire project config and `config/firebase.local.json` are ignored; the tracked `lib/firebase_options.dart` is a build-time configuration loader and must stay free of live project values. Native Windows uses an owner-supplied RTDB REST URL, not Android Google Services configuration.
+
+Use the local emulator for the existing unauthenticated protocol. Hosted deployment requires implementing compatible authentication and rules on both clients; application pairing alone is not database authorization. Never test against the maintainer's database or include credentials, real project IDs or runtime config in a pull request. Check both clean-checkout Nearby operation and your explicitly configured WAN setup.

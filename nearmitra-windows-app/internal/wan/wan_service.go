@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,7 +50,7 @@ func GetWanService() *WanService {
 			publicDevices:   make(map[string]*WanDevice),
 			pendingRequests: make(map[string]*WanPairRequest),
 			config: WanConfig{
-				InternetModeEnabled: true,
+				InternetModeEnabled: false,
 				DiscoveryMode:       ModePublicRadar,
 				FirebaseRTDBUrl:     DefaultFirebaseRTDBUrl,
 			},
@@ -63,9 +65,14 @@ func (ws *WanService) Init() {
 	ws.loadConfig()
 	ws.loadTrustedDevices()
 
-	// WAN mesh is enabled automatically
-	ws.config.InternetModeEnabled = true
-	ws.Start()
+	// An owner-supplied URL is required; local operation does not need Firebase.
+	if endpoint := strings.TrimSpace(os.Getenv("NEARMITRA_FIREBASE_RTDB_URL")); endpoint != "" {
+		ws.config.FirebaseRTDBUrl = endpoint
+	}
+	ws.client = NewFirebaseClient(ws.config.FirebaseRTDBUrl)
+	if ws.client.baseURL != "" {
+		ws.Start()
+	}
 }
 
 func (ws *WanService) getAppDataDir() string {
@@ -138,6 +145,14 @@ func (ws *WanService) Start() {
 	ws.mu.Lock()
 	if ws.running {
 		ws.mu.Unlock()
+		return
+	}
+	endpoint, err := url.Parse(ws.client.baseURL)
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" &&
+		!(endpoint.Scheme == "http" && (endpoint.Hostname() == "localhost" || endpoint.Hostname() == "127.0.0.1"))) {
+		ws.config.InternetModeEnabled = false
+		ws.mu.Unlock()
+		log.Println("[WanService] WAN disabled: configure your own Firebase RTDB URL (see docs/FIREBASE_SETUP.md)")
 		return
 	}
 	ws.running = true

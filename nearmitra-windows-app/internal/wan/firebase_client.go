@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 const (
-	DefaultFirebaseRTDBUrl = "https://nearmitra-beb60-default-rtdb.asia-southeast1.firebasedatabase.app"
+	DefaultFirebaseRTDBUrl = "" // No shared production backend.
 )
 
 // FirebaseClient handles lightweight REST interactions with Firebase Realtime Database.
@@ -24,7 +26,7 @@ type FirebaseClient struct {
 // NewFirebaseClient creates a new client with the provided RTDB base URL.
 func NewFirebaseClient(baseURL string) *FirebaseClient {
 	if baseURL == "" {
-		baseURL = DefaultFirebaseRTDBUrl
+		baseURL = strings.TrimSpace(os.Getenv("NEARMITRA_FIREBASE_RTDB_URL"))
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
@@ -39,7 +41,12 @@ func NewFirebaseClient(baseURL string) *FirebaseClient {
 // buildURL constructs the .json endpoint for Firebase REST API.
 func (fc *FirebaseClient) buildURL(path string) string {
 	path = strings.TrimPrefix(path, "/")
-	return fmt.Sprintf("%s/%s.json", fc.baseURL, path)
+	endpoint, err := url.Parse(fc.baseURL)
+	if err != nil {
+		return "" // Request construction fails without issuing a network call.
+	}
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/") + "/" + path + ".json"
+	return endpoint.String()
 }
 
 // Get performs a GET request and deserializes the JSON response into v.

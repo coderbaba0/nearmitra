@@ -185,7 +185,13 @@ class WanService extends ChangeNotifier {
   /// Enable or disable Internet Mode listeners
   Future<void> setInternetMode(bool enable) async {
     _isInternetModeEnabled = enable;
-    await _presenceService.setInternetMode(enable);
+    try {
+      await _presenceService.setInternetMode(enable);
+    } catch (_) {
+      _isInternetModeEnabled = false;
+      notifyListeners();
+      rethrow;
+    }
 
     if (enable) {
       await _serverTimeOffsetSub?.cancel();

@@ -9,7 +9,7 @@ class FirebasePresenceService extends ChangeNotifier {
   factory FirebasePresenceService() => _instance;
   FirebasePresenceService._internal();
 
-  static const String rtdbUrl = 'https://nearmitra-beb60-default-rtdb.asia-southeast1.firebasedatabase.app';
+  static const String rtdbUrl = String.fromEnvironment('FIREBASE_DATABASE_URL');
 
   final InternetDeviceIdentityService _identityService = InternetDeviceIdentityService();
 
@@ -56,18 +56,16 @@ class FirebasePresenceService extends ChangeNotifier {
   /// Reusable FirebaseDatabase instance with the project RTDB URL
   FirebaseDatabase get database {
     if (_db != null) return _db!;
-    try {
-      if (Firebase.apps.isNotEmpty) {
-        _db = FirebaseDatabase.instanceFor(
-          app: Firebase.app(),
-          databaseURL: rtdbUrl,
-        );
-      } else {
-        _db = FirebaseDatabase.instance;
-      }
-    } catch (e) {
-      debugPrint('[FirebasePresence] Fallback to FirebaseDatabase.instance: $e');
-      _db = FirebaseDatabase.instance;
+    // Resolve only the explicitly configured app/project; never a shared fallback.
+    final app = Firebase.app();
+    _db = FirebaseDatabase.instanceFor(
+      app: app,
+      databaseURL: rtdbUrl.isNotEmpty ? rtdbUrl : app.options.databaseURL,
+    );
+    const emulatorHost = String.fromEnvironment('FIREBASE_DATABASE_EMULATOR_HOST');
+    const emulatorPort = int.fromEnvironment('FIREBASE_DATABASE_EMULATOR_PORT', defaultValue: 9000);
+    if (emulatorHost.isNotEmpty) {
+      _db!.useDatabaseEmulator(emulatorHost, emulatorPort);
     }
     return _db!;
   }
@@ -89,7 +87,12 @@ class FirebasePresenceService extends ChangeNotifier {
     _isInternetModeEnabled = enable;
 
     if (enable) {
-      await _enableInternetMode();
+      try {
+        await _enableInternetMode();
+      } catch (_) {
+        _isInternetModeEnabled = false;
+        rethrow;
+      }
     } else {
       await _disableInternetMode();
     }
