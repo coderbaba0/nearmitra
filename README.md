@@ -409,4 +409,14 @@ The Android release build currently uses the debug signing configuration in `and
 
 ---
 
+## License
+
+NearMitra's Android app and Windows desktop source code are licensed under the **GNU General Public License, version 3 only** (`GPL-3.0-only`). See the full [LICENSE](LICENSE).
+
+When distributing covered software or modified versions, comply with GPLv3's source-code and license-notice requirements. The software is provided without warranty, as described in the license. Third-party dependencies and bundled components retain their respective licenses.
+
+## Contributing
+
+Contributions to the Android and Windows apps are welcome. Read the [contribution guide](CONTRIBUTING.md) for development setup, the `develop` branch workflow, relevant checks, device testing and pull request expectations. Bug reports, documentation, accessibility improvements and regression tests are welcome too.
+
 © 2026 **NearMitra Ecosystem** • Built with Flutter & Native Android Frameworks.

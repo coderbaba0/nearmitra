@@ -156,4 +156,14 @@ Run the build first on a fresh clone: the installer embeds `installer/NearMitra.
 
 Direct LAN chat/file/AI use the current JSON/TCP wire protocol; do not treat every LAN payload as AES/end-to-end encrypted. WebRTC media/data-channel transport is separate. Peer allowlists enforce application permission and are not cryptographic device authentication. WAN uses configured Firebase services; cloud AI reaches its selected provider. Keep provider keys, signing credentials, received/sent files and personal configuration outside public source commits.
 
+## License
+
+NearMitra's Android app and Windows desktop source code are licensed under the **GNU General Public License, version 3 only** (`GPL-3.0-only`). See the full [LICENSE](../LICENSE).
+
+When distributing covered software or modified versions, comply with GPLv3's source-code and license-notice requirements. The software is provided without warranty, as described in the license. Third-party dependencies and bundled components retain their respective licenses.
+
+## Contributing
+
+Contributions to the Android and Windows apps are welcome. Read the [contribution guide](../CONTRIBUTING.md) for development setup, the `develop` branch workflow, relevant checks, device testing and pull request expectations. Bug reports, documentation, accessibility improvements and regression tests are welcome too.
+
 See the [project README](../README.md), [feature/hardware notes](IOT_SETUP.md) and [signing guide](WINDOWS_SIGNING.md).
