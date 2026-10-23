@@ -1,10 +1,12 @@
 # NearMitra for Windows
 
-NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.19**, targeting **Windows 10/11 x64**.
+NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.22**, targeting **Windows 10/11 x64**.
 
 The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript interface opened in a Windows browser app window, plus native Win32 tray, picker, audio and Explorer integrations. Older native-renderer code and historical screenshots remain in the repository; they are not the current UI specification.
 
-## Updates included in 2.1.19
+## Updates included in 2.1.22
+
+Latest local rebuild: **23 October 2026**. Android companion: **1.0.3 (versionCode 4)** at `../build/releases/NearMitra-Android-1.0.3.apk`.
 
 | Versions | Changes |
 |---|---|
@@ -17,15 +19,17 @@ The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript
 | 2.1.16 | Selected-device Nearby AI separated from My AI; per-device Allow/Revoke; actual Ollama response streaming, loading heartbeats, Stop and mid-stream permission checks. |
 | 2.1.17 | Native Explorer Open Folder / Show in Folder, exact full-path window matching, foreground/restoration of existing folder windows, and actual error feedback. |
 | 2.1.18 | Connected-call video upgrades explicitly enable the negotiated video sender; screen/camera switching preserves audio and restores the prior track/direction after a failed upgrade. |
-
 | 2.1.19 | Copy beside Select in message hover actions, clipboard feedback/fallback, and configured desktop avatars included in discovery handshakes and preserved across rescans. |
+| 2.1.20 | Refresh typing while composing, preserve WAN typing across state polls, match device identities, and handle stop/expiry per conversation. |
+| 2.1.21 | Background TCP hello checks keep reachable local apps online when UDP beacons are missed; unified local-first status, WAN read failure handling, and serialized state polling prevent false offline updates. |
+| 2.1.22 | Versioned rebuild of the current desktop source; retains the Copy, avatar, typing and background presence fixes from 2.1.19–2.1.21. |
 
-Connected-call screen sharing/camera switching and WAN heartbeat expiry/offline cleanup are also included in the current source. Android additions are source changes; no new APK was generated for these Windows releases.
+Android 1.0.3 is available as a local companion APK. The recent-apps swipe-away notification issue remains unresolved; this rebuild does not add a fix for that Android lifecycle case.
 
 ## Install or upgrade
 
 1. Build the setup as described below, or use the installer supplied separately by the maintainer.
-2. Exit old NearMitra tray/portable copies and run `build\windows-release\NearMitra_Setup_2.1.19_x64.exe`.
+2. Exit old NearMitra tray/portable copies and run `build\windows-release\NearMitra_Setup_2.1.22_x64.exe`.
 3. Choose preferences. **Auto-start NearMitra minimized when Windows starts** is checked by default and can be unchecked.
 4. Optional **Allow Nearby on private networks** requests administrator approval for the setup executable. It adds inbound TCP/UDP rules limited to this program, the private profile and local subnet. Declining approval still completes installation, but incoming discovery, files or calls may be blocked until allowed in Windows Firewall.
 5. Launch the installed copy. The tray icon may be inside Windows' notification overflow.
@@ -38,11 +42,23 @@ Executable installers/APKs, user data, logs and build output are excluded from s
 
 ## Connect a phone
 
-Keep NearMitra open on both devices. Use Nearby on the same reachable local network, or establish a supported Wi-Fi Direct/P2P link. Select the actual NearMitra peer in the device list; a discovered router or generic LAN host is not an app peer. For direct IP fallback use Connect IP.
+Run NearMitra on both devices. Windows can stay minimized in the tray; Android can use Home/minimize with Run in Background enabled. Use Nearby on the same reachable local network, or establish a supported Wi-Fi Direct/P2P link. Select the actual NearMitra peer in the device list; a discovered router or generic LAN host is not an app peer. For direct IP fallback use Connect IP.
 
 Direct discovery uses UDP `43888`; chat, file transfer, AI and local media signaling use TCP `43889`. WebRTC negotiates its own media/data paths. Windows network profile/firewall, VPNs and access-point client isolation can affect reachability.
 
 WAN uses configured Firebase presence/signaling and WebRTC sessions. It is optional, and stale Windows heartbeats expire instead of keeping a shut-down PC online forever.
+
+### Online status and connection priority
+
+- The same routing decision drives chat status and message transport: reachable **Nearby LAN/P2P first**, then an enabled, trusted **WAN** connection, otherwise **Offline** with queued messages.
+- Windows discovery and WAN heartbeat workers run in the Go backend, independently of the browser window or selected sidebar tab. Keep the app in the tray; Exit stops the process.
+- Quiet local peers are checked using an actual NearMitra TCP hello after an 8-second beacon gap. Without a new beacon or successful hello, local presence expires after 25 seconds, checked on a 5-second cadence. An open unrelated TCP port is not enough to confirm app presence.
+- A WAN offline update cannot overwrite a working local connection. Temporary Firebase read failures retain cached desktop presence within its heartbeat lease; explicit offline records and lease expiry still apply.
+- LAN scans and legacy beacons preserve learned device/cloud identity and configured avatars. State requests are serialized to avoid overlapping polls.
+
+### Android background notification limitation
+
+Android 1.0.3 restores Internet presence at startup without opening the WAN tab and respects saved Internet OFF. With Run in Background ON, double-Back on the home screen minimizes the task. **Swiping the app away from Recent apps still has an unresolved delivery/notification issue**: the foreground-service notification can outlive the activity-owned Flutter networking runtime. Messages may appear after reopening. This APK rebuild does not add an activity-independent engine; do not treat it as a verified fix for swipe-away or killed-state delivery.
 
 ## Chat and file handling
 
@@ -51,7 +67,7 @@ WAN uses configured Firebase presence/signaling and WebRTC sessions. It is optio
 - Device cards and Chat show unread counts using the theme. Reading another peer does not clear the sender's badge. The relevant chat must be visible/focused to mark it read.
 - Mobile reactions and removal render on desktop. A local reaction is kept separately from the peer's reaction.
 - Reply includes an original-message quote and a jump action when the original remains in history. Changing conversations clears an unsent reply preview.
-- Hover/focus a completed message or file for **Reply**, **Forward**, or **Select**. Select several items, choose **Forward**, then search/select a connected Nearby/P2P or enabled trusted WAN recipient. Successful items leave the pending selection; failed items show an error and remain available for retry.
+- Hover/focus a completed message or file for **Reply**, **Forward**, **Select**, and **Copy**. Copy writes the message text (or an attachment name when no message text exists) to the clipboard and shows success/failure feedback. Select several items, choose **Forward**, then search/select a connected Nearby/P2P or enabled trusted WAN recipient. Successful items leave the pending selection; failed items show an error and remain available for retry.
 - Forwarding uses a new message ID and does not carry a private quote from the source conversation. A file must still exist locally. Older records without a saved path/bytes cannot be recovered automatically.
 
 Chat/configuration live under `%APPDATA%\NearMitra`; received files use the configured save directory. Browser-selected outgoing files are retained under `SentAttachments` beside chat history for later forwarding. Native-picker files retain their original path. Protect or remove retained files according to your local storage requirements.
@@ -60,7 +76,7 @@ Chat/configuration live under `%APPDATA%\NearMitra`; received files use the conf
 
 Normal voice/video calls capture microphone/camera; they do not ask to share a browser tab. Screen sharing is an explicit connected-call control. Media switching and Stop/disconnect release the corresponding tracks. A PC without a microphone can receive phone audio; sending microphone sound requires an available input.
 
-Standalone wireless audio is in **Voice → Broadcast PC Audio to Phone → Wireless audio controls**. On Android it is **Streaming → Wi-Fi Audio**. It is separate from calls and CCTV and requires updated mobile source, direct Nearby/P2P reachability and owner approval.
+Standalone wireless audio is in **Voice → Broadcast PC Audio to Phone → Wireless audio controls**. On Android it is **Streaming → Wi-Fi Audio**. It is separate from calls and CCTV and requires the current companion APK, direct Nearby/P2P reachability and owner approval.
 
 ### PC music/YouTube → phone speaker
 
@@ -92,7 +108,7 @@ For Windows Ollama hosting, configure/enable Ollama and select an installed mode
 
 To use a phone's engine from Windows, that phone must configure its own AI and separately allow the Windows device. Denied access and unavailable devices show errors. Device-chat Nearby AI currently requires a direct Nearby/P2P peer; WAN-only AI is not added here. Ollama has incremental generation; other configured cloud providers retain their current response behavior and need their provider credentials/internet access.
 
-Mobile source also removes silent fallback to its own engine on remote failure. That source correction requires a later mobile rebuild; no APK was generated. The existing mobile streaming reader already understands the Windows Ollama stream packets.
+Mobile source also removes silent fallback to its own engine on remote failure. The Android 1.0.3 APK includes this correction and the mobile background presence fixes. The existing mobile streaming reader already understands the Windows Ollama stream packets.
 
 ## Phone sensors, IoT and CCTV
 
@@ -120,7 +136,7 @@ Local outputs:
 
 ```text
 build\windows-release\NearMitra.exe
-build\windows-release\NearMitra_Setup_2.1.19_x64.exe
+build\windows-release\NearMitra_Setup_2.1.22_x64.exe
 ```
 
 Run the build first on a fresh clone: the installer embeds `installer/NearMitra.exe`, which is generated and intentionally not committed. The build copies the current app into the setup's embedded payload. Installer tests compare its bytes with the release app. If a trusted certificate is configured, the app is signed/verified before embedding, then setup is signed/verified; configured signing failures abort the build. Without a certificate, output remains explicitly unsigned.
@@ -130,9 +146,10 @@ Run the build first on a fresh clone: the installer embeds `installer/NearMitra.
 ## Validation and remaining checks
 
 - Windows Go tests cover transport/storage, peer-scoped reactions, reply metadata, forwarding, permission grants/revocation, controlled Ollama streaming, TCP-to-HTTP relay, cancellation, WASAPI format conversion, asset serving and installer extraction/payload integrity.
-- **118** JavaScript tests cover desktop/installer behavior, including capture cleanup, signaling, progress/unread badges, quoted replies, forwarding, device AI routing and folder errors.
+- **136** JavaScript tests cover desktop/installer behavior, including capture cleanup, signaling, progress/unread badges, quoted replies, forwarding, typing refresh/expiry, Nearby-first online status, serialized polling, device AI routing and folder errors.
 - An opt-in interactive Windows Explorer test opens a unique temporary folder, places a temporary app window in front, invokes Show in Folder and verifies that the exact Explorer window becomes foreground. It closes its own test windows afterward.
-- Android Nearby service static analysis passes. All **53 mobile tests** pass, covering call media state, conversation routing, presence expiry, wireless-audio signaling and output/meter UI. Android `:app:compileDebugKotlin --offline` also succeeds; a fresh mobile APK was not produced.
+- Android Nearby service static analysis passes. All **77 mobile tests** pass, covering call media state, conversation routing, presence expiry, wireless-audio signaling and output/meter UI. Android `:app:compileDebugKotlin --offline` also succeeds; Android 1.0.3 is built at `../build/releases/NearMitra-Android-1.0.3.apk`, with startup/background presence fixes; its native release Kotlin compilation also succeeds.
+- The reported Android Recent-apps swipe-away notification issue remains unresolved. Live two-device tray, screen-off and network-switch tests are still required.
 - Actual phones, cameras, audio endpoints, drivers, GPS reception and IoT hardware still require device-specific testing. Automated mocks and successful transport connection do not establish audible playback, perfect latency or working AI vision models.
 
 ## Security and data handling
