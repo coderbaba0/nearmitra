@@ -35,3 +35,12 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+
+# Developer-owned Firebase configuration (never commit live project settings)
+**/google-services.json
+**/GoogleService-Info.plist
+/firebase.json
+/.firebaserc
+/config/firebase.local.json
+/lib/firebase_options.local.dart
+**/wan_config.json
