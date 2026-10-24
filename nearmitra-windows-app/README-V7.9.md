@@ -1,4 +1,6 @@
-# Farmitra Nearby v7.9 — Bidirectional People Chat Stability
+# NearMitra — Archived v7.9 development notes
+
+> **Historical document.** These notes describe an earlier development iteration, not the current release. Use the [current Windows README](README.md) for Windows 2.1.23, Android 1.0.3 and installation links.
 
 This release fixes a Windows-side regression where desktop -> Android People chat could work while Android -> desktop messages were not visible in the selected conversation.
 

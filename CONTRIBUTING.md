@@ -4,7 +4,7 @@ Contributions to the Android app and Windows desktop app are welcome: bug report
 
 ## Before starting
 
-Check the repository's [issues](https://github.com/coderbaba0/farmitra_nearby_flutter/issues) and [pull requests](https://github.com/coderbaba0/farmitra_nearby_flutter/pulls) for related work. For a large feature, protocol change or dependency replacement, open an issue describing the problem and proposed approach before implementing it. Small fixes and documentation corrections can go straight to a pull request.
+Check the repository's [issues](https://github.com/coderbaba0/nearmitra/issues) and [pull requests](https://github.com/coderbaba0/nearmitra/pulls) for related work. For a large feature, protocol change or dependency replacement, open an issue describing the problem and proposed approach before implementing it. Small fixes and documentation corrections can go straight to a pull request.
 
 Keep discussions respectful and focused on the work. Share enough context for someone with a different device or operating system to reproduce the result.
 
@@ -25,9 +25,9 @@ Keep discussions respectful and focused on the work. Share enough context for so
 Fork the repository on GitHub, then work from the current `develop` branch:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/farmitra_nearby_flutter.git
-cd farmitra_nearby_flutter
-git remote add upstream https://github.com/coderbaba0/farmitra_nearby_flutter.git
+git clone https://github.com/YOUR_USERNAME/nearmitra.git
+cd nearmitra
+git remote add upstream https://github.com/coderbaba0/nearmitra.git
 git fetch upstream
 git switch -c fix/describe-the-change upstream/develop
 ```
