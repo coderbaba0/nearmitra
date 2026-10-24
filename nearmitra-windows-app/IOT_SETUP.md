@@ -1,6 +1,6 @@
 # Windows IoT setup and supported hardware
 
-Install `build/windows-release/NearMitra_Setup_2.1.19_x64.exe` for Windows. For standalone wireless audio and the latest mobile call/presence fixes, the phone needs a newer Android build from the current source; the existing Android 1.0.1 APK predates these updates. Close older portable desktop copies before opening the installed version.
+Install the [Windows 2.1.23 setup](https://github.com/coderbaba0/nearmitra/releases/download/v2.1.23/NearMitra_Setup_2.1.23_x64.exe) and [Android 1.0.3 APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk) from GitHub Releases. Close older Windows tray/portable copies before opening the installed version. Android Recent apps swipe-away delivery remains a known limitation; see the [current Windows README](README.md) for setup and compatibility notes.
 
 ## Phone battery and location
 
