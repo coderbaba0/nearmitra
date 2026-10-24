@@ -1272,98 +1272,6 @@ function renderRecentCalls() {
 }
 
 // -----------------------------------------------------------------------------
-// CHAT DRAG & DROP (Strictly routes to WAN WebRTC or LAN Socket)
-// -----------------------------------------------------------------------------
-function handleChatDragOver(e) {
-  e.preventDefault();
-  const overlay = document.getElementById("chatDropOverlay");
-  if (overlay) overlay.style.display = "flex";
-}
-
-function handleChatDragLeave(e) {
-  if (e.target.id === "chatDropOverlay" || !e.currentTarget.contains(e.relatedTarget)) {
-    const overlay = document.getElementById("chatDropOverlay");
-    if (overlay) overlay.style.display = "none";
-  }
-}
-
-async function handleChatDrop(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const overlay = document.getElementById("chatDropOverlay");
-  if (overlay) overlay.style.display = "none";
-
-  const files = e.dataTransfer ? e.dataTransfer.files : null;
-  if (!files || files.length === 0) {
-    showToast("No files detected in drop.");
-    return;
-  }
-
-  const targetPeer = appState.activePeer;
-  if (!targetPeer) {
-    showToast("Please select a device first");
-    return;
-  }
-
-  // 1. WAN PEER: Stream directly over WebRTC Data Channel to remote mobile / peer
-  const fileRoute = resolveChatRoute(targetPeer);
-  if (fileRoute.mode === 'wan') {
-    for (let i = 0; i < files.length; i++) {
-      await streamFileOverWan(files[i], fileRoute.id, targetPeer.name);
-    }
-    return;
-  }
-
-  // 2. LOCAL LAN PEER: Upload over local HTTP/TCP socket
-  const targetIP = resolveChatRoute(targetPeer).nearby?.ip || "";
-  const targetID = targetPeer.id;
-  const targetName = targetPeer.name || "Peer";
-
-  Array.from(files).forEach(file => {
-    const formData = new FormData();
-    formData.append("file", file, file.name);
-
-    showToast(`[Send] Sending "${file.name}" to ${targetName}...`);
-
-    fetch(`/api/send-file-upload?ip=${encodeURIComponent(targetIP || "")}`, {
-      method: "POST",
-      body: formData
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data && data.file) {
-          const fileMsg = {
-            id: "msg_" + Date.now() + "_" + Math.random().toString(36).slice(2),
-            peer_id: targetID,
-            peer_ip: targetIP,
-            sender: "Windows Host",
-            mine: true,
-            at: new Date(),
-            text: "",
-            attachment: {
-              name: data.file,
-              size: data.size ? formatFileSize(data.size) : "—",
-              type: "file",
-              status: "Delivered",
-              progress: 100
-            },
-            status: "Delivered",
-            is_wan: false,
-            reactions: {}
-          };
-          appState.messages.push(fileMsg);
-          savePersistedMessages();
-          renderChatMessages();
-          showToast(`[Success] "${data.file}" sent to ${targetName}`);
-        } else if (data && data.error) {
-          showToast(`[Error] ${data.error}`);
-        }
-      })
-      .catch(() => showToast(`[Error] Failed to send "${file.name}"`));
-  });
-}
-
-// -----------------------------------------------------------------------------
 // LIVE TYPING INDICATOR (Direct TCP 43889 Wire Status)
 // -----------------------------------------------------------------------------
 function handleUserTyping(isTyping = true) {
@@ -1602,7 +1510,7 @@ function handleDropFile(e) {
   e.preventDefault();
   e.stopPropagation();
   // Delegate to chat drop handler which properly sends files to active peer
-  handleChatDrop(e);
+  return handleChatDrop(e);
 }
 
 async function openSaveDirectory() {
@@ -7268,28 +7176,44 @@ async function handleChatDrop(e) {
     showToast("Please select a device first");
     return;
   }
-
-  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-    const file = e.dataTransfer.files[0];
-    const fileRoute = resolveChatRoute(targetPeer);
-  if (fileRoute.mode === 'wan') {
-      streamFileOverWan(file, fileRoute.id, targetPeer.name);
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (files.length === 0) {
+    showToast("No files detected in drop.");
+    return;
+  }
+  // Resolve once so changing the active chat cannot redirect a dropped batch.
+  const route = resolveChatRoute(targetPeer);
+  if (route.mode === 'offline') {
+    showToast(`${targetPeer.name || 'Selected device'} is offline. Open NearMitra on that device and reconnect.`);
+    return;
+  }
+  for (const file of files) {
+    if (route.mode === 'wan') {
+      await streamFileOverWan(file, route.id, targetPeer.name);
     } else {
-      uploadDroppedFileToPeer(file, fileRoute.nearby?.ip || "", targetPeer.id);
+      await uploadDroppedFileToPeer(file, route.nearby.ip);
     }
   }
 }
 
-async function uploadDroppedFileToPeer(file,targetIP,targetID) {
- const form=new FormData();form.append('file',file);
- try {
-  const response=await fetch('/api/send-file-upload?ip='+encodeURIComponent(targetIP || ''),{method:'POST',body:form});
-  if(!response.ok) throw new Error(await response.text());
-  const data=await response.json();if(data.error) throw new Error(data.error);
-  acceptSentAttachment(data);
- } catch(error) {showToast('File could not be sent: '+error.message);}
+async function uploadDroppedFileToPeer(file, targetIP) {
+  if (!targetIP) {
+    showToast('Selected device is offline. Reconnect before sending files.');
+    return;
+  }
+  const form = new FormData();
+  form.append('file', file, file.name);
+  showToast(`Sending "${file.name}"...`);
+  try {
+    const response = await fetch('/api/send-file-upload?ip=' + encodeURIComponent(targetIP), {method:'POST', body:form});
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    acceptSentAttachment(data);
+  } catch (error) {
+    showToast('File could not be sent: ' + error.message);
+  }
 }
-
 
 let chatDeviceLinks = {};
 try { chatDeviceLinks = JSON.parse(localStorage.getItem('nearmitra_chat_device_links') || '{}'); } catch (_) {}

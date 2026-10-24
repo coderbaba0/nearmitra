@@ -2,9 +2,9 @@
 
 NearMitra connects Android phones and Windows PCs for local chat, file/folder transfers, WebRTC calls, camera/audio streams and permission-based AI sharing. Nearby LAN and Wi-Fi Direct/P2P provide direct connections; Internet/WAN mode adds remote device discovery, presence and signaling. Local operation depends on the selected feature: cloud AI providers and WAN services require internet access.
 
-## Latest updates — 23 October 2026
+## Latest updates — 24 October 2026
 
-The current Windows installer is **2.1.22**. Android **1.0.3+4** is built locally at `build/releases/NearMitra-Android-1.0.3.apk`, including background presence startup, retry and Back-to-background fixes. The APK has not been published to a store or GitHub Release. See the [Windows README](nearmitra-windows-app/README.md), [hardware and feature notes](nearmitra-windows-app/IOT_SETUP.md), and [Windows signing guide](nearmitra-windows-app/WINDOWS_SIGNING.md).
+The current Windows installer is **2.1.23**, with restored drag-and-drop file sending, explicit offline feedback and multi-file drop handling. Android **1.0.3+4** is built locally at `build/releases/NearMitra-Android-1.0.3.apk`, including background presence startup, retry and Back-to-background fixes. The APK has not been published to a store or GitHub Release. See the [Windows README](nearmitra-windows-app/README.md), [hardware and feature notes](nearmitra-windows-app/IOT_SETUP.md), and [Windows signing guide](nearmitra-windows-app/WINDOWS_SIGNING.md).
 
 | Area | Current behavior |
 |---|---|
@@ -23,7 +23,7 @@ The current Windows installer is **2.1.22**. Android **1.0.3+4** is built locall
 
 | Platform | Version | Build output |
 |---|---|---|
-| Windows installer | 2.1.22, x64 | `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.22_x64.exe` |
+| Windows installer | 2.1.23, x64 | `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.23_x64.exe` |
 | Windows portable app | Current desktop source | `nearmitra-windows-app/build/windows-release/NearMitra.exe` |
 | Android APK | 1.0.3, versionCode 4 | `build/releases/NearMitra-Android-1.0.3.apk` |
 
@@ -37,7 +37,7 @@ With **Settings → Run in Background** ON, double-Back from the home screen min
 
 ### First cross-device test
 
-1. Exit older Windows tray/portable copies, install Windows 2.1.22, and update the phone to Android 1.0.3 using the local build paths below.
+1. Exit older Windows tray/portable copies, install Windows 2.1.23, and update the phone to Android 1.0.3 using the local build paths below.
 2. Connect both devices through Nearby LAN or a working Wi-Fi Direct/P2P link. Approve requests on the receiving device.
 3. Test text, a file and a folder. Check the sender's Windows chat while receiving, then test reaction removal, quoted Reply, hover → Copy and Select → Forward.
 4. For PC sound, open Windows **Voice → Broadcast PC Audio to Phone**, choose **All PC apps** and the same playback output used by your player, then **Send PC audio**. Approve on Android. Without a physical output, configure a separately installed virtual playback device first. Tab mode requires selecting an audible tab and sharing its audio.
@@ -47,7 +47,7 @@ With **Settings → Run in Background** ON, double-Back from the home screen min
 ### Release and validation limits
 
 - **Unsigned installer:** `flutterfever.com` is installer/Apps branding. UAC still shows **Unknown publisher** until a trusted Authenticode certificate signs the app/setup. The current installer still offers optional firewall elevation; a no-UAC installer was discussed but was not implemented. See [signing requirements](nearmitra-windows-app/WINDOWS_SIGNING.md).
-- **Build artifacts:** setup EXEs, APKs, user data and logs are not versioned. Build the Windows installer with `nearmitra-windows-app/build-installer.bat`; local output is `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.22_x64.exe`. No GitHub Release/upload is implied by a source push.
+- **Build artifacts:** setup EXEs, APKs, user data and logs are not versioned. Build the Windows installer with `nearmitra-windows-app/build-installer.bat`; local output is `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.23_x64.exe`. No GitHub Release/upload is implied by a source push.
 - **Compatibility:** standalone Wi-Fi Audio, native Android speaker routing and the GPS-provider changes require updated mobile source. Existing older APKs do not acquire those features when Windows is upgraded. The Windows Ollama stream uses the existing mobile streaming protocol.
 - **Transport:** standalone Wi-Fi Audio and device-chat Nearby AI require a direct Nearby/P2P connection. They are not WAN-only features. Ollama has incremental host streaming; cloud engines retain their current provider response behavior.
 - **AI vision:** the warehouse/person-counting database, persistent identities, male/female classification and production object-counting pipeline were discussed and deferred. Screenshot labels and visual filters do not establish that these models or a counting database are implemented. IoT devices require the supported gateway/driver contract described in [IOT_SETUP.md](nearmitra-windows-app/IOT_SETUP.md).
