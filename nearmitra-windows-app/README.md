@@ -1,12 +1,22 @@
 # NearMitra for Windows
 
-NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.22**, targeting **Windows 10/11 x64**.
+NearMitra connects Windows PCs and Android phones for chat, file/folder transfer, calls, camera streams, standalone wireless audio and permission-based AI sharing. The current installer is **2.1.23**, targeting **Windows 10/11 x64**.
+
+## Download & install
+
+| Platform | Release | Download |
+|---|---|---|
+| Windows 10/11 x64 | 2.1.23 | [Download Windows setup](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/download/v2.1.23/NearMitra_Setup_2.1.23_x64.exe) |
+| Android companion | 1.0.3 · build 4 | [Download Android APK](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk) |
+
+[Windows release notes](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/tag/v2.1.23) · [Android release notes](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/tag/v1.0.3) · [Website](https://coderbaba0.github.io/nearmitra/) · [All releases](https://github.com/coderbaba0/farmitra_nearby_flutter/releases)
+
 
 The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript interface opened in a Windows browser app window, plus native Win32 tray, picker, audio and Explorer integrations. Older native-renderer code and historical screenshots remain in the repository; they are not the current UI specification.
 
-## Updates included in 2.1.22
+## Updates included in 2.1.23
 
-Latest local rebuild: **23 October 2026**. Android companion: **1.0.3 (versionCode 4)** at `../build/releases/NearMitra-Android-1.0.3.apk`.
+Current Windows release: **2.1.23**. Android companion: **1.0.3 (versionCode 4)**. Use the GitHub Release downloads above, or follow the build instructions below to create your own binaries.
 
 | Versions | Changes |
 |---|---|
@@ -22,14 +32,15 @@ Latest local rebuild: **23 October 2026**. Android companion: **1.0.3 (versionCo
 | 2.1.19 | Copy beside Select in message hover actions, clipboard feedback/fallback, and configured desktop avatars included in discovery handshakes and preserved across rescans. |
 | 2.1.20 | Refresh typing while composing, preserve WAN typing across state polls, match device identities, and handle stop/expiry per conversation. |
 | 2.1.21 | Background TCP hello checks keep reachable local apps online when UDP beacons are missed; unified local-first status, WAN read failure handling, and serialized state polling prevent false offline updates. |
+| 2.1.23 | Restored the drag-drop upload endpoint; online drops send all selected files through the existing Nearby-first/WAN routing, while offline drops show a clear message. |
 | 2.1.22 | Versioned rebuild of the current desktop source; retains the Copy, avatar, typing and background presence fixes from 2.1.19–2.1.21. |
 
-Android 1.0.3 is available as a local companion APK. The recent-apps swipe-away notification issue remains unresolved; this rebuild does not add a fix for that Android lifecycle case.
+Android 1.0.3 is available as a [GitHub Release APK](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk). The recent-apps swipe-away notification issue remains unresolved; this rebuild does not add a fix for that Android lifecycle case.
 
 ## Install or upgrade
 
 1. Build the setup as described below, or use the installer supplied separately by the maintainer.
-2. Exit old NearMitra tray/portable copies and run `build\windows-release\NearMitra_Setup_2.1.22_x64.exe`.
+2. Exit old NearMitra tray/portable copies, [download the Windows 2.1.23 setup](https://github.com/coderbaba0/farmitra_nearby_flutter/releases/download/v2.1.23/NearMitra_Setup_2.1.23_x64.exe), and run `NearMitra_Setup_2.1.23_x64.exe`.
 3. Choose preferences. **Auto-start NearMitra minimized when Windows starts** is checked by default and can be unchecked.
 4. Optional **Allow Nearby on private networks** requests administrator approval for the setup executable. It adds inbound TCP/UDP rules limited to this program, the private profile and local subnet. Declining approval still completes installation, but incoming discovery, files or calls may be blocked until allowed in Windows Firewall.
 5. Launch the installed copy. The tray icon may be inside Windows' notification overflow.
@@ -136,7 +147,7 @@ Local outputs:
 
 ```text
 build\windows-release\NearMitra.exe
-build\windows-release\NearMitra_Setup_2.1.22_x64.exe
+build\windows-release\NearMitra_Setup_2.1.23_x64.exe
 ```
 
 Run the build first on a fresh clone: the installer embeds `installer/NearMitra.exe`, which is generated and intentionally not committed. The build copies the current app into the setup's embedded payload. Installer tests compare its bytes with the release app. If a trusted certificate is configured, the app is signed/verified before embedding, then setup is signed/verified; configured signing failures abort the build. Without a certificate, output remains explicitly unsigned.

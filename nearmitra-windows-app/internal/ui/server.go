@@ -201,8 +201,8 @@ func serveEmbeddedUI(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-// Start launches embedded web server.
-func (hs *HTTPServer) Start() error {
+// routes defines the embedded UI and API handlers.
+func (hs *HTTPServer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", serveEmbeddedUI)
@@ -217,6 +217,7 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/profile/update", hs.handleProfileUpdate)
 	mux.HandleFunc("/api/profile/reset", hs.handleProfileReset)
 	mux.HandleFunc("/api/send-file", hs.handleSendFile)
+	mux.HandleFunc("/api/send-file-upload", hs.handleSendFileUpload)
 	mux.HandleFunc("/api/send-folder", hs.handleSendFolder)
 	mux.HandleFunc("/api/chat/send", hs.handleChatSend)
 	mux.HandleFunc("/api/chat/receive-file", hs.handleChatReceiveFile)
@@ -297,6 +298,12 @@ func (hs *HTTPServer) Start() error {
 	mux.HandleFunc("/api/wan/session/incoming", hs.handleWanSessionIncoming)
 	mux.HandleFunc("/api/wan/session/delete", hs.handleWanSessionDelete)
 
+	return mux
+}
+
+// Start launches embedded web server.
+func (hs *HTTPServer) Start() error {
+	mux := hs.routes()
 	var listener net.Listener
 	var err error
 	for i := 0; i < 10; i++ {
@@ -452,6 +459,10 @@ func (hs *HTTPServer) handleSendFileUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	targetIP := r.URL.Query().Get("ip")
+	if targetIP == "" {
+		http.Error(w, "Selected device is offline or unavailable. Reconnect before sending files.", http.StatusBadRequest)
+		return
+	}
 
 	// 200 MB max
 	if err := r.ParseMultipartForm(200 << 20); err != nil {
@@ -469,10 +480,6 @@ func (hs *HTTPServer) handleSendFileUpload(w http.ResponseWriter, r *http.Reques
 	defer file.Close()
 	defer r.MultipartForm.RemoveAll()
 
-	if targetIP == "" {
-		http.Error(w, "Select an available Nearby device", 400)
-		return
-	}
 	path, err := transfer.StoreReceivedFile(hs.chatMgr.AttachmentDirectory(), header.Filename, false, file, header.Size)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
