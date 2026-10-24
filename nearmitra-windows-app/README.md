@@ -14,6 +14,18 @@ NearMitra connects Windows PCs and Android phones for chat, file/folder transfer
 
 The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript interface opened in a Windows browser app window, plus native Win32 tray, picker, audio and Explorer integrations. Older native-renderer code and historical screenshots remain in the repository; they are not the current UI specification.
 
+## Video walkthrough
+
+See how to use NearMitra in this YouTube walkthrough. Click the preview or **▶ Play video** to open the video at **0:24**.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=M79xzZUn_0Q&amp;t=24s" title="Play the NearMitra usage walkthrough on YouTube">
+    <img src="https://i.ytimg.com/vi/M79xzZUn_0Q/hqdefault.jpg" alt="NearMitra usage walkthrough — click to watch on YouTube" width="640" />
+  </a>
+  <br />
+  <a href="https://www.youtube.com/watch?v=M79xzZUn_0Q&amp;t=24s"><strong>▶ Play video — How to use NearMitra</strong></a>
+</p>
+
 ## Updates included in 2.1.23
 
 Current Windows release: **2.1.23**. Android companion: **1.0.3 (versionCode 4)**. Use the GitHub Release downloads above, or follow the build instructions below to create your own binaries.

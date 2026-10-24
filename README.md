@@ -17,6 +17,18 @@ Android **1.0.3** and Windows **2.1.23** are available through GitHub Releases.
 
 [Browse all releases](https://github.com/coderbaba0/nearmitra/releases). For platform setup, see the [Windows guide](nearmitra-windows-app/README.md), [hardware and feature notes](nearmitra-windows-app/IOT_SETUP.md), and [Windows signing guide](nearmitra-windows-app/WINDOWS_SIGNING.md).
 
+## Video walkthrough
+
+See how to use NearMitra in this YouTube walkthrough. Click the preview or **▶ Play video** to open the video at **0:24**.
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=M79xzZUn_0Q&amp;t=24s" title="Play the NearMitra usage walkthrough on YouTube">
+    <img src="https://i.ytimg.com/vi/M79xzZUn_0Q/hqdefault.jpg" alt="NearMitra usage walkthrough — click to watch on YouTube" width="640" />
+  </a>
+  <br />
+  <a href="https://www.youtube.com/watch?v=M79xzZUn_0Q&amp;t=24s"><strong>▶ Play video — How to use NearMitra</strong></a>
+</p>
+
 ## Latest updates — 24 October 2026
 
 **Windows 2.1.23** restores drag-and-drop file sending from the dashboard and chat: online devices receive dropped files through the existing Nearby-first/WAN routing, multiple files stay targeted to the selected recipient, and offline devices show a clear message. Android **1.0.3** includes background presence startup, retry and Back-to-background changes; the Recent apps swipe-away limitation is documented below.
