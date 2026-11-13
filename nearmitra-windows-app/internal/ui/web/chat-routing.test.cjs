@@ -3,6 +3,18 @@ const peers=[{id:'lan',internet_device_id:'wan',name:'Phone',ip:'192.168.1.4',is
 const wan={internet_mode_enabled:true,trusted_devices:[{id:'wan',is_online:true}]},links=chat.learn(peers,{});
 test('Both entry points prioritize Nearby and show both histories',()=>{for(const p of [peers[0],{id:'wan',is_wan:true}]){assert.equal(chat.resolve(p,peers,wan,links).mode,'nearby');assert.ok(chat.matches({peer_id:'lan'},p,peers,links));assert.ok(chat.matches({peer_id:'wan',is_wan:true},p,peers,links));assert.ok(!chat.matches({peer_id:'unrelated'},p,peers,links));}});
 test('WAN requires explicit enablement and a trusted recipient',()=>{assert.equal(chat.resolve({id:'wan'},[],wan,links).mode,'wan');assert.equal(chat.resolve({id:'wan'},[],{...wan,internet_mode_enabled:false},links).mode,'offline');assert.equal(chat.resolve({id:'untrusted'},[],wan,links).mode,'offline');});
+test('Local wins over WAN offline and transitions back from WAN after local recovery',()=>{
+ const local=peers.map(p=>({...p})),entry={id:'wan',is_wan:true};
+ const cloud={...wan,trusted_devices:[{id:'wan',is_online:false}]};
+ assert.equal(chat.resolve(entry,local,cloud,links).mode,'nearby');
+ local[0].is_online=false;assert.equal(chat.resolve(entry,local,wan,links).mode,'wan');
+ assert.equal(chat.resolve(entry,local,cloud,links).mode,'offline');
+ local[0].is_online=true;assert.equal(chat.resolve(entry,local,wan,links,'wan').mode,'nearby');
+});
+test('Local selection survives peer ID replacement at the same confirmed local address',()=>{
+ assert.equal(chat.resolve({id:'manual_192.168.1.4',ip:'192.168.1.4'},peers,wan,links).mode,'nearby');
+ assert.equal(chat.resolve({id:'unrelated',is_wan:true,ip:'192.168.1.4'},peers,wan,links).mode,'offline');
+});
 test('Received native folders render as attachments and updated status replaces same ID',()=>{const m=chat.merge([{id:'f1',status:'Downloading',at:'2026-01-01'}],[{id:'f1',kind:'folder',file_name:'Documents',file_path:'C:/Received/Documents',status:'Delivered',at:'2026-01-01'}]);assert.equal(m.length,1);assert.equal(m[0].attachment.name,'Documents');assert.equal(m[0].status,'Delivered');assert.ok(m[0].file_path);});
 test('Queued messages survive unrelated server snapshots',()=>{assert.equal(chat.merge([{id:'q',status:'Queued'}],[]).length,1);});
 const vm=require('node:vm'),fs=require('node:fs');
@@ -10,6 +22,45 @@ function browser(fetcher){
  const ctx={console,NearMitraChat:chat,NearMitraCall:require('./nearby-call.js'),NearMitraAudioCapture:require('./audio-capture.js'),localStorage:{getItem:()=>null,setItem:()=>{}},document:{addEventListener:()=>{},getElementById:()=>null,querySelectorAll:()=>[]},window:{addEventListener:()=>{}},performance:{now:()=>0},setInterval:()=>0,clearInterval:()=>{},setTimeout,clearTimeout,Blob,FormData,File,ArrayBuffer,Uint8Array,URL,fetch:fetcher,crypto:require('node:crypto').webcrypto};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(__dirname+'/app.js','utf8'),ctx);vm.runInContext('showToast=()=>{};',ctx);return ctx;
 }
+test('WAN state polling cannot overwrite Nearby status, regardless of active sidebar tab',async()=>{
+ const ctx=browser(async()=>new Response(JSON.stringify({internet_mode_enabled:true,trusted_devices:[{id:'wan',is_online:false}]})));
+ const nodes=new Map();ctx.document.getElementById=id=>{
+  if(!nodes.has(id))nodes.set(id,{style:{},innerText:'',innerHTML:'',value:'',classList:{contains:()=>false}});
+  return nodes.get(id);
+ };
+ vm.runInContext("appState.peers=[{id:'lan',internet_device_id:'wan',name:'Phone',ip:'192.168.1.4',is_online:true}];appState.activePeer={id:'wan',name:'Phone',is_wan:true};appState.connectionMode='p2p'",ctx);
+ await vm.runInContext('fetchWanState()',ctx);
+ assert.match(nodes.get('chatHeaderStatus').innerText,/Online.*Nearby/);
+ vm.runInContext("updateWanChatStatus('Offline','#999');appState.connectionMode='wan'",ctx);
+ assert.match(nodes.get('chatHeaderStatus').innerText,/Online.*Nearby/);
+ await vm.runInContext('fetchWanState()',ctx);
+ assert.match(nodes.get('chatHeaderStatus').innerText,/Online.*Nearby/);
+ assert.match(nodes.get('masterItemsList').innerHTML,/>Online</);
+ assert.equal(vm.runInContext('appState.activePeer.is_online',ctx),true);
+});
+test('WAN online refresh updates active local history without opening the WAN tab',async()=>{
+ const ctx=browser(async()=>new Response(JSON.stringify(wan)));
+ const nodes=new Map();ctx.document.getElementById=id=>{
+  if(!nodes.has(id))nodes.set(id,{style:{},innerText:''});return nodes.get(id);
+ };
+ vm.runInContext("chatDeviceLinks={lan:'wan'};appState.peers=[{id:'lan',internet_device_id:'wan',ip:'192.168.1.4',is_online:false}];appState.activePeer={id:'lan',name:'Phone',ip:'192.168.1.4'};appState.connectionMode='p2p'",ctx);
+ await vm.runInContext('fetchWanState()',ctx);
+ assert.match(nodes.get('chatHeaderStatus').innerText,/Online.*Internet/);
+});
+test('Slow WAN state requests do not overlap and polling resumes after a failure',async()=>{
+ let requests=0,release;
+ const ctx=browser(()=>{requests++;return new Promise(resolve=>release=resolve);});
+ const pending=vm.runInContext('fetchWanState()',ctx);
+ await vm.runInContext('fetchWanState()',ctx);assert.equal(requests,1);
+ release(new Response('',{status:503}));await pending;
+ const next=vm.runInContext('fetchWanState()',ctx);assert.equal(requests,2);
+ release(new Response('{}'));await next;
+});
+test('Nearby sidebar renders app offline instead of claiming cached devices are ready',()=>{
+ const ctx=browser();const list={innerHTML:''};ctx.document.getElementById=id=>id==='masterItemsList'?list:null;
+ vm.runInContext("appState.connectionMode='nearby';appState.peers=[{id:'pc',name:'Office',ip:'192.168.1.9',is_online:false}];appState.lanDevices=[{ip:'192.168.1.9',hostname:'Office',is_nearmitra:true,device_type:'computer'}];renderMasterList()",ctx);
+ assert.match(list.innerHTML,/App offline/);assert.match(list.innerHTML,/>Offline</);assert.ok(!list.innerHTML.includes('50 MB/s Ready'));
+});
 async function settle(){for(let i=0;i<8;i++) await new Promise(setImmediate);}
 test('Real WAN handler persists mobile file bytes before acknowledging delivery',async()=>{
  let stored=false;const ctx=browser(async(url,options)=>{assert.equal(url,'/api/chat/receive-file');const meta=JSON.parse(options.body.get('message'));assert.equal(await options.body.get('file').text(),'hello');stored=true;return new Response(JSON.stringify({...meta,file_path:'C:/Received/mobile.txt',status:'Delivered'}));});

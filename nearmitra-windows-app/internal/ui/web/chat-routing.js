@@ -11,7 +11,9 @@
   function resolve(peer, peers, wan, links, connectedID) {
     if (!peer) return {mode:'offline'};
     const id = canonical(peer.internet_device_id || peer.id, links);
-    const nearby = (peers || []).find(p => canonical(p.internet_device_id || p.id, links) === id && p.is_online !== false && p.ip && !p.ip.startsWith('wan'));
+    const nearby = (peers || []).find(p => p.is_online !== false && p.ip && !p.ip.startsWith('wan') &&
+      (canonical(p.internet_device_id || p.id, links) === id ||
+       (!peer.is_wan && peer.ip && p.ip === peer.ip)));
     const internet = ((wan && wan.trusted_devices) || []).find(p => p.id === id);
     return {id, nearby, internet, mode:nearby ? 'nearby' : wan && wan.internet_mode_enabled && internet && (internet.is_online || connectedID === id) ? 'wan' : 'offline'};
   }

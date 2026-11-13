@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import io.flutter.embedding.engine.FlutterEngine
 
 class FarmitraForegroundService : Service() {
 
@@ -24,6 +25,8 @@ class FarmitraForegroundService : Service() {
         const val ACTION_STOP_SERVICE = "ACTION_STOP_SERVICE"
         const val ACTION_WIRELESS_AUDIO = "ACTION_WIRELESS_AUDIO"
         const val ACTION_START_MEDIA_PROJECTION = "ACTION_START_MEDIA_PROJECTION"
+        const val ACTION_PHONE_AUDIO = "ACTION_PHONE_AUDIO"
+        const val ACTION_NOTIFICATION_REPLY = "com.farmitra.nearby.NOTIFICATION_REPLY"
         private const val TAG = "FarmitraService"
 
         var isRunning = false
@@ -33,6 +36,10 @@ class FarmitraForegroundService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var networkingEngine: FlutterEngine? = null
+    private val replyHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var replyExpiry: Runnable? = null
+    private var replyOnly = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -42,15 +49,65 @@ class FarmitraForegroundService : Service() {
             stopForegroundService()
             return START_NOT_STICKY
         }
-        val isMediaProjection = action == ACTION_START_MEDIA_PROJECTION
-        val wirelessMode = if (action == ACTION_WIRELESS_AUDIO) {
+        // Reject cancelled audio starts before touching a temporary reply lease.
+        val phoneAudioSession = intent?.getStringExtra("phone_audio_session")
+        if (phoneAudioSession != null && !PhoneAudioRelay.acceptsServiceStart(phoneAudioSession)) {
+            @Suppress("DEPRECATION")
+            val receiver = intent.getParcelableExtra<android.os.ResultReceiver>("projectionReady")
+            receiver?.send(0, null)
+            if (!isRunning) stopSelf()
+            return if (isRunning && NearbyEngineHost.backgroundEnabled(this)) START_STICKY else START_NOT_STICKY
+        }
+        if (action == ACTION_NOTIFICATION_REPLY && isRunning) {
+            // Inbox events already wake the retained runtime. Do not change an
+            // ongoing call/cast/audio service's notification or foreground type.
+            if (replyOnly) armReplyExpiry()
+            return if (NearbyEngineHost.backgroundEnabled(this)) START_STICKY else START_NOT_STICKY
+        }
+        if (action == ACTION_NOTIFICATION_REPLY && !NearbyEngineHost.backgroundEnabled(this)) {
+            replyOnly = true
+            armReplyExpiry()
+        } else {
+            replyExpiry?.let { replyHandler.removeCallbacks(it) }
+            replyExpiry = null
+            replyOnly = false
+        }
+        // A sticky restart may arrive without an Activity or Intent. Never
+        // revive networking if the owner explicitly turned background mode OFF.
+        if ((action == null || action == ACTION_START_SERVICE) &&
+            !NearbyEngineHost.backgroundEnabled(this)) {
+            stopForegroundService()
+            return START_NOT_STICKY
+        }
+        val isMediaProjection = action == ACTION_START_MEDIA_PROJECTION || action == ACTION_PHONE_AUDIO
+        val wirelessMode = if (action == ACTION_PHONE_AUDIO) "system" else if (action == ACTION_WIRELESS_AUDIO) {
             if (intent.getBooleanExtra("microphone", false)) "microphone" else "speaker"
         } else null
-        val ready = startForegroundServiceNow(isMediaProjection, wirelessMode)
+        var ready = startForegroundServiceNow(isMediaProjection, wirelessMode)
+        if (ready) {
+            try {
+                // Reuse the visible engine, or bootstrap the same Dart runtime
+                // after process death. Task removal never creates a second one.
+                networkingEngine = NearbyEngineHost.forService(this)
+            } catch (error: Exception) {
+                Log.e(TAG, "Could not start networking runtime", error)
+                ready = false
+                stopForegroundService()
+            }
+        } else {
+            stopSelf()
+        }
         @Suppress("DEPRECATION")
         val receiver = intent?.getParcelableExtra<android.os.ResultReceiver>("projectionReady")
         receiver?.send(if (ready) 1 else 0, null)
-        return START_STICKY
+        return if (ready && NearbyEngineHost.backgroundEnabled(this)) START_STICKY else START_NOT_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Android may destroy FlutterActivity on a Recents swipe. The service
+        // retains the engine, socket listeners and Dart timers independently.
+        if (!NearbyEngineHost.backgroundEnabled(this) && !replyOnly) stopForegroundService()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun startForegroundServiceNow(isMediaProjection: Boolean = false, wirelessMode: String? = null): Boolean {
@@ -83,11 +140,25 @@ class FarmitraForegroundService : Service() {
     }
 
     private fun stopForegroundService() {
+        replyExpiry?.let { replyHandler.removeCallbacks(it) }
+        replyExpiry = null
+        replyOnly = false
         releaseLocks()
         isRunning = false
         @Suppress("DEPRECATION")
         stopForeground(true)
         stopSelf()
+    }
+
+    private fun armReplyExpiry() {
+        replyExpiry?.let { replyHandler.removeCallbacks(it) }
+        val expiry = Runnable {
+            if (replyOnly && !NearbyEngineHost.backgroundEnabled(this)) stopForegroundService()
+        }
+        replyExpiry = expiry
+        // A user-triggered reply may temporarily run with Background OFF, but
+        // must not silently turn that preference into an indefinite service.
+        replyHandler.postDelayed(expiry, 120000)
     }
 
     private fun acquireLocks() {
@@ -155,15 +226,17 @@ class FarmitraForegroundService : Service() {
         )
 
         val title = when {
+            wirelessMode == "system" -> "NearMitra Phone Audio Sharing"
             wirelessMode == "microphone" -> "NearMitra Wireless Microphone"
             wirelessMode == "speaker" -> "NearMitra Wireless Speaker"
             isMediaProjection -> "NearMitra Screen Casting Active"
-            else -> "NearMitra Active"
+            else -> if (replyOnly) "NearMitra Sending Reply" else "NearMitra Active"
         }
         val text = when (wirelessMode) {
+            "system" -> "Sharing app audio only • Tap to open audio controls"
             "microphone" -> "Sharing microphone audio • Tap to open streaming controls"
             "speaker" -> "Receiving device audio • Tap to open streaming controls"
-            else -> if (isMediaProjection) "Broadcasting your phone screen to peer" else "P2P Transfers, Calls & Streams Active"
+            else -> if (replyOnly) "Sending saved reply • Tap to open NearMitra" else if (isMediaProjection) "Broadcasting your phone screen to peer" else "P2P Transfers, Calls & Streams Active"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -177,8 +250,12 @@ class FarmitraForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        replyExpiry?.let { replyHandler.removeCallbacks(it) }
+        PhoneAudioRelay.stopForService()
         releaseLocks()
         isRunning = false
+        networkingEngine = null
+        NearbyEngineHost.releaseService(this)
         super.onDestroy()
     }
 }

@@ -158,3 +158,43 @@ func TestCachedPresenceExpiresEvenWithoutAnotherFirebaseResponse(t *testing.T) {
 		t.Fatal("stale trusted desktop still shown online")
 	}
 }
+
+func TestFailedPresenceReadDoesNotAnnounceTrustedPeerOffline(t *testing.T) {
+	ws := testPresenceService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/presence.json" {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`null`))
+	})
+	ws.trustedDevices["pc"] = &WanDevice{ID: "pc", Platform: "windows", IsOnline: true, LastSeen: time.Now(), IsTrusted: true}
+	ws.syncTrustedDevices()
+	if !ws.GetState().TrustedDevices[0].IsOnline {
+		t.Fatal("failed Firebase read produced false offline")
+	}
+	ws.trustedDevices["pc"].LastSeen = time.Now().Add(-2 * time.Minute)
+	if ws.GetState().TrustedDevices[0].IsOnline {
+		t.Fatal("cached desktop lease no longer expires")
+	}
+}
+
+func TestBackgroundServicePublishesPresenceWithoutBrowserOrWANTab(t *testing.T) {
+	published := make(chan struct{}, 1)
+	ws := testPresenceService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && len(r.URL.Path) > 10 && r.URL.Path[:10] == "/presence/" {
+			select {
+			case published <- struct{}{}:
+			default:
+			}
+		}
+		_, _ = w.Write([]byte(`null`))
+	})
+	ws.running = false
+	ws.Start()
+	defer ws.Stop()
+	select {
+	case <-published:
+	case <-time.After(3 * time.Second):
+		t.Fatal("backend did not publish presence without a browser")
+	}
+}

@@ -47,7 +47,12 @@
             android:name=".FarmitraForegroundService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="connectedDevice|mediaProjection|microphone|mediaPlayback" />
+
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".CallActionReceiver"

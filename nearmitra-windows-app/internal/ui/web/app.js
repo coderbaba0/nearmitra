@@ -308,7 +308,10 @@ function startStatePoller() {
   setInterval(fetchState, 1000);
 }
 
+let stateRequestPending = false;
 async function fetchState() {
+  if (stateRequestPending) return;
+  stateRequestPending = true;
   try {
     const res = await fetch("/api/state");
     if (res.ok) {
@@ -317,6 +320,8 @@ async function fetchState() {
     }
   } catch (err) {
     // mock fallback
+  } finally {
+    stateRequestPending = false;
   }
   fetchWanState();
 }
@@ -399,23 +404,7 @@ function updateUIFromState(data) {
 
   // ── Typing Indicator Sync ──
   appState.typingPeers = data.typing_peers || [];
-  if (appState.activePeer) {
-    const isPeerTyping = appState.typingPeers.some(id =>
-      id === appState.activePeer.id ||
-      id === appState.activePeer.ip ||
-      id === appState.activePeer.name
-    );
-    const bar = document.getElementById("chatTypingBar");
-    const label = document.getElementById("typingPeerLabel");
-    if (bar && label) {
-      if (isPeerTyping) {
-        label.innerText = `${appState.activePeer.name || 'Peer'} is typing...`;
-        bar.style.display = "flex";
-      } else {
-        bar.style.display = "none";
-      }
-    }
-  }
+  renderPeerTyping();
 
   if (Array.isArray(data.chat_messages)) {
     resolveChatRoute(appState.activePeer);
@@ -600,7 +589,9 @@ function renderMasterList() {
     } else {
       peers.forEach((p) => {
         const isActive = appState.activePeer && (appState.activePeer.id === p.id || appState.activePeer.ip === p.ip);
-        const isTyping = (appState.typingPeers || []).some(id => id === p.id || id === p.ip || id === p.name);
+        const isTyping = isChatPeerTyping(p);
+        const peerRoute = resolveChatRoute(p);
+        const isOnline = peerRoute.mode !== 'offline';
         const avatarHTML = renderAvatarCircle(p.name, p.avatar_emoji, true, false, "phone");
         const safeId = escapeHTML(p.id || p.ip);
         const pinKey = escapeHTML(p.ip || p.id || p.name);
@@ -616,7 +607,7 @@ function renderMasterList() {
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
                   ${incomingDeviceBadge(p)}
-                  <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : 'Live'}</span>
+                  <span class="card-time">${isTyping ? '<span style="color:var(--primary-emerald); font-weight:600;">typing…</span>' : (isOnline ? 'Online' : 'Offline')}</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
                       <path d="M12 17v5"></path>
@@ -626,8 +617,8 @@ function renderMasterList() {
                 </div>
               </div>
               <div class="card-sub-row">
-                <span class="card-snippet highlight">${isTyping ? '💬 Typing message...' : (p.ip || '192.168.1.55') + ' • 50 MB/s Ready'}</span>
-                <span class="card-badge-pill bg-emerald-dim">P2P Mesh</span>
+                <span class="card-snippet highlight">${isTyping ? '💬 Typing message...' : (isOnline ? (peerRoute.mode === 'nearby' ? p.ip + ' • Nearby ready' : 'Internet ready') : 'Offline • Messages queued')}</span>
+                <span class="card-badge-pill bg-emerald-dim">${peerRoute.mode === 'nearby' ? 'P2P Mesh' : peerRoute.mode === 'wan' ? 'Internet' : 'Offline'}</span>
               </div>
             </div>
           </div>
@@ -700,10 +691,12 @@ function renderMasterList() {
         const matchedPeer = (appState.peers || []).find(p => p.ip === dev.ip);
         const displayName = matchedPeer ? matchedPeer.name : (dev.hostname || dev.ip);
         const isNearMitra = dev.is_nearmitra || !!matchedPeer;
+        const statusRoute = matchedPeer ? resolveChatRoute(matchedPeer) : {mode:'offline'};
+        const isOnline = statusRoute.mode !== 'offline';
         const avatarEmoji = (matchedPeer && matchedPeer.avatar_emoji) ? matchedPeer.avatar_emoji : dev.avatar_emoji;
         const isRouter = dev.device_type === "router" || dev.ip.endsWith(".1");
 
-        let devBadge = isNearMitra ? "P2P Ready" : "LAN Host";
+        let devBadge = isNearMitra ? (isOnline ? (statusRoute.mode === 'nearby' ? 'P2P Ready' : 'Internet') : 'Offline') : "LAN Host";
         if (isRouter) {
           devBadge = "Gateway";
         } else if (dev.device_type === "printer") {
@@ -728,7 +721,7 @@ function renderMasterList() {
                 </span>
                 <div style="display:flex; align-items:center; gap:4px;">
                   ${incomingDeviceBadge({id:dev.id || dev.ip,ip:dev.ip,name:displayName})}
-                  <span class="card-time">${dev.ping_ms || 2}ms</span>
+                  <span class="card-time">${isNearMitra ? (isOnline ? 'Online' : 'Offline') : (dev.ping_ms || 2) + 'ms'}</span>
                   <button class="btn-card-pin ${isPinned ? 'pinned' : ''}" onclick="togglePinDevice('${pinKey}', event)" title="${isPinned ? 'Unpin device' : 'Pin device to top'}">
                     <svg viewBox="0 0 24 24" fill="${isPinned ? '#10B981' : 'none'}" stroke="currentColor" stroke-width="2" style="width:13px;height:13px; transform: rotate(45deg);">
                       <path d="M12 17v5"></path>
@@ -738,7 +731,7 @@ function renderMasterList() {
                 </div>
               </div>
               <div class="card-sub-row">
-                <span class="card-snippet">${dev.ip} • ${isNearMitra ? '50 MB/s Ready' : 'TCP Port ' + ((dev.open_ports || [])[0] || '80')}</span>
+                <span class="card-snippet">${dev.ip} • ${isNearMitra ? (isOnline ? (statusRoute.mode === 'nearby' ? 'Nearby ready' : 'Internet ready') : 'App offline') : 'TCP Port ' + ((dev.open_ports || [])[0] || '80')}</span>
                 <span class="card-badge-pill ${isNearMitra ? 'bg-emerald-dim' : 'bg-blue-dim'}">${devBadge}</span>
               </div>
             </div>
@@ -800,6 +793,7 @@ function selectLANDevice(idx) {
 }
 
 function updateDetailViewForPeer(peer) {
+  renderPeerTyping();
   let emoji = (peer.avatar_emoji || "").trim();
   if (!emoji && peer.name) {
     const emojiRegex = /(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u;
@@ -815,7 +809,7 @@ function updateDetailViewForPeer(peer) {
   document.getElementById("heroPeerName").innerText = peer.name;
   document.getElementById("heroPeerStatus").innerText = chatRoute.mode === "offline" ? "Offline" : "Online • " + (isWan ? "Internet" : "Nearby");
   document.getElementById("heroPeerType").innerText = isWan ? "NearMitra Internet WAN" : "NearMitra Direct P2P";
-  document.getElementById("heroPeerIP").innerText = isWan ? "Internet Peer" : (peer.ip || "192.168.1.55");
+  document.getElementById("heroPeerIP").innerText = isWan ? "Internet Peer" : (chatRoute.nearby?.ip || peer.ip || "—");
   const heroAvatar = document.getElementById("heroPeerAvatar");
   if (heroAvatar) heroAvatar.innerText = avatarDisplay;
 
@@ -825,7 +819,7 @@ function updateDetailViewForPeer(peer) {
   if (chatInitials) chatInitials.innerText = avatarDisplay;
   document.getElementById("chatHeaderStatus").innerText = chatRoute.mode === "offline" ? "Offline • Messages queued" : isWan ? "Online • Internet" : `Online • Nearby (${chatRoute.nearby.ip})`;
   const dropLabel = document.getElementById("dropTargetLabel");
-  if (dropLabel) dropLabel.innerText = isWan ? `Transfer to ${peer.name} (WAN Mesh)` : `Transfer to ${peer.name} (${peer.ip})`;
+  if (dropLabel) dropLabel.innerText = isWan ? `Transfer to ${peer.name} (WAN Mesh)` : `Transfer to ${peer.name} (${chatRoute.nearby?.ip || peer.ip})`;
 
   // Voice & Video Call
   document.getElementById("callPeerTitle").innerText = peer.name;
@@ -1274,93 +1268,62 @@ function renderRecentCalls() {
 // -----------------------------------------------------------------------------
 // LIVE TYPING INDICATOR (Direct TCP 43889 Wire Status)
 // -----------------------------------------------------------------------------
-function handleUserTyping(isTyping = true) {
-  if (typingTimeout) clearTimeout(typingTimeout);
-  const targetPeer = appState.activePeer;
-  if (!targetPeer) return;
-  const targetIP = resolveChatRoute(targetPeer).nearby?.ip || "";
-  const targetID = targetPeer.id || "";
-  const isWanPeer = resolveChatRoute(targetPeer).mode === 'wan';
-
-  // Send over WAN DataChannel if WAN peer
-  if (isWanPeer && wanDataChannel && wanDataChannel.readyState === "open") {
-    try {
-      wanDataChannel.send(JSON.stringify({
-        id: "ctrl_" + Date.now(),
-        type: "control",
-        timestamp: Date.now(),
-        payload: {
-          action: "typing",
-          isTyping: isTyping,
-          senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
-        }
-      }));
-    } catch (_) {}
-  }
-
-  if (isTyping) {
-    if (!appState._userTypingSent) {
-      appState._userTypingSent = true;
-      if (!isWanPeer && targetIP) {
-        fetch("/api/chat/typing", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: true })
-        }).catch(() => { });
-      }
+let outgoingTyping = null;
+const remoteTypingUntil = new Map();
+function sendTypingStatus(target, isTyping) {
+  if(target.mode === 'wan') {
+    if(wanDataChannel?.readyState === 'open' && wanConnectedPeerId === target.id) {
+      try {
+        wanDataChannel.send(JSON.stringify({id:'ctrl_'+Date.now(),type:'control',timestamp:Date.now(),
+          payload:{action:'typing',isTyping,senderId:appState.wanState?.my_device_id || appState.localNodeID}}));
+      } catch (_) {}
     }
-
-    typingTimeout = setTimeout(() => {
-      appState._userTypingSent = false;
-      if (isWanPeer && wanDataChannel && wanDataChannel.readyState === "open") {
-        try {
-          wanDataChannel.send(JSON.stringify({
-            id: "ctrl_" + Date.now(),
-            type: "control",
-            timestamp: Date.now(),
-            payload: {
-              action: "typing",
-              isTyping: false,
-              senderId: (appState.wanState && appState.wanState.my_device_id) || "windows_peer"
-            }
-          }));
-        } catch (_) {}
-      } else if (!isWanPeer && targetIP) {
-        fetch("/api/chat/typing", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
-        }).catch(() => { });
-      }
-    }, 2800);
-  } else {
-    if (appState._userTypingSent) {
-      appState._userTypingSent = false;
-      if (!isWanPeer && targetIP) {
-        fetch("/api/chat/typing", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_ip: targetIP, peer_id: targetID, is_typing: false })
-        }).catch(() => { });
-      }
-    }
+  } else if(target.ip) {
+    fetch('/api/chat/typing',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({target_ip:target.ip,peer_id:target.id,is_typing:isTyping})}).catch(()=>{});
   }
 }
-
-function showPeerTyping(peerName, durationMs = 3000) {
-  const bar = document.getElementById("chatTypingBar");
-  const label = document.getElementById("typingPeerLabel");
-  if (!bar || !label) return;
-
-  label.innerText = `${peerName || 'Peer'} is typing...`;
-  bar.style.display = "flex";
-
-  const container = document.getElementById("chatStream");
-  if (container) container.scrollTop = container.scrollHeight;
-
-  setTimeout(() => {
-    bar.style.display = "none";
-  }, durationMs);
+function handleUserTyping(isTyping = true) {
+  if(typingTimeout) clearTimeout(typingTimeout);
+  const route=resolveChatRoute(appState.activePeer);
+  const target={id:route.id,ip:route.nearby?.ip || '',mode:route.mode};
+  const key=target.mode+':'+target.id+':'+target.ip;
+  if(outgoingTyping && (!isTyping || outgoingTyping.key !== key || route.mode === 'offline')) {
+    sendTypingStatus(outgoingTyping,false);outgoingTyping=null;
+  }
+  if(!isTyping || route.mode === 'offline') return;
+  const now=Date.now();
+  if(!outgoingTyping || now-outgoingTyping.sentAt >= 1500) {
+    sendTypingStatus(target,true);
+    outgoingTyping={...target,key,sentAt:now};
+  }
+  typingTimeout=setTimeout(()=>{
+    if(outgoingTyping)sendTypingStatus(outgoingTyping,false);
+    outgoingTyping=null;
+  },2800);
+}
+function isChatPeerTyping(peer) {
+  if(!peer)return false;
+  NearMitraChat.learn(appState.peers,chatDeviceLinks);
+  const matches=id=>NearMitraChat.matches({peer_id:id},peer,appState.peers,chatDeviceLinks);
+  return (appState.typingPeers || []).some(matches) ||
+    [...remoteTypingUntil].some(([id,until])=>until>Date.now() && matches(id));
+}
+function renderPeerTyping() {
+  const bar=document.getElementById('chatTypingBar'),label=document.getElementById('typingPeerLabel');
+  if(!bar || !label)return;
+  const typing=isChatPeerTyping(appState.activePeer);
+  label.innerText=typing ? `${appState.activePeer.name || 'Peer'} is typing...` : '';
+  bar.style.display=typing?'flex':'none';
+}
+function setRemotePeerTyping(peerId,isTyping,durationMs=3500) {
+  if(isTyping)remoteTypingUntil.set(peerId,Date.now()+durationMs);
+  else remoteTypingUntil.delete(peerId);
+  renderPeerTyping();
+  if(isTyping)setTimeout(renderPeerTyping,durationMs);
+}
+function showPeerTyping(peerName,durationMs=3000) {
+  if(appState.activePeer)setRemotePeerTyping(appState.activePeer.id,true,durationMs);
 }
 
 function simulatePeerTypingAndReply(peerName, peerIP, peerID) {
@@ -5896,7 +5859,10 @@ function exportTargetRegistryJson() {
 let _handledWanRequests = new Set();
 let _currentIncomingWanRequest = null;
 
+let wanStateRequestPending = false;
 async function fetchWanState() {
+  if (wanStateRequestPending) return;
+  wanStateRequestPending = true;
   try {
     const res = await fetch("/api/wan/state");
     if (res.ok) {
@@ -5904,21 +5870,19 @@ async function fetchWanState() {
       appState.wanState = data;
       checkIncomingPairRequests(data.pending_requests);
 
-      if (appState.activePeer && appState.activePeer.is_wan) {
-        const currentlyOnline = isWanPeerOnline(appState.activePeer.id);
-        appState.activePeer.is_online = currentlyOnline;
-        if (!currentlyOnline && (!wanDataChannel || wanDataChannel.readyState !== "open")) {
-          updateWanChatStatus("● Offline", "#94A3B8");
-        } else if (currentlyOnline && wanDataChannel && wanDataChannel.readyState === "open") {
-          updateWanChatStatus("● Connected", "#10B981");
-        }
+      if (appState.activePeer) {
+        const route = resolveChatRoute(appState.activePeer);
+        appState.activePeer.is_online = route.mode !== 'offline';
+        updateDetailViewForPeer(appState.activePeer);
       }
 
       if (appState.connectionMode === "wan") {
         renderMasterList();
       }
     }
-  } catch (e) {}
+  } catch (e) {} finally {
+    wanStateRequestPending = false;
+  }
 }
 
 function checkIncomingPairRequests(reqs) {
@@ -6117,7 +6081,7 @@ function renderWANView() {
     `;
   } else {
     trusted.forEach(t => {
-      const isPeerOnline = isWanPeerOnline(t.id);
+      const isPeerOnline = resolveChatRoute(t).mode !== 'offline';
       const avatarHTML = renderAvatarCircle(t.name, t.avatar_emoji, true, false, t.platform || "phone");
       const safeId = escapeHTML(t.id);
       const isActive = appState.activePeer && appState.activePeer.id === t.id && appState.activePeer.is_wan;
@@ -6420,7 +6384,7 @@ function isWanPeerOnline(peerId) {
 }
 
 function selectWanPeerForChat(id, name, avatar, platform) {
-  const isOnline = isWanPeerOnline(id);
+  const isOnline = resolveChatRoute({id}).mode !== 'offline';
   const wanPeer = {
     id: id,
     name: name,
@@ -6791,24 +6755,12 @@ function setupWanDataChannel(dc, peerId, peerName) {
           return;
         }
         if (payload.action === 'typing') {
-          const isTyping = payload.isTyping !== false;
-          if (isTyping) {
-            showPeerTyping(peerName || "Peer", 3000);
-          } else {
-            const bar = document.getElementById("chatTypingBar");
-            if (bar) bar.style.display = "none";
-          }
+          setRemotePeerTyping(peerId,payload.isTyping === true);
           return;
         }
       }
       if (msgType === 'TYPING') {
-        const isTyping = (data.payload && data.payload.isTyping !== false) || (data.isTyping !== false);
-        if (isTyping) {
-          showPeerTyping(peerName || "Peer", 3000);
-        } else {
-          const bar = document.getElementById("chatTypingBar");
-          if (bar) bar.style.display = "none";
-        }
+        setRemotePeerTyping(peerId,(data.payload?.isTyping ?? data.isTyping) === true);
         return;
       }
 
@@ -6921,7 +6873,9 @@ function setupWanDataChannel(dc, peerId, peerName) {
 
 function updateWanChatStatus(text, color) {
   const el = document.getElementById("chatHeaderStatus");
-  if (el && appState.activePeer && appState.activePeer.is_wan) {
+  if (el && appState.activePeer && appState.activePeer.is_wan &&
+      resolveChatRoute(appState.activePeer).mode === 'wan' &&
+      NearMitraChat.canonical(appState.activePeer.id,chatDeviceLinks) === wanConnectedPeerId) {
     el.innerHTML = `<span style="color:${color || '#818CF8'}; font-weight:600;">${escapeHTML(text)}</span>`;
   }
 }

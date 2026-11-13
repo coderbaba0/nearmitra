@@ -1,0 +1,16 @@
+name: notification_reply_bridge
+description: App-local durable Android notification reply inbox.
+version: 0.0.1
+publish_to: none
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.22.0'
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.farmitra.nearby.reply
+        pluginClass: NotificationReplyPlugin

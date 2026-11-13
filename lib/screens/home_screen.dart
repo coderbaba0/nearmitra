@@ -26,11 +26,13 @@ import '../services/ai_settings_service.dart';
 import '../services/call_service.dart';
 import '../services/streaming_service.dart';
 import '../models/chat_item.dart';
+import '../models/ai_reply_draft.dart';
 import '../models/p2p_peer.dart';
 import '../models/peer.dart';
 import '../services/file_opener_service.dart';
 import '../services/history_service.dart';
 import '../services/nearby_service.dart';
+import '../services/native_app_events.dart';
 import '../services/notification_service.dart';
 import '../services/wifi_direct_service.dart';
 import '../widgets/chat_bubble.dart';
@@ -48,6 +50,7 @@ import '../services/firebase_presence_service.dart';
 import '../widgets/wan_pair_dialog.dart';
 import '../widgets/wan_radar_view.dart';
 import '../widgets/home_walkthrough_guide.dart';
+import '../widgets/ai_assistant_button.dart';
 import '../widgets/forward_message_dialog.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -66,9 +69,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   ConversationController get _conversations => ref.read(conversationControllerProvider);
   ChatRoute _route(Peer peer) => ref.read(chatRouteProvider(peer));
   bool _canCall(Peer peer) => _route(peer).canCall;
-  bool _peerTyping(Peer peer) => _route(peer).transport == ChatTransport.internet
-      ? _wanRtcManager.activePeerId == _route(peer).internet?.id && _wanRtcManager.peerIsTyping
-      : (_route(peer).nearby?.isTyping ?? false);
+  bool _peerTyping(Peer peer) {
+    final route = _conversations.route(peer);
+    final remoteId = _wanRtcManager.activePeerId;
+    return (route.nearby?.isTyping ?? false) ||
+        (_wanRtcManager.peerIsTyping && remoteId != null &&
+            _conversations.canonicalId(remoteId) ==
+                _conversations.canonicalId(peer.internetDeviceId ?? peer.id));
+  }
   String _routeLabel(Peer peer) => switch (_route(peer).transport) {
     ChatTransport.nearby => 'Online • Nearby',
     ChatTransport.internet => 'Online • Internet',
@@ -79,8 +87,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   final _scroll = ScrollController();
   final _historyService = HistoryService();
   final _wifiDirectService = WifiDirectService();
+  late final _nativeEvents = NativeAppEvents(
+    onCall: _handleNativeCallEvent,
+    onFiles: _handleExternalSharedFiles,
+  );
   StreamSubscription<String?>? _notificationSub;
-  StreamSubscription<Map<String, String>>? _replySub;
   ConnectionMode _connectionMode = ConnectionMode.lan;
   final List<ChatItem> _history = [];
   String? _selectedPeerId;
@@ -88,10 +99,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _scanning = false;
   ChatMode _chatMode = ChatMode.people;
   bool _aiThinking = false;
+  AiReplyDraft? _activeAiDraft;
+  Timer? _aiTypewriterTimer;
   int _chatDisplayCount = 20;
   int _bottomNavIndex = 0;
   DateTime? _lastBackPressTime;
-  Timer? _peerStatusRefreshTimer;
+  Timer? _serviceUiRefreshTimer;
+  bool _pendingChatScroll = false;
   final GlobalKey _nearbyTabKey = GlobalKey();
   final GlobalKey _p2pTabKey = GlobalKey();
   final GlobalKey _wanTabKey = GlobalKey();
@@ -111,9 +125,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _firebasePresenceService.addListener(_onServiceChanged);
     _historyService.addListener(_onHistoryChanged);
     _scroll.addListener(_onScroll);
-    _peerStatusRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (mounted) setState(() {});
-    });
     _init();
   }
 
@@ -126,9 +137,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       CallService().isAppInForeground=true;
       _onIncomingCallChanged();
       _onWirelessAudioChanged();
+      unawaited(ensureInternetPresence());
+      if (widget.service.backgroundServiceEnabled) {
+        unawaited(widget.service.startBackgroundService());
+      }
+      unawaited(widget.service.announce());
     } else if (state == AppLifecycleState.paused ||
                state == AppLifecycleState.inactive ||
-               state == AppLifecycleState.hidden) {
+               state == AppLifecycleState.hidden ||
+               state == AppLifecycleState.detached) {
       widget.service.isAppInForeground = false;
       _wanService.isAppInForeground = false;
       CallService().isAppInForeground=false;
@@ -156,15 +173,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     widget.service.wirelessAudio.otherMediaBusy = () => _backgroundStreamPc != null;
     await widget.service.start();
     await _wanService.init();
-    _wanRtcManager.init();
     _wanService.onIncomingPairRequest = (request) {
       if (!mounted) return;
       _showIncomingPairRequestDialog(request);
     };
     _wanRtcManager.onIncomingSessionRequest = (session) async {
-      if (!mounted) return;
       if (_wanService.isDeviceTrusted(session.callerId)) {
         await _wanRtcManager.acceptIncomingSession(session);
+        return;
+      }
+      if (!mounted || !widget.service.isAppInForeground) {
+        await _wanService.rejectSignalingSession(session.sessionId);
         return;
       }
       _showIncomingSessionDialog(session);
@@ -189,17 +208,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       final peer = remote != null ? _conversations.peerForWan(remote)
           : widget.service.getPeer(cleanId);
       if (peer != null) _selectPeer(peer);
-    });
-
-    _replySub = NotificationService().onNotificationReply.listen((data) async {
-      final id = data['peerId'];
-      final text = data['text'];
-      if (id == null || text == null || text.trim().isEmpty) return;
-      final cleanId = _conversations.canonicalId(id);
-      final remote = _wanService.trustedDevicesList.where((d) => d.id == cleanId).firstOrNull;
-      final peer = remote != null ? _conversations.peerForWan(remote)
-          : widget.service.getPeer(cleanId);
-      if (peer != null) await _conversations.sendText(peer, text);
     });
 
     widget.service.onPeerAutoConnected = (_) {
@@ -472,16 +480,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   void _initShareHandler() {
-    const MethodChannel('farmitra_nearby/network')
-        .setMethodCallHandler((call) async {
-      if (call.method == 'onSharedFilesReceived') {
-        final List<dynamic>? files = call.arguments as List<dynamic>?;
-        if (files != null && files.isNotEmpty) {
-          final paths = files.map((e) => e.toString()).toList();
-          _handleExternalSharedFiles(paths);
-        }
-      }
-    });
+    _nativeEvents.attach();
 
     const MethodChannel('farmitra_nearby/network')
         .invokeMethod<List<dynamic>>('getInitialSharedFiles')
@@ -700,7 +699,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _wirelessDialogPending = false;
   void _onWirelessAudioChanged() {
     if (!mounted) return;
-    setState(() {});
+    _scheduleHomeRefresh();
     final audio = widget.service.wirelessAudio;
     if (!audio.needsApproval) {
       final route = _wirelessAudioRoute;
@@ -710,15 +709,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (_wirelessDialogPending || !CallService().isAppInForeground) return;
     _wirelessDialogPending = true;
     final session = audio.session!;
+    final appAudio = session.offer == null && session.source == 'system';
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || audio.session != session || !audio.needsApproval) {
         _wirelessDialogPending = false; return;
       }
       final route = DialogRoute<bool>(context: context, barrierDismissible: false,
         builder: (ctx) => AlertDialog(
-          icon: Icon(session.offer == null ? Icons.mic_rounded : Icons.speaker_rounded),
-          title: Text(session.offer == null ? 'Share your microphone?' : 'Use this phone as a speaker?'),
-          content: Text(session.offer == null
+          icon: Icon(appAudio ? Icons.spatial_audio_rounded : session.offer == null ? Icons.mic_rounded : Icons.speaker_rounded),
+          title: Text(appAudio ? 'Share this phone’s app audio?' : session.offer == null ? 'Share your microphone?' : 'Use this phone as a speaker?'),
+          content: Text(appAudio
+            ? '${session.peer.name} wants to hear music/video/apps playing on this phone. Android will ask for capture consent. No microphone or screen images are sent. Some apps block playback capture.'
+            : session.offer == null
             ? '${session.peer.name} wants to receive your microphone audio. Your camera stays off. You can mute or stop from Streaming → Wi-Fi Audio.'
             : '${session.peer.name} wants to play audio on this phone. Your microphone and camera stay off.'),
           actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Decline')),
@@ -734,7 +736,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   void _initCallService() {
-    CallService().isAppInForeground=WidgetsBinding.instance.lifecycleState==null || WidgetsBinding.instance.lifecycleState==AppLifecycleState.resumed;
+    CallService().isAppInForeground = widget.service.isAppInForeground;
     CallService().incomingCall.addListener(_onIncomingCallChanged);
     _onIncomingCallChanged();
     CallService().registerCallAcceptedCallback((peer, isVideoCall, isIncoming) {
@@ -758,11 +760,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     };
 
     // Handle native Kotlin background / killed-state call accept / decline events
-    const MethodChannel('farmitra_nearby/network').setMethodCallHandler((call) async {
-      if (call.method == 'onNativeCallEvent' && call.arguments is Map) {
-        _handleNativeCallEvent(Map<String, dynamic>.from(call.arguments as Map));
-      }
-    });
+    _nativeEvents.attach();
 
     // Check if app was launched via Accept button from cold start
     Future.microtask(() async {
@@ -906,7 +904,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     });
   }
 
-  void _openStreamingHubScreen({String initialType = 'camera'}) {
+  void _openStreamingHubScreen({String initialType = 'wireless'}) {
     setState(() => _bottomNavIndex = 0);
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -925,21 +923,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
+    _nativeEvents.detach();
+    _activeAiDraft?.cancel();
+    _aiTypewriterTimer?.cancel();
     widget.service.wirelessAudio.removeListener(_onWirelessAudioChanged);
     unawaited(_closeBackgroundStream());
     CallService().incomingCall.removeListener(_onIncomingCallChanged);
     WidgetsBinding.instance.removeObserver(this);
-    _peerStatusRefreshTimer?.cancel();
+    _serviceUiRefreshTimer?.cancel();
     _typingDebounce?.cancel();
     _notificationSub?.cancel();
-    _replySub?.cancel();
     _scroll.removeListener(_onScroll);
     widget.service.removeListener(_onServiceChanged);
     _wanService.removeListener(_onServiceChanged);
     _wanRtcManager.removeListener(_onServiceChanged);
     _firebasePresenceService.removeListener(_onServiceChanged);
     _historyService.removeListener(_onHistoryChanged);
-    widget.service.stop();
+    // The foreground service may still own this engine after its view closes.
+    if (!widget.service.backgroundServiceEnabled) unawaited(widget.service.stop());
     _message.dispose();
     _scroll.dispose();
     super.dispose();
@@ -948,11 +949,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   void _onHistoryChanged() async {
     final updated = await _historyService.load();
     if (mounted) {
-      setState(() {
-        _history.clear();
-        _history.addAll(updated);
-      });
+      final visible = _activeAiDraft?.mergeInto(updated) ?? updated;
+      _history.clear();
+      _history.addAll(visible);
+      _scheduleHomeRefresh();
     }
+  }
+
+  void _scheduleHomeRefresh({bool scroll = false}) {
+    if (!mounted || _isCallScreenOpen ||
+        !widget.service.isAppInForeground ||
+        !(ModalRoute.of(context)?.isCurrent ?? true)) {
+      return;
+    }
+    _pendingChatScroll |= scroll;
+    if (_serviceUiRefreshTimer?.isActive ?? false) return;
+    _serviceUiRefreshTimer = Timer(const Duration(milliseconds: 100), () {
+      final shouldScroll = _pendingChatScroll;
+      _pendingChatScroll = false;
+      if (!mounted || _isCallScreenOpen ||
+          !widget.service.isAppInForeground ||
+          !(ModalRoute.of(context)?.isCurrent ?? true)) {
+        return;
+      }
+      setState(() {});
+      if (shouldScroll) _triggerScrollToBottom();
+    });
   }
 
   bool _isPeerOnline(Peer peer) => peer.id == 'local_ai_assistant' ||
@@ -965,6 +987,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return (max - current) <= 150;
   }
 
+  bool _lastPeerTyping = false;
+
   void _onServiceChanged() {
     final incoming = widget.service.takeIncomingItems();
     final bool hasNewChat = incoming.isNotEmpty;
@@ -972,12 +996,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _history.addAll(incoming);
       _historyService.addItems(incoming);
     }
-    if (mounted) {
+    if (mounted && !_isCallScreenOpen) {
       final wasNearBottom = _isUserNearBottom();
-      setState(() {});
-      if (hasNewChat && wasNearBottom) {
-        _triggerScrollToBottom();
-      }
+      final typing = _selectedPeer != null && _peerTyping(_selectedPeer!);
+      final typingStarted = typing && !_lastPeerTyping;
+      _lastPeerTyping = typing;
+      _scheduleHomeRefresh(scroll: (hasNewChat || typingStarted) && wasNearBottom);
     }
   }
 
@@ -985,8 +1009,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final updated = await _historyService.load();
     if (mounted) {
       setState(() {
+        final visible = _activeAiDraft?.mergeInto(updated) ?? updated;
         _history.clear();
-        _history.addAll(updated);
+        _history.addAll(visible);
         _selectedPeerId = p.id;
         _lastSelectedPeer = p;
         p.unreadCount = 0;
@@ -1087,6 +1112,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           FilledButton(
             onPressed: () {
               Navigator.pop(context);
+              if (_activeAiDraft?.prompt.peerId == peer.id) {
+                _activeAiDraft?.cancel();
+                _activeAiDraft = null;
+                _aiTypewriterTimer?.cancel();
+                _aiThinking = false;
+              }
               _conversations.clearConversation(peer);
               _toast('Chat history cleared for ${peer.name}');
             },
@@ -1130,124 +1161,92 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  Future<void> _sendAiMessage(Peer peer, String text) async {
+    final draft = AiReplyDraft(
+      peerId: peer.id,
+      sender: widget.service.deviceName,
+      responder: peer.name.toLowerCase().endsWith('ai') ? peer.name : '${peer.name} AI',
+      text: text,
+    );
+    _activeAiDraft = draft;
+    final visible = draft.mergeInto(_history);
+    setState(() {
+      _history.clear();
+      _history.addAll(visible);
+      _aiThinking = true;
+    });
+    _triggerScrollToBottom();
+    late final Timer typewriter;
+    typewriter = Timer.periodic(const Duration(milliseconds: 14), (_) {
+      if (!mounted || draft.isCancelled) {
+        typewriter.cancel();
+        return;
+      }
+      if (draft.pump()) {
+        setState(() => _aiThinking = false);
+        if (_isUserNearBottom()) _scrollToBottomImmediate();
+      }
+    });
+    _aiTypewriterTimer = typewriter;
+    try {
+      // Merge just these messages; never replace unrelated chat history.
+      await _historyService.addItems([draft.prompt, draft.reply]);
+      if (draft.isCancelled) return;
+      if (peer.id == 'local_ai_assistant') {
+        draft.enqueue(await AiSettingsService().queryAi(text));
+      } else {
+        final target = _route(peer).nearby ?? peer;
+        await for (final chunk in widget.service.streamAiPrompt(
+          target, text, cancelled: draft.cancelled,
+        )) {
+          if (draft.isCancelled) break;
+          draft.enqueue(chunk);
+        }
+      }
+      while (mounted && !draft.isCancelled && draft.hasPending) {
+        await Future<void>.delayed(const Duration(milliseconds: 15));
+      }
+    } catch (error) {
+      draft.enqueue('\n\nAI request failed: $error');
+    } finally {
+      typewriter.cancel();
+      if (identical(_aiTypewriterTimer, typewriter)) _aiTypewriterTimer = null;
+      draft.flush();
+      if (!draft.isCancelled) {
+        if (draft.reply.text?.trim().isEmpty ?? true) {
+          draft.reply.text = 'The device returned no answer. Check its AI sharing and model settings.';
+        }
+        try {
+          await _historyService.addItems([draft.prompt, draft.reply]);
+        } catch (error) {
+          if (mounted) _toast('AI response could not be saved: $error');
+        }
+      }
+      final ownsComposer = identical(_activeAiDraft, draft);
+      if (ownsComposer) _activeAiDraft = null;
+      draft.cancel();
+      if (mounted && ownsComposer) {
+        setState(() => _aiThinking = false);
+        _triggerScrollToBottom();
+      }
+    }
+  }
+
   Future<void> _sendMessage() async {
     final peer = _selectedPeer;
     final text = _message.text.trim();
     if (peer == null || text.isEmpty) return;
+    if (_chatMode == ChatMode.ai && _activeAiDraft != null) {
+      _toast('Please wait for the current AI response.');
+      return;
+    }
     _message.clear();
     _typingDebounce?.cancel();
+    _lastTypingSent = null;
     _conversations.typing(peer, false);
 
     if (_chatMode == ChatMode.ai) {
-      final userPromptItem = ChatItem(
-        peerId: peer.id,
-        sender: widget.service.deviceName,
-        mine: true,
-        createdAt: DateTime.now(),
-        kind: ChatKind.text,
-        text: text,
-        isAi: true,
-      );
-      _history.add(userPromptItem);
-
-      final aiResponseItem = ChatItem(
-        peerId: peer.id,
-        sender: peer.name.toLowerCase().endsWith('ai') ? peer.name : '${peer.name} AI',
-        mine: false,
-        createdAt: DateTime.now(),
-        kind: ChatKind.text,
-        text: '',
-        isAi: true,
-      );
-      _history.add(aiResponseItem);
-      await _historyService.save(_history);
-
-      setState(() {
-        _aiThinking = true;
-      });
-      _triggerScrollToBottom();
-
-      final typeQueue = <String>[];
-      var isStreamFinished = false;
-      Timer? typewriterTimer;
-
-      void processTypeQueue() {
-        if (!mounted) return;
-        if (typeQueue.isEmpty) {
-          if (isStreamFinished && typewriterTimer != null) {
-            typewriterTimer?.cancel();
-            typewriterTimer = null;
-          }
-          return;
-        }
-
-        // Adaptive batch size: fast, smooth character typing
-        final batchSize = typeQueue.length > 100 ? 8 : (typeQueue.length > 40 ? 4 : 2);
-        final toTake = batchSize < typeQueue.length ? batchSize : typeQueue.length;
-
-        final chars = typeQueue.sublist(0, toTake).join();
-        typeQueue.removeRange(0, toTake);
-
-        aiResponseItem.text = (aiResponseItem.text ?? '') + chars;
-
-        if (_aiThinking) {
-          _aiThinking = false;
-        }
-
-        setState(() {});
-        if (_isUserNearBottom()) {
-          _scrollToBottomImmediate();
-        }
-      }
-
-      typewriterTimer = Timer.periodic(const Duration(milliseconds: 14), (_) {
-        processTypeQueue();
-      });
-
-      if (peer.id == 'local_ai_assistant') {
-        final res = await AiSettingsService().queryAi(text);
-        typeQueue.addAll(res.split(''));
-      } else {
-        await for (final chunk in widget.service.streamAiPrompt(peer, text)) {
-          if (chunk.isNotEmpty) {
-            typeQueue.addAll(chunk.split(''));
-          }
-        }
-      }
-
-      isStreamFinished = true;
-
-      // Drain remaining typing queue smoothly
-      while (typeQueue.isNotEmpty) {
-        await Future.delayed(const Duration(milliseconds: 15));
-      }
-
-      typewriterTimer?.cancel();
-      typewriterTimer = null;
-
-      if (aiResponseItem.text == null || aiResponseItem.text!.isEmpty) {
-        final hasIncomingAi = _history.any((e) =>
-            e != aiResponseItem &&
-            (e.peerId == peer.id || e.peerId == peer.ip) &&
-            e.isAi &&
-            !e.mine &&
-            e.text != null &&
-            e.text!.isNotEmpty);
-        if (hasIncomingAi) {
-          _history.remove(aiResponseItem);
-        } else {
-          aiResponseItem.text = 'Nearby AI is not enabled on this device.';
-        }
-      }
-
-      await _historyService.save(_history);
-
-      if (mounted) {
-        setState(() {
-          _aiThinking = false;
-        });
-        _triggerScrollToBottom();
-      }
+      await _sendAiMessage(peer, text);
       return;
     }
 
@@ -1527,13 +1526,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       ScaffoldMessenger.of(context).removeCurrentSnackBar();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Row(
+          content: Row(
             children: [
-              Icon(Icons.exit_to_app_rounded, color: Colors.white, size: 18),
-              SizedBox(width: 10),
+              const Icon(Icons.exit_to_app_rounded, color: Colors.white, size: 18),
+              const SizedBox(width: 10),
               Text(
-                'Press back again to exit',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                widget.service.backgroundServiceEnabled && Platform.isAndroid
+                    ? 'Press back again to run in background'
+                    : 'Press back again to exit',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               ),
             ],
           ),
@@ -1552,7 +1553,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
-    ref.watch(conversationControllerProvider);
+    ref.listen(conversationControllerProvider, (_, __) => _scheduleHomeRefresh());
     final width = MediaQuery.sizeOf(context).width;
     final compact = width < 760;
     final peer = _selectedPeer;
@@ -1565,12 +1566,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (ModalRoute.of(context)?.isCurrent != true) return;
         final shouldExit = _handleBackPress();
         if (shouldExit) {
-          SystemNavigator.pop();
+          if (Platform.isAndroid && widget.service.backgroundServiceEnabled) {
+            final minimized = await widget.service.moveToBackground();
+            if (!minimized && mounted) _toast('Could not minimize NearMitra. Please try again.');
+          } else {
+            SystemNavigator.pop();
+          }
         }
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
@@ -1586,7 +1592,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             Scaffold(
         backgroundColor: Theme.of(context).colorScheme.surface,
       floatingActionButton: (_selectedPeer == null)
-          ? _AnimatedAiFab(
+          ? AiAssistantButton(
               onPressed: () {
                 final aiConfig = AiSettingsService().config;
                 final isKeyConfigured = (aiConfig.provider == 'gemini' &&
@@ -2272,6 +2278,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         value: widget.service.backgroundServiceEnabled,
                         onChanged: (val) async {
                           await widget.service.setBackgroundServiceEnabled(val);
+                          if (val) unawaited(ensureInternetPresence());
                           setModalState(() {});
                           setState(() {});
                           _toast(val
@@ -4538,7 +4545,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           _buildChatModeSwitch(isDark, peer, compact: isMobile),
 
           Expanded(
-            child: (chat.isEmpty && !_aiThinking)
+            child: (chat.isEmpty && !_aiThinking && !_peerTyping(peer))
                 ? Center(
                     child: Container(
                       margin: const EdgeInsets.symmetric(horizontal: 28),
@@ -4659,8 +4666,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                   final updated = await _historyService.load();
                                   if (mounted) {
                                     setState(() {
+                                      final visible = _activeAiDraft?.mergeInto(updated) ?? updated;
                                       _history.clear();
-                                      _history.addAll(updated);
+                                      _history.addAll(visible);
                                     });
                                   }
                                 },
@@ -5291,78 +5299,4 @@ class _RadarPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RadarPainter oldDelegate) => true;
-}
-
-class _AnimatedAiFab extends StatefulWidget {
-  const _AnimatedAiFab({required this.onPressed});
-  final VoidCallback onPressed;
-
-  @override
-  State<_AnimatedAiFab> createState() => _AnimatedAiFabState();
-}
-
-class _AnimatedAiFabState extends State<_AnimatedAiFab> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _pulseAnimation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2000),
-    )..repeat(reverse: true);
-
-    _scaleAnimation = Tween<double>(begin: 1.0, end: 1.06).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-
-    _pulseAnimation = Tween<double>(begin: 8.0, end: 20.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scaleAnimation.value,
-          child: Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.45),
-                  blurRadius: _pulseAnimation.value,
-                  spreadRadius: 2,
-                ),
-              ],
-            ),
-            child: SizedBox(
-              width: 44,
-              height: 44,
-              child: FloatingActionButton(
-                mini: true,
-                backgroundColor: const Color(0xFF10B981),
-                elevation: 3,
-                tooltip: 'My AI Assistant',
-                onPressed: widget.onPressed,
-                child: const Icon(Icons.auto_awesome_rounded,
-                    color: Colors.white, size: 20),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
 }

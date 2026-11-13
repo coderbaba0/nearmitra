@@ -165,12 +165,9 @@ class _WanActiveSessionScreenState extends State<WanActiveSessionScreen> {
       final String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
       if (selectedDirectory != null) {
         final dir = Directory(selectedDirectory);
-        final entities = dir.listSync(recursive: true).whereType<File>().toList();
-        if (entities.isEmpty) return;
-
-        for (final file in entities) {
-          if (await file.exists()) {
-            await _rtcManager.sendDirectFile(file, widget.peer.id);
+        await for (final entity in dir.list(recursive: true, followLinks: false)) {
+          if (entity is File && await entity.exists()) {
+            await _rtcManager.sendDirectFile(entity, widget.peer.id);
           }
         }
         _scrollToBottom();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -17,13 +18,18 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'services/internet_device_identity_service.dart';
 import 'services/firebase_presence_service.dart';
+import 'services/internet_presence_startup.dart';
+import 'services/wan_service.dart';
+import 'services/network_runtime.dart';
+import 'services/runtime_ui_attachment.dart';
+import 'providers/conversation_providers.dart';
 
 final themeNotifier = ValueNotifier<ThemeMode>(ThemeMode.system);
 final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  final backgroundStartup = args.contains('--background');
 
   // 1. Load saved theme mode from local storage
   try {
@@ -52,23 +58,39 @@ Future<void> main() async {
   final name = await identity.getName();
   final emoji = await identity.getAvatarEmoji();
 
-  // Run the app IMMEDIATELY — zero blocking on Firebase/Network so app opens instantly offline
-  runApp(
-    ProviderScope(
-      child: FarmitraNearbyApp(
-        service: NearbyService(
-          deviceId: id,
-          deviceName: name,
-          avatarEmoji: emoji,
-        ),
+  final service =
+      NearbyService(deviceId: id, deviceName: name, avatarEmoji: emoji);
+  final lifecycle = WidgetsBinding.instance.lifecycleState;
+  final runtime = NetworkRuntime.forService(service,
+      foreground: lifecycle == AppLifecycleState.resumed ||
+          (!backgroundStartup && lifecycle == null));
+
+  final ui = RuntimeUiAttachment(mount: () {
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    runApp(
+      ProviderScope(
+        overrides: [
+          conversationControllerProvider
+              .overrideWith((ref) => runtime.conversations)
+        ],
+        child: FarmitraNearbyApp(service: service),
       ),
-    ),
-  );
+    );
+    _requestForegroundPermissions();
+  });
+  unawaited(ui.attach(backgroundStartup: backgroundStartup));
+
+  // Do not wait for a widget frame: no FlutterView exists on a service-only
+  // process restart. Use the same queue and service when the UI later attaches.
+  unawaited(runtime.start().catchError((Object error) {
+    debugPrint('[Startup] Networking error: $error');
+  }));
 
   // Initialize Firebase in background without blocking UI or offline startup
   _initFirebaseInBackground(name, emoji);
+}
 
-  // Request critical permissions non-blocking after first frame renders
+void _requestForegroundPermissions() {
   WidgetsBinding.instance.addPostFrameCallback((_) async {
     try {
       final notifStatus = await Permission.notification.status;
@@ -84,26 +106,31 @@ Future<void> main() async {
   });
 }
 
+InternetPresenceStartup? _internetPresenceStartup;
+
+Future<void> ensureInternetPresence() =>
+    _internetPresenceStartup?.ensureStarted() ?? Future<void>.value();
+
 void _initFirebaseInBackground(String customName, String customEmoji) {
-  Future.microtask(() async {
-    try {
+  _internetPresenceStartup = InternetPresenceStartup(
+    initialize: () async {
       if (Firebase.apps.isEmpty) {
         await Firebase.initializeApp(
-          options: DefaultFirebaseOptions.isConfigured
-              ? DefaultFirebaseOptions.currentPlatform
-              : null,
-        ).timeout(const Duration(seconds: 4));
-        debugPrint('[Firebase] Initialized in background');
+                options: DefaultFirebaseOptions.isConfigured
+                    ? DefaultFirebaseOptions.currentPlatform
+                    : null)
+            .timeout(const Duration(seconds: 4));
       }
       await InternetDeviceIdentityService().init(
         customName: customName,
         customEmoji: customEmoji,
       );
       await FirebasePresenceService().init();
-    } catch (e) {
-      debugPrint('[Firebase] Background init skipped / offline: $e');
-    }
-  });
+    },
+    restoreMode: () => WanService().restoreInternetMode(),
+    onError: (error) => debugPrint('[Firebase] Startup will retry: $error'),
+  );
+  unawaited(ensureInternetPresence());
 }
 
 class FarmitraNearbyApp extends StatelessWidget {

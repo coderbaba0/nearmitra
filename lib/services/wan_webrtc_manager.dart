@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path_provider/path_provider.dart';
@@ -10,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../models/chat_item.dart';
 import '../models/wan_models.dart';
 import 'history_service.dart';
+import 'folder_archive_service.dart';
 import 'ice_config.dart';
 import 'nearby_service.dart';
 import 'notification_service.dart';
@@ -98,9 +98,13 @@ class WanWebRtcManager extends ChangeNotifier {
       _state == WanConnectionState.connected &&
       _dataChannel?.state == RTCDataChannelState.RTCDataChannelOpen;
 
+  bool _initialized = false;
+
   void init() {
+    if (_initialized) return;
+    _initialized = true;
     _wanService.onIncomingSessionRequest = _handleIncomingSession;
-    _loadOutbox();
+    if (!useUnifiedOutbox) unawaited(_loadOutbox());
   }
 
   void _setState(WanConnectionState newState) {
@@ -1629,7 +1633,7 @@ class WanWebRtcManager extends ChangeNotifier {
           '${archive.parent.path}/${name}_${DateTime.now().millisecondsSinceEpoch}';
       try {
         await Directory(destination).create(recursive: true);
-        await extractFileToDisk(archive.path, destination);
+        await extractFolderArchive(archive.path, destination);
         await archive.delete();
         _currentSavedFilePath = destination;
         final index = _directChatItems

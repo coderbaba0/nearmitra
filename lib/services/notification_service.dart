@@ -1,19 +1,28 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:notification_reply_bridge/notification_reply_bridge.dart';
+import 'package:uuid/uuid.dart';
+import '../models/notification_target.dart';
 
 @pragma('vm:entry-point')
-void notificationTapBackground(NotificationResponse details) {
-  if (details.notificationResponseType == NotificationResponseType.selectedNotificationAction &&
+void notificationTapBackground(NotificationResponse details) async {
+  if (details.notificationResponseType ==
+          NotificationResponseType.selectedNotificationAction &&
       details.actionId == 'reply_action' &&
       details.input != null &&
       details.input!.trim().isNotEmpty &&
       details.payload != null) {
-    NotificationService().handleReplyAction(
-      peerId: details.payload!,
-      text: details.input!.trim(),
-      notificationId: details.id,
-    );
+    try {
+      await NotificationService().handleReplyAction(
+        peerId: details.payload!,
+        text: details.input!.trim(),
+        notificationId: details.id,
+      );
+    } catch (error) {
+      // cancelNotification=false keeps the action visible if saving fails.
+      debugPrint('[Reply] Could not save notification reply: $error');
+    }
   }
 }
 
@@ -22,30 +31,37 @@ class NotificationService {
   NotificationService._internal();
   static final NotificationService _instance = NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _notifications =
+      FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  Future<void>? _initializing;
+  final NotificationReplyInbox _replyInbox = AndroidNotificationReplyInbox();
 
-  final StreamController<String?> _onNotificationClick = StreamController<String?>.broadcast();
+  final StreamController<String?> _onNotificationClick =
+      StreamController<String?>.broadcast();
   Stream<String?> get onNotificationClick => _onNotificationClick.stream;
 
-  final StreamController<Map<String, String>> _onNotificationReply = StreamController<Map<String, String>>.broadcast();
-  Stream<Map<String, String>> get onNotificationReply => _onNotificationReply.stream;
+  final StreamController<Map<String, String>> _onNotificationReply =
+      StreamController<Map<String, String>>.broadcast();
+  Stream<Map<String, String>> get onNotificationReply =>
+      _onNotificationReply.stream;
 
   Future<void> handleReplyAction({
     required String peerId,
     required String text,
     int? notificationId,
   }) async {
-    if (notificationId != null) {
-      try {
-        await _notifications.cancel(notificationId);
-      } catch (e) {
-        debugPrint('[NotificationService] Failed to cancel notification: $e');
-      }
-    }
+    if (text.trim().isEmpty) return;
+    final target = NotificationTarget.decode(peerId);
+    if (target.peerId.trim().isEmpty) return;
+    await _replyInbox.save(
+        peerId: target.peerId,
+        text: text.trim(),
+        nonce: target.nonce,
+        notificationId: notificationId);
     _onNotificationReply.add({
-      'peerId': peerId,
-      'text': text,
+      'peerId': target.peerId,
+      'text': text.trim(),
     });
   }
 
@@ -55,27 +71,38 @@ class NotificationService {
     } catch (_) {}
   }
 
-  Future<void> init() async {
-    if (_initialized) return;
+  Future<void> init() {
+    if (_initialized) return Future<void>.value();
+    return _initializing ??=
+        _initialize().whenComplete(() => _initializing = null);
+  }
 
-    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+  Future<void> _initialize() async {
+    const androidSettings =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings = InitializationSettings(android: androidSettings);
 
     await _notifications.initialize(
       initSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse details) {
-        if (details.notificationResponseType == NotificationResponseType.selectedNotificationAction &&
+      onDidReceiveNotificationResponse: (NotificationResponse details) async {
+        if (details.notificationResponseType ==
+                NotificationResponseType.selectedNotificationAction &&
             details.actionId == 'reply_action' &&
             details.input != null &&
             details.input!.trim().isNotEmpty &&
             details.payload != null) {
-          handleReplyAction(
-            peerId: details.payload!,
-            text: details.input!.trim(),
-            notificationId: details.id,
-          );
+          try {
+            await handleReplyAction(
+              peerId: details.payload!,
+              text: details.input!.trim(),
+              notificationId: details.id,
+            );
+          } catch (error) {
+            debugPrint('[Reply] Could not save notification reply: $error');
+          }
         } else if (details.payload != null) {
-          _onNotificationClick.add(details.payload);
+          _onNotificationClick
+              .add(NotificationTarget.decode(details.payload!).peerId);
         }
       },
       onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
@@ -85,16 +112,19 @@ class NotificationService {
     const channel = AndroidNotificationChannel(
       'farmitra_nearby_messages',
       'NearMitra Messages & Files',
-      description: 'Notifications for incoming chat messages and file transfers',
+      description:
+          'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       playSound: true,
       enableVibration: true,
     );
 
-    final androidPlugin = _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final androidPlugin = _notifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
     if (androidPlugin != null) {
       await androidPlugin.createNotificationChannel(channel);
-      await androidPlugin.requestNotificationsPermission();
+      // Permission prompts belong to main's foreground UI. A service-only
+      // restart has no Activity; requesting here would abort delivery.
     }
 
     _initialized = true;
@@ -107,10 +137,23 @@ class NotificationService {
   }) async {
     await init();
 
+    final nonce = const Uuid().v4();
+    final payload = NotificationTarget(peerId, nonce: nonce).encode();
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        await _replyInbox.registerNotification(peerId.hashCode, nonce);
+      } catch (error) {
+        // A reply-inbox/storage failure must not hide incoming chat alerts.
+        // Without a registered slot, the native reply path will retain the alert.
+        debugPrint('[Reply] Notification slot could not be saved: $error');
+      }
+    }
+
     final androidDetails = AndroidNotificationDetails(
       'farmitra_nearby_messages',
       'NearMitra Messages & Files',
-      channelDescription: 'Notifications for incoming chat messages and file transfers',
+      channelDescription:
+          'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'New message from $senderName',
@@ -124,6 +167,7 @@ class NotificationService {
         const AndroidNotificationAction(
           'reply_action',
           'Reply',
+          cancelNotification: false,
           inputs: <AndroidNotificationActionInput>[
             AndroidNotificationActionInput(
               label: 'Type a reply…',
@@ -140,7 +184,7 @@ class NotificationService {
       senderName,
       message,
       details,
-      payload: peerId,
+      payload: payload,
     );
   }
 
@@ -155,7 +199,8 @@ class NotificationService {
     final androidDetails = AndroidNotificationDetails(
       'farmitra_nearby_messages',
       'NearMitra Messages & Files',
-      channelDescription: 'Notifications for incoming chat messages and file transfers',
+      channelDescription:
+          'Notifications for incoming chat messages and file transfers',
       importance: Importance.max,
       priority: Priority.high,
       ticker: 'File received from $senderName',

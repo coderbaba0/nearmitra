@@ -7,6 +7,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 import '../models/peer.dart';
+import 'phone_audio_bridge.dart';
 
 class WirelessAudioSession {
   WirelessAudioSession(this.id, this.peer, this.source);
@@ -20,6 +21,7 @@ class WirelessAudioSession {
   RTCVideoRenderer? renderer;
   bool hasRemoteDescription = false;
   bool answering = false;
+  bool phonePcm = false, receiving = false;
   final List<RTCIceCandidate> candidates = [];
   Timer? timer, statsTimer;
   bool readingStats = false;
@@ -41,6 +43,7 @@ class WirelessAudioService extends ChangeNotifier {
     this.stopNative,
     this.routeSpeaker,
     this.routeOutput,
+    PhoneAudioBridge? phoneAudio,
     this.timeout = const Duration(seconds: 35),
     this.permissionTimeout = const Duration(minutes: 2),
   })  : createConnection = createConnection ??
@@ -53,7 +56,8 @@ class WirelessAudioService extends ChangeNotifier {
                   'audioJitterBufferMaxPackets': 50,
                   'audioJitterBufferFastAccelerate': true,
                 })),
-        openMicrophone = openMicrophone ?? _openMicrophone;
+        openMicrophone = openMicrophone ?? _openMicrophone,
+        phoneAudio = phoneAudio ?? AndroidPhoneAudioBridge();
 
   final Future<void> Function(Peer, String, Map<String, dynamic>) send;
   final bool Function() isOccupied;
@@ -63,6 +67,8 @@ class WirelessAudioService extends ChangeNotifier {
   final Future<void> Function()? startPlayback, stopNative, routeSpeaker;
   final Future<void> Function(bool)? routeOutput;
   final Duration timeout, permissionTimeout;
+  final PhoneAudioBridge phoneAudio;
+  StreamSubscription<Map<String, dynamic>>? _phoneAudioEvents;
   WirelessAudioSession? session;
   String status = 'Ready for wireless audio';
   bool muted = false;
@@ -143,15 +149,17 @@ class WirelessAudioService extends ChangeNotifier {
     return s;
   }
 
-  Future<void> requestPcAudio(Peer peer) async {
+  Future<void> requestPcAudio(Peer peer) => requestDeviceAudio(peer);
+
+  Future<void> requestDeviceAudio(Peer peer) async {
     final s = _new(peer, 'system');
     s.awaitingOffer = true;
-    _changed('Waiting for ${peer.name} to share PC audio');
+    _changed('Waiting for ${peer.name} to share audio');
     try {
-      await _signal(s, 'request');
+      await _signal(s, 'request', {'phone_audio_version': 1});
     } catch (e) {
       if (_current(s)) {
-        await stop(notify: false, reason: 'Could not request PC audio: $e');
+        await stop(notify: false, reason: 'Could not request device audio: $e');
       }
     }
   }
@@ -299,7 +307,11 @@ class WirelessAudioService extends ChangeNotifier {
         'Audio could not connect. Check the Wi-Fi connection and Windows private-network firewall permission.');
     _changed('Connecting wireless audio…');
     if (s.offer == null) {
-      await _sendMicrophone(s);
+      if (s.source == 'system') {
+        await _sendPhoneAudio(s);
+      } else {
+        await _sendMicrophone(s);
+      }
       return;
     }
     await _receive(s, s.offer!);
@@ -318,6 +330,12 @@ class WirelessAudioService extends ChangeNotifier {
 
   Future<void> _receive(
       WirelessAudioSession s, Map<String, dynamic> offer) async {
+    if (_isPhoneOffer(offer)) {
+      await _receivePhoneAudio(s);
+      return;
+    }
+    if (s.receiving || s.pc != null) return;
+    s.receiving = true;
     try {
       s.sending = false;
       s.awaitingOffer = false;
@@ -353,6 +371,102 @@ class WirelessAudioService extends ChangeNotifier {
     }
   }
 
+  bool _isPhoneOffer(Map<String, dynamic> h) =>
+      h['audio_transport'] == 'android_pcm_v1' &&
+      h['sample_rate'] == 48000 &&
+      h['channels'] == 2 &&
+      h['sample_format'] == 's16le' &&
+      h['audio_mode'] == 'system';
+
+  bool _validOffer(Map<String, dynamic> h) =>
+      _isPhoneOffer(h) ||
+      (h['audio_transport'] == null &&
+          h['sdp'] is String &&
+          (h['sdp'] as String).isNotEmpty);
+
+  void _watchPhoneAudio() {
+    _phoneAudioEvents ??= phoneAudio.events.listen((event) {
+      final s = session;
+      if (s == null || !s.phonePcm || event['id'] != s.id) return;
+      if (event['type'] == 'connected') {
+        s.live = true;
+        s.timer?.cancel();
+        if (!s.sending) unawaited(setPhoneSpeaker(speakerEnabled));
+        _changed(s.sending
+            ? 'Phone app audio live • ${s.peer.name}'
+            : 'Wireless speaker live • ${s.peer.name}');
+      } else if (event['type'] == 'level' && event['level'] is num) {
+        audioLevel = (event['level'] as num).toDouble().clamp(0, 1);
+        notifyListeners();
+      } else if (event['type'] == 'stopped') {
+        unawaited(
+            stop(reason: event['reason']?.toString() ?? 'Phone audio stopped'));
+      }
+    }, onError: (Object error) {
+      if (session?.phonePcm == true) {
+        unawaited(stop(reason: 'Phone audio failed: $error'));
+      }
+    });
+  }
+
+  Future<void> _sendPhoneAudio(WirelessAudioSession s) async {
+    s.sending = true;
+    s.phonePcm = true;
+    _arm(s, 'Phone audio consent expired. Please retry.', permissionTimeout);
+    _changed(
+        'Allow Android to share app audio. Microphone and camera stay off.');
+    try {
+      _watchPhoneAudio();
+      await phoneAudio.prepareCapture(s.id);
+      if (!_current(s)) {
+        await phoneAudio.stop(s.id);
+        return;
+      }
+      _arm(s, 'Other phone did not connect to the audio stream');
+      await _signal(s, 'offer', {
+        'audio_transport': 'android_pcm_v1',
+        'sample_rate': 48000,
+        'channels': 2,
+        'sample_format': 's16le',
+      });
+      if (_current(s) && !s.live) {
+        _changed('Connecting phone app audio to ${s.peer.name}…');
+      }
+    } catch (error) {
+      if (_current(s)) {
+        await stop(reason: 'Could not share phone audio: $error');
+      }
+    }
+  }
+
+  Future<void> _receivePhoneAudio(WirelessAudioSession s) async {
+    if (s.receiving) return;
+    s.receiving = true;
+    s.sending = false;
+    s.phonePcm = true;
+    s.awaitingOffer = false;
+    _arm(s, 'Phone audio did not connect. Check the Nearby connection.');
+    _changed('Connecting phone app audio…');
+    try {
+      _watchPhoneAudio();
+      final endpoint = await phoneAudio.receive(s.id, s.peer.ip);
+      if (!_current(s)) {
+        await phoneAudio.stop(s.id);
+        return;
+      }
+      await phoneAudio.volume(s.id, volume);
+      await _signal(s, 'answer', {
+        'audio_transport': 'android_pcm_v1',
+        'port': endpoint['port'],
+        'token': endpoint['token'],
+      });
+    } catch (error) {
+      if (_current(s)) {
+        await stop(reason: 'Phone audio playback failed: $error');
+      }
+    }
+  }
+
   Future<void> handle(Peer peer, Map<String, dynamic> h) async {
     final id = h['session_id']?.toString() ?? '';
     if (!RegExp(r'^wa-[A-Za-z0-9-]{8,80}$').hasMatch(id)) return;
@@ -363,8 +477,7 @@ class WirelessAudioService extends ChangeNotifier {
       if (matches) {
         if (kind == 'wireless_audio_offer' &&
             s.awaitingOffer &&
-            h['sdp'] is String &&
-            (h['sdp'] as String).isNotEmpty) {
+            _validOffer(h)) {
           await _receive(s, h);
         }
         return;
@@ -376,16 +489,16 @@ class WirelessAudioService extends ChangeNotifier {
       }
       final source = h['audio_mode']?.toString() ?? 'mic';
       if (!['system', 'mic', 'both'].contains(source)) return;
-      if (kind == 'wireless_audio_request' && source != 'mic') {
+      if (kind == 'wireless_audio_request' &&
+          source != 'mic' &&
+          !(source == 'system' && h['phone_audio_version'] == 1)) {
         await send(peer, 'wireless_audio_reject', {
           'session_id': id,
-          'reason':
-              'This phone can share its microphone; PC system audio must be shared from Windows'
+          'reason': 'Update NearMitra on both phones to share phone app audio'
         });
         return;
       }
-      if (kind == 'wireless_audio_offer' &&
-          (h['sdp'] is! String || (h['sdp'] as String).isEmpty)) {
+      if (kind == 'wireless_audio_offer' && !_validOffer(h)) {
         return;
       }
       s = _new(peer, source, id: id);
@@ -397,7 +510,9 @@ class WirelessAudioService extends ChangeNotifier {
       await _signal(s, 'pending').catchError((_) {});
       if (!_current(s)) return;
       _changed(s.offer == null
-          ? '${peer.name} requests your microphone'
+          ? source == 'system'
+              ? '${peer.name} requests your app audio'
+              : '${peer.name} requests your microphone'
           : '${peer.name} wants to play audio on this phone');
       return;
     }
@@ -415,6 +530,23 @@ class WirelessAudioService extends ChangeNotifier {
             'The other device did not approve audio. Open NearMitra there and allow the request.',
             permissionTimeout);
         _changed('Device reached: ${s.peer.name} • waiting for approval');
+      } else if (kind == 'wireless_audio_answer' &&
+          s.sending &&
+          s.phonePcm &&
+          !s.answering) {
+        final port = h['port'], token = h['token'];
+        if (h['audio_transport'] != 'android_pcm_v1' ||
+            port is! int ||
+            port < 1 ||
+            port > 65535 ||
+            token is! String ||
+            !RegExp(r'^[a-f0-9]{64}$').hasMatch(token)) {
+          await stop(
+              reason: 'Other phone returned an invalid audio connection');
+          return;
+        }
+        s.answering = true;
+        await phoneAudio.send(s.id, s.peer.ip, port, token);
       } else if (kind == 'wireless_audio_answer' &&
           s.sending &&
           s.pc != null &&
@@ -452,9 +584,9 @@ class WirelessAudioService extends ChangeNotifier {
       );
   void toggleMute() {
     final s = session;
-    if (s?.sending != true) return;
+    if (s?.sending != true || s!.phonePcm) return;
     muted = !muted;
-    for (final t in s!.local?.getAudioTracks() ?? <MediaStreamTrack>[]) {
+    for (final t in s.local?.getAudioTracks() ?? <MediaStreamTrack>[]) {
       t.enabled = !muted;
     }
     notifyListeners();
@@ -468,7 +600,9 @@ class WirelessAudioService extends ChangeNotifier {
     routingOutput = true;
     notifyListeners();
     try {
-      if (routeOutput != null) {
+      if (s.phonePcm) {
+        await phoneAudio.speaker(s.id, speaker);
+      } else if (routeOutput != null) {
         await routeOutput!(speaker);
       } else if (routeSpeaker != null && speaker) {
         await routeSpeaker!();
@@ -565,6 +699,14 @@ class WirelessAudioService extends ChangeNotifier {
 
   Future<void> setVolume(double value) async {
     volume = value.clamp(0, 1);
+    final s = session;
+    if (s?.phonePcm == true && !s!.sending) {
+      try {
+        await phoneAudio.volume(s.id, volume);
+      } catch (error) {
+        if (_current(s)) outputStatus = 'Volume could not change: $error';
+      }
+    }
     for (final t in session?.remote?.getAudioTracks() ?? <MediaStreamTrack>[]) {
       await Helper.setVolume(volume, t);
     }
@@ -583,16 +725,18 @@ class WirelessAudioService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> _stopNativeIfIdle() async {
+  Future<void> _stopNativeIfIdle({bool phonePcm = false}) async {
     if (session != null) return;
     try {
       if (stopNative != null) {
         await stopNative!();
       } else if (WebRTC.platformIsAndroid) {
         await channel.invokeMethod('stopWirelessAudioService');
-        await Helper.clearAndroidCommunicationDevice();
-        await Helper.setAndroidAudioConfiguration(
-            AndroidAudioConfiguration.communication);
+        if (!phonePcm) {
+          await Helper.clearAndroidCommunicationDevice();
+          await Helper.setAndroidAudioConfiguration(
+              AndroidAudioConfiguration.communication);
+        }
       }
     } catch (_) {}
   }
@@ -608,6 +752,11 @@ class WirelessAudioService extends ChangeNotifier {
     audioLevel = 0;
     bufferDelayMs = null;
     _earlyIce.remove('${s.peer.ip}/${s.id}');
+    if (s.phonePcm) {
+      try {
+        await phoneAudio.stop(s.id);
+      } catch (_) {}
+    }
     if (notify) {
       unawaited(_signal(s, 'stop', {'reason': reason}).catchError((_) {}));
     }
@@ -626,8 +775,14 @@ class WirelessAudioService extends ChangeNotifier {
       s.renderer?.srcObject = null;
       await s.renderer?.dispose();
     } catch (_) {}
-    await _stopNativeIfIdle();
+    await _stopNativeIfIdle(phonePcm: s.phonePcm);
     _stopping = false;
     _changed(reason);
+  }
+
+  @override
+  void dispose() {
+    unawaited(_phoneAudioEvents?.cancel());
+    super.dispose();
   }
 }
