@@ -1,7 +1,7 @@
 name: farmitra_nearby
 description: Farmitra Nearby - local network chat and file sharing compatible with Farmitra Nearby for Windows.
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.3+4
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  notification_reply_bridge:
+    path: packages/notification_reply_bridge
   cupertino_icons: ^1.0.8
   file_picker: ^8.1.7
   path_provider: ^2.1.5
@@ -33,6 +35,8 @@ dev_dependencies:
 
   flutter_test:
     sdk: flutter
+  firebase_core_platform_interface: ^6.0.3
+  shared_preferences_platform_interface: ^2.4.2
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.14.1
 

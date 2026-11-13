@@ -17,7 +17,7 @@ class StreamHubScreen extends ConsumerStatefulWidget {
     super.key,
     required this.service,
     this.targetPeer,
-    this.initialStreamType = 'camera',
+    this.initialStreamType = 'wireless',
     this.onOpenSettings,
   });
 
@@ -38,6 +38,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   // Video Renderers
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   final RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
+  late final Future<void> _rendererInitialization;
 
   MediaStream? _localStream;
   MediaStream? _remoteStream;
@@ -50,6 +51,9 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   AudioStreamRole _audioRole = AudioStreamRole.listenRemote;
 
   bool _isHostActive = false;
+  bool _hostCapturePending = false;
+  int _hostMediaEpoch = 0;
+  bool _ownsProjectionService = false;
   bool _isRemoteConnected = false;
   bool _isConnecting = false;
 
@@ -81,12 +85,14 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     int initialIdx = 0;
-    if (widget.initialStreamType == 'audio') {
+    if (widget.initialStreamType == 'camera') {
       initialIdx = 1;
-    } else if (widget.initialStreamType == 'screen') {
+    } else if (widget.initialStreamType == 'audio') {
       initialIdx = 2;
+    } else if (widget.initialStreamType == 'screen') {
+      initialIdx = 3;
     }
-    if (widget.initialStreamType == 'wireless') initialIdx = 4;
+    if (widget.initialStreamType == 'security') initialIdx = 4;
     _tabController = TabController(length: 5, vsync: this, initialIndex: initialIdx);
     _selectedPeer = widget.targetPeer ??
         (widget.service.peers.isNotEmpty ? widget.service.peers.first : null);
@@ -95,7 +101,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     widget.service.wirelessAudio.otherMediaBusy = _wirelessMediaGuard;
     _streamingService.addListener(_onServiceUpdate);
     _setupSignalListeners();
-    _initPermissionsAndMedia();
+    _rendererInitialization = _initPermissionsAndMedia();
   }
 
   void _toast(String msg) {
@@ -131,11 +137,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       } catch (_) {}
     }
 
-    try {
-      _localStream?.getTracks().forEach((t) => t.stop());
-      _localStream?.dispose();
-    } catch (_) {}
-    _localStream = null;
+    _stopHostMediaOnly();
 
     try {
       _remoteStream?.getTracks().forEach((t) => t.stop());
@@ -195,11 +197,24 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     // Camera starts only when user explicitly taps "Start Host Camera" button.
     try {
       await _localRenderer.initialize();
+      if (_isDisposing) return;
       await _remoteRenderer.initialize();
     } catch (e) {
       debugPrint('[StreamHub] Renderer init error: $e');
     }
-    try { Helper.setSpeakerphoneOn(true); } catch (_) {}
+    // An active Wi-Fi Audio session owns its selected output, including earpiece.
+    if (!mounted || widget.service.wirelessAudio.busy) return;
+    try { await Helper.setSpeakerphoneOn(true); } catch (_) {}
+  }
+
+  Future<void> _disposeRenderers() async {
+    // Native texture creation may finish after the route has already closed.
+    // Wait for it before disposing, so it cannot revive a released renderer.
+    await _rendererInitialization;
+    for (final renderer in [_localRenderer, _remoteRenderer]) {
+      try { await renderer.dispose(); }
+      catch (error) { debugPrint('[StreamHub] Renderer cleanup: $error'); }
+    }
   }
 
 
@@ -579,6 +594,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   Future<void> _startHostCamera() async {
+    if (_hostCapturePending || !mounted) return;
     if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting another stream'); return; }
     if (!_streamingService.allowCamera) {
       if (!mounted) return;
@@ -590,8 +606,14 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       if (!enable) return;
     }
 
+    if (_hostCapturePending || !mounted) return;
+    _hostCapturePending = true;
     try {
+      await _rendererInitialization;
+      if (!mounted) return;
+      if (_localRenderer.textureId == null) throw StateError('Video renderer unavailable');
       _stopHostMediaOnly();
+      final epoch = _hostMediaEpoch;
 
       final mediaConstraints = <String, dynamic>{
         'audio': true,
@@ -603,8 +625,12 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
         },
       };
 
-      _localStream =
-          await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      final stream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      if (!mounted || epoch != _hostMediaEpoch) {
+        await _releaseHostStream(stream);
+        return;
+      }
+      _localStream = stream;
       _localRenderer.srcObject = _localStream;
 
       if (mounted) {
@@ -621,14 +647,29 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
           _streamStatus = 'Camera Error: $e';
         });
       }
+    } finally {
+      _hostCapturePending = false;
     }
   }
 
+  Future<void> _releaseHostStream(MediaStream stream) async {
+    for (final track in stream.getTracks()) {
+      track.onEnded = null;
+      try { await track.stop(); } catch (_) {}
+    }
+    try { await stream.dispose(); } catch (_) {}
+  }
+
   void _stopHostMediaOnly() {
-    _localStream?.getTracks().forEach((t) => t.stop());
-    _localStream?.dispose();
+    _hostMediaEpoch++;
+    final stream = _localStream;
     _localStream = null;
-    _localRenderer.srcObject = null;
+    if (stream != null) unawaited(_releaseHostStream(stream));
+    if (_ownsProjectionService) {
+      _ownsProjectionService = false;
+      unawaited(_stopProjectionService());
+    }
+    if (_localRenderer.textureId != null) _localRenderer.srcObject = null;
   }
 
   Future<void> _stopHostCamera() async {
@@ -644,7 +685,15 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
 
   bool _isRequestingScreenShare = false;
 
+  Future<void> _stopProjectionService() async {
+    try {
+      await const MethodChannel('farmitra_nearby/network')
+          .invokeMethod('stopMediaProjectionService');
+    } catch (_) {}
+  }
+
   Future<void> _startHostScreen() async {
+    if (_hostCapturePending || !mounted) return;
     if (widget.service.wirelessAudio.busy) { _toast('Stop wireless audio before starting another stream'); return; }
     if (!_streamingService.allowScreen) {
       if (!mounted) return;
@@ -656,25 +705,38 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       if (!enable) return;
     }
 
+    if (_hostCapturePending || !mounted) return;
+    _hostCapturePending = true;
     _isRequestingScreenShare = true;
+    var projectionStarted = false;
+    var adopted = false;
     try {
+      await _rendererInitialization;
+      if (!mounted) return;
+      if (_localRenderer.textureId == null) throw StateError('Video renderer unavailable');
       _stopHostMediaOnly();
+      final epoch = _hostMediaEpoch;
       if (mounted && Theme.of(context).platform == TargetPlatform.android) {
-        try {
-          await const MethodChannel('farmitra_nearby/network')
-              .invokeMethod('startMediaProjectionService');
-          await Future.delayed(const Duration(milliseconds: 350));
-        } catch (_) {}
+        if (!await Helper.requestCapturePermission()) return;
+        if (!mounted || epoch != _hostMediaEpoch) return;
+        await const MethodChannel('farmitra_nearby/network')
+            .invokeMethod('startMediaProjectionService');
+        projectionStarted = true;
       }
+      if (!mounted || epoch != _hostMediaEpoch) return;
 
       final screenStream = await navigator.mediaDevices.getDisplayMedia({
         'audio': false,
         'video': true,
       });
-      _isRequestingScreenShare = false;
-
+      if (!mounted || epoch != _hostMediaEpoch) {
+        await _releaseHostStream(screenStream);
+        return;
+      }
       _localStream = screenStream;
       _localRenderer.srcObject = screenStream;
+      adopted = true;
+      _ownsProjectionService = projectionStarted;
 
       final screenTracks = screenStream.getVideoTracks();
       if (screenTracks.isNotEmpty) {
@@ -694,13 +756,18 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
       }
       _toast('Screen Casting Active');
     } catch (e) {
-      _isRequestingScreenShare = false;
       debugPrint('Screen casting start error: $e');
       if (mounted) {
         setState(() {
           _isHostActive = false;
           _streamStatus = 'Screen Cast Error: $e';
         });
+      }
+    } finally {
+      _hostCapturePending = false;
+      _isRequestingScreenShare = false;
+      if (projectionStarted && !adopted) {
+        await _stopProjectionService();
       }
     }
   }
@@ -1069,13 +1136,11 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   void _disconnectStream() {
     _connectionTimeoutTimer?.cancel();
     _connectionTimeoutTimer = null;
-    _localStream?.getTracks().forEach((track) => track.stop());
-    _localStream?.dispose();
-    _localStream = null;
+    _stopHostMediaOnly();
     _remoteStream?.getTracks().forEach((track) => track.stop());
     _remoteStream?.dispose();
     _remoteStream = null;
-    _remoteRenderer.srcObject = null;
+    if (_remoteRenderer.textureId != null) _remoteRenderer.srcObject = null;
     _peerConnection?.close();
     _peerConnection?.dispose();
     _peerConnection = null;
@@ -1103,8 +1168,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
     _tabController.dispose();
     _stopHostMediaOnly();
     _disconnectStream();
-    _localRenderer.dispose();
-    _remoteRenderer.dispose();
+    unawaited(_disposeRenderers());
     super.dispose();
   }
 
@@ -1175,6 +1239,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
             unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
             indicatorWeight: 3,
             tabs: const [
+              Tab(height: 48, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.graphic_eq_rounded, size: 20), SizedBox(width: 7), Text('Wi-Fi Audio')])),
               Tab(
                 height: 48,
                 child: Row(
@@ -1219,19 +1284,18 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
                   ],
                 ),
               ),
-              Tab(height: 48, child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.graphic_eq_rounded, size: 20), SizedBox(width: 7), Text('Wi-Fi Audio')])),
             ],
           ),
         ),
         body: TabBarView(
           controller: _tabController,
           children: [
+            WirelessAudioPanel(service: widget.service, targetPeer: _selectedPeer,
+              otherStreamActive: _isHostActive || _isRemoteConnected || _isConnecting || _isAudioActive || _isAudioConnecting),
             _buildCameraCctvTab(scheme),
             _buildLiveAudioTab(scheme),
             _buildScreenCastTab(scheme),
             _buildSecurityHubTab(scheme),
-            WirelessAudioPanel(service: widget.service, targetPeer: _selectedPeer,
-              otherStreamActive: _isHostActive || _isRemoteConnected || _isConnecting || _isAudioActive || _isAudioConnecting),
           ],
         ),
       ),
@@ -1697,6 +1761,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
                         // Request permissions before starting camera
                         final camOk = await Permission.camera.request();
                         final micOk = await Permission.microphone.request();
+                        if (!mounted) return;
                         if (!camOk.isGranted) {
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -2594,7 +2659,7 @@ class _StreamHubScreenState extends ConsumerState<StreamHubScreen>
   }
 
   Widget _buildFullScreenView() {
-    final isCameraStream = _tabController.index == 0;
+    final isCameraStream = _tabController.index == 1;
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(

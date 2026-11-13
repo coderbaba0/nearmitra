@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../models/peer.dart';
 import '../services/call_service.dart';
 import '../services/call_video_session.dart';
+import '../services/call_video_sender.dart';
 import '../services/nearby_service.dart';
 
 class ActiveCallScreen extends ConsumerStatefulWidget {
@@ -57,8 +58,10 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   MediaStream? _localStream;
   CallVideoSession? _videoSession;
   RTCRtpTransceiver? _videoTransceiver;
+  CallVideoSender? _videoSender;
   MediaStream? _remoteStream;
   final List<RTCIceCandidate> _pendingCandidates = [];
+  Future<void> _remoteTrackUpdates = Future<void>.value();
 
   @override
   void initState() {
@@ -309,14 +312,40 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
       }
 
       final camera = _localStream?.getVideoTracks().firstOrNull;
-      final videoInit = RTCRtpTransceiverInit(
-        direction: TransceiverDirection.SendRecv,
-        streams: [_localStream!],
+      _videoTransceiver = await addCallVideo(pc, _localStream!);
+      _videoSender = CallVideoSender(
+        connection: pc,
+        reserved: _videoTransceiver!,
+        initialTrack: camera,
+        isActive: () => mounted && identical(_peerConnection, pc),
+        negotiate: () async {
+          var localOfferSet = false;
+          try {
+            final offer = await pc.createOffer(
+                {'offerToReceiveAudio': true, 'offerToReceiveVideo': true});
+            if (!mounted || !identical(_peerConnection, pc)) {
+              throw StateError('Call has ended');
+            }
+            await pc.setLocalDescription(offer);
+            localOfferSet = true;
+            await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_offer', {
+              'sdp': offer.sdp,
+              'sdp_type': offer.type,
+              'is_video': true,
+            });
+          } catch (_) {
+            if (localOfferSet && identical(_peerConnection, pc)) {
+              try {
+                if (await pc.getSignalingState() ==
+                    RTCSignalingState.RTCSignalingStateHaveLocalOffer) {
+                  await pc.setLocalDescription(RTCSessionDescription('', 'rollback'));
+                }
+              } catch (_) {}
+            }
+            rethrow;
+          }
+        },
       );
-      _videoTransceiver = camera != null
-          ? await pc.addTransceiver(track: camera, init: videoInit)
-          : await pc.addTransceiver(
-              kind: RTCRtpMediaType.RTCRtpMediaTypeVideo, init: videoInit);
       _videoSession = CallVideoSession(
         localStream: _localStream!,
         cameraEnabled:
@@ -385,28 +414,24 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
         Helper.setSpeakerphoneOn(_isSpeakerOn);
       };
 
-      pc.onTrack = (event) async {
-        event.track.enabled = true;
-        if (event.streams.isNotEmpty) {
-          _remoteStream ??= event.streams.first;
-          if (!_remoteStream!
-              .getTracks()
-              .any((track) => track.id == event.track.id)) {
+      pc.onTrack = (event) {
+        // Audio and video events can arrive together. Serialize native stream
+        // mutations so a late audio callback cannot replace the video stream.
+        _remoteTrackUpdates = _remoteTrackUpdates.then((_) async {
+          if (!mounted || !identical(_peerConnection, pc)) return;
+          event.track.enabled = true;
+          _remoteStream ??= event.streams.firstOrNull ??
+              await createLocalMediaStream('remote_stream_${widget.peer.id}');
+          if (!_remoteStream!.getTracks().any((t) => t.id == event.track.id)) {
             await _remoteStream!.addTrack(event.track);
           }
+          if (!mounted || !identical(_peerConnection, pc)) return;
           _remoteRenderer.srcObject = _remoteStream;
-        } else {
-          _remoteStream ??=
-              await createLocalMediaStream('remote_stream_${widget.peer.id}');
-          _remoteStream!.addTrack(event.track);
-          _remoteRenderer.srcObject = _remoteStream;
-        }
-        if (mounted) {
-          setState(() {
-            _renderersReady = true;
-          });
-        }
-        Helper.setSpeakerphoneOn(_isSpeakerOn);
+          setState(() => _renderersReady = true);
+          await Helper.setSpeakerphoneOn(_isSpeakerOn);
+        }).catchError((Object error) {
+          debugPrint('[ActiveCall] Remote track error: $error');
+        });
       };
 
       pc.onConnectionState = (state) {
@@ -504,6 +529,7 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
           RTCSessionDescription(sdp, offer['sdp_type']?.toString() ?? 'offer'));
       _hasRemoteDescription = true;
       await _drainPendingCandidates();
+      await _videoSender?.prepareAnswer();
       final answer = await pc.createAnswer({
         'offerToReceiveAudio': true,
         'offerToReceiveVideo': true,
@@ -640,37 +666,9 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   }
 
   Future<void> _replaceVideoTrack(MediaStreamTrack? track) async {
-    final transceiver = _videoTransceiver;
-    final pc = _peerConnection;
-    if (transceiver == null || pc == null || !mounted) return;
-    final previous = transceiver.sender.track;
-    try {
-      await transceiver.sender.replaceTrack(track);
-      final direction = await transceiver.getCurrentDirection();
-      if (track != null &&
-          direction != TransceiverDirection.SendRecv &&
-          direction != TransceiverDirection.SendOnly) {
-        if (await pc.getSignalingState() !=
-            RTCSignalingState.RTCSignalingStateStable) {
-          throw StateError('Call negotiation is in progress; try again');
-        }
-        final offer = await pc.createOffer(
-            {'offerToReceiveAudio': true, 'offerToReceiveVideo': true});
-        await pc.setLocalDescription(offer);
-        await widget.service.sendWebRtcSignal(widget.peer, 'webrtc_offer', {
-          'sdp': offer.sdp,
-          'sdp_type': offer.type,
-          'is_video': true,
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        try {
-          await transceiver.sender.replaceTrack(previous);
-        } catch (_) {}
-      }
-      rethrow;
-    }
+    final sender = _videoSender;
+    if (sender == null) throw StateError('Call video is not ready');
+    await sender.replace(track);
   }
 
   Future<void> _toggleVideo() async {
@@ -781,6 +779,8 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen>
   }
 
   Future<void> _closeWebRtc() async {
+    _videoSender = null;
+    _videoTransceiver = null;
     try {
       await _videoSession?.dispose();
       _videoSession = null;

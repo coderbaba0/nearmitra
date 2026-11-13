@@ -18,6 +18,10 @@ class WanService extends ChangeNotifier {
   final FirebasePresenceService _presenceService = FirebasePresenceService();
 
   bool _isInitialized = false;
+  Future<void>? _initialization;
+  bool _internetListenersStarted = false;
+  Future<void> _modeUpdate = Future<void>.value();
+  static const internetModePreferenceKey = 'wan_internet_mode_enabled';
   bool _isInternetModeEnabled = false;
   WanDiscoveryMode _discoveryMode = WanDiscoveryMode.publicRadar;
   bool isAppInForeground = true;
@@ -130,8 +134,12 @@ class WanService extends ChangeNotifier {
   }
 
   /// Initialize WanService with persistent device identity and load cached trusted devices
-  Future<void> init() async {
-    if (_isInitialized) return;
+  Future<void> init() {
+    if (_isInitialized) return Future<void>.value();
+    return _initialization ??= _initialize().whenComplete(() => _initialization = null);
+  }
+
+  Future<void> _initialize() async {
 
     await _identityService.init();
     await _presenceService.init();
@@ -182,8 +190,28 @@ class WanService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Restore presence at startup independently of the selected discovery tab.
+  Future<void> restoreInternetMode() async {
+    await init();
+    final prefs = await SharedPreferences.getInstance();
+    await setInternetMode(prefs.getBool(internetModePreferenceKey) ?? true);
+  }
+
   /// Enable or disable Internet Mode listeners
-  Future<void> setInternetMode(bool enable) async {
+  Future<void> setInternetMode(bool enable) {
+    final update = _modeUpdate.then((_) => _applyInternetMode(enable));
+    // A failed activation can be retried without blocking a later OFF request.
+    _modeUpdate = update.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return update;
+  }
+
+  Future<void> _applyInternetMode(bool enable) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(internetModePreferenceKey, enable);
+    if (_isInternetModeEnabled == enable &&
+        (!enable || _internetListenersStarted)) {
+      return;
+    }
     _isInternetModeEnabled = enable;
     try {
       await _presenceService.setInternetMode(enable);
@@ -216,7 +244,9 @@ class WanService extends ChangeNotifier {
         performPeriodicCleanup();
       });
       unawaited(performPeriodicCleanup());
+      _internetListenersStarted = true;
     } else {
+      _internetListenersStarted = false;
       _cancelInternetListeners();
     }
 

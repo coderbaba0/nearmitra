@@ -177,3 +177,35 @@ Built `build/windows-release/NearMitra_Setup_2.1.18_x64.exe` from the updated Wi
 ### Windows 2.1.19 installer
 
 Built `build/windows-release/NearMitra_Setup_2.1.19_x64.exe` with Copy beside Select in message hover actions and desktop avatar handshake/rescan fixes. All 124 JavaScript tests and `go test ./...` pass, including configured-avatar handshake, installer extraction and embedded app equality. Both SHA-256 manifests were regenerated from the final artifacts. Setup remains unsigned. Live cross-device verification is still pending.
+
+### Windows 2.1.20 typing indicator installer
+
+Built `build/windows-release/NearMitra_Setup_2.1.20_x64.exe` with Nearby typing refresh during continuous input, WAN typing retained across backend state polls, canonical peer identity matching, per-conversation expiry, and explicit stop when clearing the composer. Copy and desktop avatar fixes remain included. All 130 JavaScript checks and `go test ./...` pass, including installer extraction and exact embedded-app equality. SHA-256 manifests updated. Setup remains unsigned; live two-device typing still requires verification. The phone UI fixes require rebuilding/installing the Android app separately.
+
+### Windows 2.1.21 background presence and local-first routing
+
+Install `build/windows-release/NearMitra_Setup_2.1.21_x64.exe` on both Windows peers after exiting older tray copies. Online/offline status in the active chat and paired-device lists now uses the same Nearby-first routing as messages: a reachable LAN/P2P peer stays online even when its WAN record is offline; WAN is used when local presence expires and a trusted Internet route is available. WAN state refresh runs regardless of the selected sidebar mode and cannot overwrite a working local route. Overlapping frontend state polls are prevented.
+
+The Go discovery worker verifies known peers with an actual NearMitra TCP hello after an 8-second beacon gap. Quiet reachable tray apps refresh their local presence; peers with no beacon or successful app hello expire after 25 seconds, checked on the background 5-second cadence. A fresh beacon arriving during a failed probe wins over the stale snapshot. Discovery sends an immediate startup beacon. Full scans use complete, bounded JSON hello decoding and preserve the existing device/avatar/cloud identity instead of replacing peer metadata. Legacy beacons without a cloud ID retain the learned LAN/WAN identity.
+
+WAN presence already starts with the Go backend, independently of the browser and WAN tab; a regression test now verifies this without creating a browser. Temporary Firebase presence read failures no longer turn cached trusted peers offline immediately. Cached Windows presence still expires under its existing heartbeat lease, and explicit offline records continue to apply. Tray logs showed peers reconnecting only at the prior 5-minute scan interval, consistent with missed UDP discovery.
+
+Validation: all 136 JavaScript checks and `go test ./...` pass, including quiet-tray reachability, failed probes/offline expiry/recovery, beacon/probe races, fragmented hello responses, identity retention, background WAN publication, local-first status across sidebar tabs, failed WAN reads and serialized polling. Installer extraction and embedded-app equality pass. SHA-256 manifests were regenerated from the final v2.1.21 artifacts. Setup remains unsigned. Live two-PC tray/sleep/network-switch behavior still needs verification; no installed app was replaced or restarted automatically.
+
+### Android 1.0.2 background presence update
+
+Install `../build/releases/NearMitra-Android-1.0.2.apk` as an update (application ID `com.farmitra.nearby`, versionCode 3). This APK includes the current mobile call, AI, typing and background presence source changes; statements in older Windows release notes about no new mobile APK describe those earlier builds.
+
+Root causes: mobile startup initialized the WAN service without enabling presence/listeners, so opening the WAN tab was required; double-Back called `SystemNavigator.pop()` even with Run in Background enabled, finishing the Flutter activity and its Dart listeners while the separate foreground-service notification could remain.
+
+Internet presence now restores its saved mode at app startup, defaults to enabled when no preference exists, and retains an explicit OFF choice. Failed Firebase initialization/activation retries after 15 seconds without waiting for a tab change. Resume and enabling Run in Background retry startup; repeated restores do not duplicate listeners, and Internet mode changes are serialized. Late presence registration checks that the mode and connection are still active before claiming online. Nearby remains the preferred transport.
+
+With Run in Background ON, double-Back on the main screen moves the Android task to the background instead of finishing FlutterActivity. Normal chat/tab Back navigation is retained; with background mode OFF, double-Back still exits normally. The existing Android foreground service and network/wake locks continue to support background listeners.
+
+Validation: all 77 Flutter tests pass, including mocked Firebase online publication without a WAN tab, saved OFF behavior, idempotent startup, rapid ON/OFF, retry and disposal, task minimization, and existing Nearby-first/WAN-fallback routing. Analysis of the changed Dart files/tests has no issues. Release APK/native Kotlin compilation succeeds. Android build metadata and aapt confirm package ID, versionName 1.0.2 and versionCode 3. APK SHA-256 is recorded in `../build/releases/SHA256SUMS.txt`. The release currently uses the repository's configured debug signing key. No device was installed or restarted automatically; real phone screen-off/background/network recovery still needs live verification.
+
+### Windows 2.1.22 and Android 1.0.3 rebuild
+
+Current workspace source rebuilt into `build/windows-release/NearMitra_Setup_2.1.22_x64.exe` and `../build/releases/NearMitra-Android-1.0.3.apk` (versionCode 4). Windows installer embeds the freshly rebuilt app. All Go tests, 136 desktop/installer JavaScript checks and 77 Flutter tests pass. Android release compilation succeeds and output metadata confirms package `com.farmitra.nearby`, versionName 1.0.3 and versionCode 4. SHA-256 manifests updated.
+
+This is a versioned rebuild of current source. The reported Android recent-apps swipe-away notification issue remains unresolved: no activity-independent engine lifecycle change has been implemented or verified. Home/Back background behavior remains as in 1.0.2. Windows setup remains unsigned; Android uses the existing configured signing key. Neither app was installed or restarted on a device during this rebuild.

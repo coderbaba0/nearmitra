@@ -913,7 +913,11 @@ func (ws *WanService) syncTrustedDevices() {
 
 	// Fetch presence map to query online/offline status in realtime
 	var presenceMap map[string]map[string]interface{}
-	_ = ws.client.Get(ctx, "presence", &presenceMap)
+	if err := ws.client.Get(ctx, "presence", &presenceMap); err != nil {
+		// A failed read is not an offline announcement. Keep the previous
+		// snapshot; GetTrustedDevices still expires desktop heartbeat leases.
+		return
+	}
 
 	// Also fetch public_presence map as supplementary
 	var publicPresenceMap map[string]map[string]interface{}

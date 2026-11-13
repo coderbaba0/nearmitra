@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -21,6 +20,7 @@ import 'internet_device_identity_service.dart';
 import 'notification_service.dart';
 import 'socket_reader.dart';
 import 'history_service.dart';
+import 'folder_archive_service.dart';
 import 'wireless_audio_service.dart';
 
 const int discoveryPort = 43888;
@@ -99,9 +99,12 @@ class NearbyService extends ChangeNotifier {
   NearbyService(
       {required this.deviceId,
       required String deviceName,
-      String avatarEmoji = '📱'})
+      String avatarEmoji = '📱',
+      Future<RawDatagramSocket> Function()? discoverySocketFactory})
       : _deviceName = deviceName,
-        _avatarEmoji = avatarEmoji {
+        _avatarEmoji = avatarEmoji,
+        _discoverySocketFactory =
+            discoverySocketFactory ?? _bindDiscoverySocket {
     _instance = this;
     _loadOutbox();
   }
@@ -238,6 +241,18 @@ class NearbyService extends ChangeNotifier {
       return ok ?? false;
     } catch (e) {
       log('Error stopping background service: $e');
+      return false;
+    }
+  }
+
+  /// Keep the Activity's Flutter engine and networking alive on Android Back.
+  Future<bool> moveToBackground() async {
+    if (!_backgroundServiceEnabled) return false;
+    try {
+      return await _networkChannel.invokeMethod<bool>('moveTaskToBackground') ??
+          false;
+    } catch (error) {
+      log('Could not move app to background: $error');
       return false;
     }
   }
@@ -388,6 +403,7 @@ class NearbyService extends ChangeNotifier {
   TransferState _transfer = const TransferState();
 
   RawDatagramSocket? _udp;
+  final Future<RawDatagramSocket> Function() _discoverySocketFactory;
   ServerSocket? _server;
   Timer? _announceTimer;
   Timer? _cleanupTimer;
@@ -664,9 +680,16 @@ class NearbyService extends ChangeNotifier {
         (act.isNotEmpty && (res.contains(act) || act.contains(res)));
   }
 
-  Future<void> start() async {
-    if (_started) return;
-    _started = true;
+  Future<void>? _starting;
+
+  Future<void> start() {
+    final pending = _starting;
+    if (pending != null) return pending;
+    if (_started) return Future<void>.value();
+    return _starting = _start().whenComplete(() => _starting = null);
+  }
+
+  Future<void> _start() async {
     await _loadPinnedPeers();
     await _loadNotificationsSetting();
     await _loadCustomSavePath();
@@ -678,6 +701,7 @@ class NearbyService extends ChangeNotifier {
     await _bridge.acquireMulticastLock();
     await _startTransferServer();
     await _startDiscovery();
+    _started = true;
     _announceTimer =
         Timer.periodic(const Duration(seconds: 3), (_) => announce());
     _cleanupTimer = Timer.periodic(const Duration(seconds: 10), (_) {
@@ -693,12 +717,23 @@ class NearbyService extends ChangeNotifier {
   }
 
   Future<void> _pingPeers() async {
-    for (final p in _peers.values.toList()) {
-      _probe(p.ip);
+    if (_pingingPeers) return;
+    _pingingPeers = true;
+    try {
+      await Future.wait(_peers.values
+          .map((p) => p.ip)
+          .toSet()
+          .where((ip) => ip.isNotEmpty)
+          .map(_probe));
+    } finally {
+      _pingingPeers = false;
     }
   }
 
+  bool _pingingPeers = false;
+
   Future<void> stop() async {
+    await _starting;
     await wirelessAudio.stop();
     _announceTimer?.cancel();
     _cleanupTimer?.cancel();
@@ -709,23 +744,26 @@ class NearbyService extends ChangeNotifier {
     _started = false;
   }
 
+  static Future<RawDatagramSocket> _bindDiscoverySocket() async {
+    try {
+      return await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        discoveryPort,
+        reuseAddress: true,
+        reusePort: false,
+      );
+    } catch (_) {
+      return RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        discoveryPort,
+        reuseAddress: true,
+      );
+    }
+  }
+
   Future<void> _startDiscovery() async {
     try {
-      RawDatagramSocket socket;
-      try {
-        socket = await RawDatagramSocket.bind(
-          InternetAddress.anyIPv4,
-          discoveryPort,
-          reuseAddress: true,
-          reusePort: false,
-        );
-      } catch (_) {
-        socket = await RawDatagramSocket.bind(
-          InternetAddress.anyIPv4,
-          discoveryPort,
-          reuseAddress: true,
-        );
-      }
+      final socket = await _discoverySocketFactory();
       socket.broadcastEnabled = true;
       socket.multicastHops = 1;
       try {
@@ -733,29 +771,53 @@ class NearbyService extends ChangeNotifier {
       } catch (e) {
         log('Multicast join warning: $e');
       }
-      socket.listen((event) {
-        if (event != RawSocketEvent.read) return;
-        final datagram = socket.receive();
-        if (datagram == null) return;
-        _handleDiscoveryDatagram(datagram);
-      });
       _udp = socket;
+      void handleSocketError(Object error) {
+        // UDP send failures can arrive asynchronously on this stream after
+        // send() has returned. Release it so the next heartbeat can rebind.
+        if (!identical(_udp, socket)) return;
+        _udp = null;
+        socket.close();
+        log('Discovery socket will retry: $error');
+      }
+
+      socket.listen(
+          (event) {
+            if (event != RawSocketEvent.read || !identical(_udp, socket)) {
+              return;
+            }
+            try {
+              final datagram = socket.receive();
+              if (datagram != null) _handleDiscoveryDatagram(datagram);
+            } catch (error) {
+              handleSocketError(error);
+            }
+          },
+          onError: handleSocketError,
+          onDone: () {
+            // A delayed close from an older socket must not clear its replacement.
+            if (identical(_udp, socket)) _udp = null;
+          },
+          cancelOnError: true);
     } catch (e) {
       log('Discovery listener unavailable: $e');
     }
   }
 
-  void _handleDiscoveryDatagram(Datagram datagram) {
+  void _handleDiscoveryDatagram(Datagram datagram) =>
+      handleDiscoveryAnnouncement(datagram.data, datagram.address.address);
+
+  @visibleForTesting
+  void handleDiscoveryAnnouncement(List<int> bytes, String remoteIp) {
     try {
-      final map =
-          jsonDecode(utf8.decode(datagram.data)) as Map<String, dynamic>;
+      final map = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
       final id = map['id']?.toString() ?? '';
       final name = map['name']?.toString() ?? 'Nearby device';
       final avatar =
           map['avatar']?.toString() ?? map['avatarEmoji']?.toString();
       final platform = map['platform']?.toString();
       if (id.isEmpty || id == deviceId) return;
-      _upsertPeer(id, name, datagram.address.address,
+      _upsertPeer(id, name, remoteIp,
           avatarEmoji: avatar,
           platform: platform,
           internetDeviceId: map['internet_device_id']?.toString(),
@@ -897,8 +959,9 @@ class NearbyService extends ChangeNotifier {
           return peerId;
         }
       }
-    } catch (e) {
-      log('Probe error for $ip: $e');
+    } catch (_) {
+      // Closed ports and unreachable addresses are normal during subnet scans.
+      // Logging each miss rebuilt the home screen hundreds of times per scan.
     } finally {
       socket?.destroy();
     }
@@ -963,6 +1026,8 @@ class NearbyService extends ChangeNotifier {
   @visibleForTesting
   Future<void> handleIncomingConnection(Socket socket) async {
     final reader = SocketReader(socket);
+    IOSink? receivingSink;
+    File? incompleteFile;
     try {
       final line = await reader.readLine();
       if (line == null) return;
@@ -1456,7 +1521,10 @@ class NearbyService extends ChangeNotifier {
         final path = await _uniquePath('${dir.path}/$name');
         final file = File(path);
         final sink = file.openWrite();
+        receivingSink = sink;
+        incompleteFile = file;
         var received = 0;
+        var unflushedBytes = 0;
         final watch = Stopwatch()..start();
         var previous = 0;
         var previousMs = 0;
@@ -1473,6 +1541,11 @@ class NearbyService extends ChangeNotifier {
           }
           sink.add(chunk);
           received += chunk.length;
+          unflushedBytes += chunk.length;
+          if (unflushedBytes >= 1024 * 1024) {
+            await sink.flush();
+            unflushedBytes = 0;
+          }
           final nowMs = watch.elapsedMilliseconds;
           var speed = _transfer.speedBytesPerSec;
           if (nowMs - previousMs >= 100) {
@@ -1494,6 +1567,8 @@ class NearbyService extends ChangeNotifier {
         }
         await sink.flush();
         await sink.close();
+        receivingSink = null;
+        incompleteFile = null;
 
         String finalSavedPath = path;
         if (folder) {
@@ -1506,7 +1581,7 @@ class NearbyService extends ChangeNotifier {
             final extractParentPath = await _uniquePath('${dir.path}/$name');
             final extractDir = Directory(extractParentPath);
             await extractDir.create(recursive: true);
-            await extractFileToDisk(path, extractParentPath);
+            await extractFolderArchive(path, extractParentPath);
             finalSavedPath = extractParentPath;
             try {
               await file.delete();
@@ -1559,6 +1634,15 @@ class NearbyService extends ChangeNotifier {
       log('Incoming connection error: $e');
       _setTransfer(const TransferState(label: 'Transfer failed'));
     } finally {
+      try {
+        await receivingSink?.close();
+      } catch (_) {}
+      try {
+        if (incompleteFile != null && await incompleteFile.exists()) {
+          await incompleteFile.delete();
+        }
+      } catch (_) {}
+      await reader.cancel();
       socket.destroy();
     }
   }
@@ -1608,7 +1692,14 @@ class NearbyService extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Stream<String> streamAiPrompt(Peer peer, String prompt) async* {
+  Stream<String> streamAiPrompt(Peer peer, String prompt,
+      {Future<void>? cancelled}) async* {
+    Socket? activeSocket;
+    var stopped = false;
+    unawaited(cancelled?.then((_) {
+      stopped = true;
+      activeSocket?.destroy();
+    }));
     final cleanPrompt = prompt.trim();
     if (cleanPrompt.isEmpty) {
       log('[AI DEBUG] AI error response: Prompt was empty');
@@ -1622,14 +1713,19 @@ class NearbyService extends ChangeNotifier {
     final typesToTry = ['ai_chat', 'ai_prompt', 'ai_request'];
 
     for (final pType in typesToTry) {
+      if (stopped) return;
       log('[AI DEBUG] Outgoing packet type: $pType');
       Socket? socket;
+      SocketReader? reader;
+      var completed = false;
       var receivedAnyChunk = false;
       var explicitDisabled = false;
 
       try {
         socket = await Socket.connect(peer.ip, transferPort,
             timeout: const Duration(seconds: 8));
+        activeSocket = socket;
+        if (stopped) return;
         final payload = jsonEncode({
           'type': pType,
           'sender': deviceName,
@@ -1646,9 +1742,9 @@ class NearbyService extends ChangeNotifier {
         socket.write('$payload\n');
         await socket.flush();
 
-        final reader = SocketReader(socket);
+        reader = SocketReader(socket);
 
-        while (true) {
+        while (!stopped) {
           final line = await reader
               .readLine()
               .timeout(const Duration(seconds: 45), onTimeout: () => null);
@@ -1666,6 +1762,7 @@ class NearbyService extends ChangeNotifier {
 
               if (status == 'disabled' || h['error_code'] == 'ai_disabled') {
                 explicitDisabled = true;
+                completed = true;
                 final msg = h['reply']?.toString() ??
                     h['message']?.toString() ??
                     'Nearby AI access has not been granted by this device.';
@@ -1683,6 +1780,7 @@ class NearbyService extends ChangeNotifier {
                     'AI processing error';
                 log('[AI DEBUG] AI error response: $errText');
                 yield errText;
+                completed = true;
                 receivedAnyChunk = true;
                 break;
               }
@@ -1703,6 +1801,7 @@ class NearbyService extends ChangeNotifier {
                   status == 'done' ||
                   status == 'success') {
                 if (chunkToYield != null) yield chunkToYield;
+                completed = true;
                 receivedAnyChunk = true;
                 break;
               }
@@ -1722,8 +1821,13 @@ class NearbyService extends ChangeNotifier {
         log('[AI DEBUG] Socket error with $pType to ${peer.ip}: $e');
       } finally {
         socket?.destroy();
+        await reader?.cancel();
+        activeSocket = null;
       }
-
+      if (stopped) return;
+      if (receivedAnyChunk && !completed) {
+        yield '\n\nNearby AI connection ended before the answer was complete. Please try again.';
+      }
       if (receivedAnyChunk || explicitDisabled) {
         peer.isAiHost = true;
         notifyListeners();
@@ -1975,10 +2079,7 @@ class NearbyService extends ChangeNotifier {
           peerId: peer.id,
           label: 'Compressing $folderName…',
           progress: 0));
-      final encoder = ZipFileEncoder();
-      encoder.create(zipPath);
-      await encoder.addDirectory(dir);
-      encoder.close();
+      await createFolderArchive(dir.path, zipPath);
 
       final zipFile = File(zipPath);
       final ok = await sendFile(
@@ -2047,6 +2148,15 @@ class NearbyService extends ChangeNotifier {
       }
     }
 
+    final visibleChanged = existing == null ||
+        !existing.isOnline ||
+        (name.isNotEmpty && existing.name != name) ||
+        (ip.isNotEmpty && existing.ip != ip) ||
+        (resolvedAvatar != null && existing.avatarEmoji != resolvedAvatar) ||
+        (platform != null && existing.platform != platform) ||
+        (internetDeviceId != null &&
+            existing.internetDeviceId != internetDeviceId) ||
+        (supportsDeliveryAck && !existing.supportsDeliveryAck);
     if (existing == null) {
       final p = Peer(
           id: id.isNotEmpty
@@ -2079,7 +2189,9 @@ class NearbyService extends ChangeNotifier {
       if (id.isNotEmpty) _peers[id] = existing;
       if (ip.isNotEmpty) _peers[ip] = existing;
     }
-    notifyListeners();
+    // Repeated multicast/broadcast/hello packets still refresh lastSeen, but
+    // do not rebuild the entire device list and chat for an unchanged peer.
+    if (visibleChanged) notifyListeners();
     final targetPeer = existing;
     if (targetPeer.ip.isNotEmpty &&
         targetPeer.ip != '0.0.0.0' &&
@@ -2183,13 +2295,31 @@ class NearbyService extends ChangeNotifier {
   Future<String?> _readLine(Socket socket,
       {Duration timeout = const Duration(seconds: 3)}) async {
     final reader = SocketReader(socket);
-    return reader.readLine().timeout(timeout, onTimeout: () => null);
+    try {
+      return await reader.readLine().timeout(timeout, onTimeout: () => null);
+    } finally {
+      await reader.cancel();
+    }
   }
 
   void _setTransfer(TransferState value) {
+    final previous = _transfer;
     _transfer = value;
+    final now = DateTime.now();
+    final transition = previous.active != value.active ||
+        previous.peerId != value.peerId ||
+        previous.label != value.label ||
+        (previous.progress < 1 && value.progress >= 1);
+    if (!transition &&
+        _lastTransferNotification != null &&
+        now.difference(_lastTransferNotification!).inMilliseconds < 150) {
+      return;
+    }
+    _lastTransferNotification = now;
     notifyListeners();
   }
+
+  DateTime? _lastTransferNotification;
 
   void log(String message) {
     final now = DateTime.now();

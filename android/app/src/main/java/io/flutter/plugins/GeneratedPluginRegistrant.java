@@ -71,6 +71,11 @@ public final class GeneratedPluginRegistrant {
       Log.e(TAG, "Error registering plugin mobile_scanner, dev.steenbakker.mobile_scanner.MobileScannerPlugin", e);
     }
     try {
+      flutterEngine.getPlugins().add(new com.farmitra.nearby.reply.NotificationReplyPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin notification_reply_bridge, com.farmitra.nearby.reply.NotificationReplyPlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new com.crazecoder.openfile.OpenFilePlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin open_filex, com.crazecoder.openfile.OpenFilePlugin", e);

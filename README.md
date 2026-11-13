@@ -57,6 +57,12 @@ With **Settings → Run in Background** ON, double-Back from the home screen min
 
 **Removing the app by swiping it from Recent apps still has an unresolved delivery/notification issue.** The foreground-service notification can remain while the activity-owned Flutter networking runtime is no longer available; messages may appear only after reopening. Android 1.0.3 is a rebuild of the current source and does not add an activity-independent engine or fix this reported swipe-away behavior. Automated test results do not establish reliable killed-state or screen-off delivery.
 
+**Unreleased source update:** Android now shares one retained Flutter engine between the foreground service and Activity, with networking startup independent of HomeScreen for sticky-service restarts. Reopening reuses the runtime; saved Background OFF remains respected. The released APK above is unchanged. See the [background-runtime checks and device-validation limits](docs/android-background-runtime.md).
+
+**Unreleased Wi-Fi Audio update:** Speaker mode can request permitted music/video/app audio from another updated Android phone, with owner approval and Android capture consent. The source requires Android 10+ and apps that permit playback capture. PC audio and microphone streaming retain their existing paths. See [phone app audio setup and validation limits](docs/phone-app-audio.md).
+
+**Unreleased notification Reply update:** Inline replies are saved to a shared native inbox and imported by the networking runtime into the durable chat outbox, including offline recipients. Reply processing no longer requires HomeScreen. See [background Reply behavior and device checks](docs/background-notification-reply.md).
+
 ### First cross-device test
 
 1. Exit older Windows tray/portable copies, install Windows 2.1.23, and update the phone to Android 1.0.3 using the release downloads above.

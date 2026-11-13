@@ -128,6 +128,7 @@ func (ds *DiscoveryService) GetLANDevices() []*models.LANDevice {
 
 // Broadcasts UDP beacon on multicast address and direct broadcast.
 func (ds *DiscoveryService) broadcastLoop() {
+	ds.sendBeacon()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -502,7 +503,9 @@ func (ds *DiscoveryService) handleBeacon(data []byte, remoteIP string) {
 	}
 	ds.peers[senderID] = p
 
-	p.InternetDeviceID = header.InternetDeviceID
+	if header.InternetDeviceID != "" {
+		p.InternetDeviceID = header.InternetDeviceID
+	}
 	p.SupportsDeliveryAck = header.SupportsDeliveryAck
 	p.Name = senderName
 	p.IP = remoteIP
@@ -555,22 +558,7 @@ func (ds *DiscoveryService) cleanupLoop() {
 		case <-ds.stopChan:
 			return
 		case <-ticker.C:
-			ds.mu.Lock()
-			now := time.Now()
-			changed := false
-			for _, p := range ds.peers {
-				if p.IsOnline && now.Sub(p.LastSeen) > 15*time.Second {
-					p.IsOnline = false
-					changed = true
-				}
-			}
-			notifyCb := ds.onPeerUpdate
-			peersSnapshot := ds.getPeersUnsafe()
-			ds.mu.Unlock()
-
-			if changed && notifyCb != nil {
-				notifyCb(peersSnapshot)
-			}
+			ds.refreshPeerPresence(time.Now(), probeNearbyPeer)
 		}
 	}
 }
@@ -763,75 +751,12 @@ func (ds *DiscoveryService) ScanLANNow() {
 						openPorts = append(openPorts, models.TransferPort)
 						devName = "NearMitra Device (" + targetIP + ")"
 
-						// Perform active hello handshake with peer to get actual device name, ID & avatar
-						cfg := config.Get().GetConfig()
-						helloPayload, _ := json.Marshal(models.WireHeader{
-							Type:        "hello",
-							Sender:      cfg.DeviceName,
-							SenderID:    cfg.DeviceID,
-							ID:          cfg.DeviceID,
-							Name:        cfg.DeviceName,
-							AvatarEmoji: cfg.AvatarEmoji,
-							Emoji:       cfg.AvatarEmoji,
-							Avatar:      cfg.AvatarEmoji,
-						})
-						_, _ = conn.Write(append(helloPayload, '\n'))
-						_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
-						respBuf := make([]byte, 2048)
-						n, rErr := conn.Read(respBuf)
+						// Decode the complete hello, including fragmented TCP responses.
+						header, helloErr := exchangePeerHello(conn)
 						_ = conn.Close()
-
-						if rErr == nil && n > 0 {
-							var respHeader models.WireHeader
-							if json.Unmarshal(respBuf[:n], &respHeader) == nil {
-								pID := respHeader.SenderID
-								if pID == "" {
-									pID = respHeader.ID
-								}
-								pName := respHeader.Sender
-								if pName == "" {
-									pName = respHeader.Name
-								}
-								if pName != "" {
-									devName = pName
-								}
-								avatarEmoji = respHeader.AvatarEmoji
-								if avatarEmoji == "" {
-									avatarEmoji = respHeader.Emoji
-								}
-								if avatarEmoji == "" {
-									avatarEmoji = respHeader.Avatar
-								}
-								if pID != "" {
-									ds.mu.Lock()
-									for k, existingP := range ds.peers {
-										if existingP.IP == targetIP {
-											// Older desktops omit the avatar in hello responses.
-											// Keep the icon already learned from discovery beacons.
-											if avatarEmoji == "" {
-												avatarEmoji = existingP.AvatarEmoji
-											}
-											delete(ds.peers, k)
-											break
-										}
-									}
-									ds.peers[pID] = &models.Peer{
-										ID:          pID,
-										Name:        pName,
-										IP:          targetIP,
-										Port:        models.TransferPort,
-										IsOnline:    true,
-										AvatarEmoji: avatarEmoji,
-										LastSeen:    time.Now(),
-									}
-									notifyCb := ds.onPeerUpdate
-									snap := ds.getPeersUnsafe()
-									ds.mu.Unlock()
-									if notifyCb != nil {
-										notifyCb(snap)
-									}
-								}
-							}
+						if helloErr == nil {
+							devName, avatarEmoji = helloName(header), helloAvatar(header)
+							ds.registerPeerHello(header, targetIP)
 						}
 					}
 

@@ -2,18 +2,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'package:notification_reply_bridge/notification_reply_bridge.dart';
 
 import '../models/chat_item.dart';
 import '../models/chat_route.dart';
 import '../models/peer.dart';
 import '../models/wan_models.dart';
 import '../services/history_service.dart';
+import '../services/folder_archive_service.dart';
 import '../services/nearby_service.dart';
 import '../services/wan_service.dart';
 import '../services/wan_webrtc_manager.dart';
@@ -52,6 +53,9 @@ class ConversationController extends ChangeNotifier {
   Timer? _retryTimer;
   bool _flushing = false;
   bool _disposed = false;
+  Future<void> _queueWrites = Future<void>.value();
+  final Set<String> _persisting = {};
+  final Map<String, Future<void>> _replyImports = {};
   static const _queueKey = 'unified_chat_outbox_v1';
   static const _linksKey = 'unified_chat_device_links_v1';
 
@@ -202,10 +206,71 @@ class ConversationController extends ChangeNotifier {
     scheduleMicrotask(flush);
   }
 
-  Future<void> _saveQueue() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(
-        _queueKey, _pending.values.map((e) => jsonEncode(e.toJson())).toList());
+  Future<void> _saveQueue() {
+    final snapshot =
+        _pending.values.map((e) => jsonEncode(e.toJson())).toList();
+    final write = _queueWrites.then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      if (!await prefs.setStringList(_queueKey, snapshot)) {
+        throw StateError('Outbox could not be saved');
+      }
+    });
+    _queueWrites =
+        write.then<void>((_) {}, onError: (Object error, StackTrace stack) {});
+    return write;
+  }
+
+  Future<void> importNotificationReply(PendingNotificationReply reply) =>
+      _replyImports.putIfAbsent(
+          reply.id,
+          () => _importReply(reply).whenComplete(() {
+                _replyImports.remove(reply.id);
+              }));
+
+  Future<void> _importReply(PendingNotificationReply reply) async {
+    await ready;
+    if (reply.peerId.trim().isEmpty || reply.text.trim().isEmpty) {
+      throw StateError('Saved reply has no recipient or text');
+    }
+    final peerId = canonicalId(reply.peerId);
+    final existing = (await _history.load())
+        .where((item) => item.id == reply.id)
+        .firstOrNull;
+    if (existing != null) {
+      if (!existing.mine ||
+          canonicalId(existing.peerId) != peerId ||
+          existing.text != reply.text.trim()) {
+        throw StateError('Saved reply ID conflicts with chat history');
+      }
+      // Never resurrect Sent/Cancelled replies. A Queued/Sending record without
+      // its outbox entry must regain a durable retry owner before native ack.
+      final status = existing.status?.toLowerCase();
+      if (status == 'sent' || status == 'cancelled') return;
+      if (!_pending.containsKey(reply.id)) {
+        existing.status = 'Queued';
+        await _enqueue(existing);
+        return;
+      }
+    }
+    if (_pending.containsKey(reply.id)) {
+      final queued = _pending[reply.id]!;
+      if (canonicalId(queued.peerId) != peerId ||
+          queued.text != reply.text.trim()) {
+        throw StateError('Saved reply ID conflicts with the outbox');
+      }
+      await _saveQueue();
+      await _history.addItem(queued);
+      return;
+    }
+    await _enqueue(ChatItem(
+        id: reply.id,
+        peerId: peerId,
+        sender: nearby.deviceName,
+        mine: true,
+        createdAt: reply.createdAt,
+        kind: ChatKind.text,
+        text: reply.text.trim(),
+        status: 'Queued'));
   }
 
   Future<void> sendText(Peer peer, String text,
@@ -249,12 +314,7 @@ class ConversationController extends ChangeNotifier {
         await Directory('${temp.path}/chat_outbox_${const Uuid().v4()}')
             .create();
     final archive = File('${archiveDir.path}/$name.zip');
-    final encoder = ZipFileEncoder()..create(archive.path);
-    try {
-      await encoder.addDirectory(dir);
-    } finally {
-      encoder.close();
-    }
+    await createFolderArchive(dir.path, archive.path);
     // Keep the archive until a queued send succeeds.
     await _enqueue(ChatItem(
         id: const Uuid().v4(),
@@ -272,8 +332,16 @@ class ConversationController extends ChangeNotifier {
   Future<void> _enqueue(ChatItem item) async {
     await ready;
     _pending[item.id] = item;
-    await _saveQueue();
-    await _history.addItem(item);
+    _persisting.add(item.id);
+    try {
+      await _saveQueue();
+      await _history.addItem(item);
+    } catch (_) {
+      if (identical(_pending[item.id], item)) _pending.remove(item.id);
+      rethrow;
+    } finally {
+      _persisting.remove(item.id);
+    }
     if (!_disposed) notifyListeners();
     unawaited(flush());
   }
@@ -317,7 +385,11 @@ class ConversationController extends ChangeNotifier {
     _flushing = true;
     try {
       for (final item in _pending.values.toList()) {
-        if (_disposed || !_pending.containsKey(item.id)) continue;
+        if (_disposed ||
+            !_pending.containsKey(item.id) ||
+            _persisting.contains(item.id)) {
+          continue;
+        }
         final id = canonicalId(item.peerId);
         final peer =
             nearby.peers.where((p) => canonicalId(p.id) == id).firstOrNull ??

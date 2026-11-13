@@ -20,7 +20,6 @@ class MainActivity : FlutterActivity() {
     private val phoneTelemetry by lazy { PhoneTelemetry(this) }
     private val networkChannelName = "farmitra_nearby/network"
     private val p2pMethodChannelName = "farmitra_nearby/wifi_p2p"
-    private val p2pEventChannelName = "farmitra_nearby/wifi_p2p_events"
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -28,7 +27,7 @@ class MainActivity : FlutterActivity() {
     private var p2pManager: WifiP2pManager? = null
     private var p2pChannel: WifiP2pManager.Channel? = null
     private var p2pReceiver: BroadcastReceiver? = null
-    private var eventSink: EventChannel.EventSink? = null
+    private val eventSink: EventChannel.EventSink? get() = NearbyEngineHost.p2pEventSink
 
     private var isP2pEnabled = false
     private var isConnected = false
@@ -40,9 +39,23 @@ class MainActivity : FlutterActivity() {
     private var pendingCallEvent: Map<String, Any?>? = null
     private var flutterEngineInstance: FlutterEngine? = null
 
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        NearbyEngineHost.forActivity(this)
+
+    // Engine ownership belongs to the Activity AND foreground service.
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        PhoneAudioRelay.detachActivity(this)
+        NearbyEngineHost.releaseActivity(this, flutterEngine)
+        flutterEngineInstance = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         flutterEngineInstance = flutterEngine
+        PhoneAudioRelay.attachActivity(this)
         handleSendIntent(intent)
         handleCallIntent(intent)
 
@@ -101,6 +114,12 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.error("SERVICE_START_ERR", e.message, null)
                     }
+                }
+                "moveTaskToBackground" -> {
+                    // Finishing FlutterActivity destroys its Dart TCP listeners
+                    // even when the notification-only foreground service lives.
+                    // Keep the task/engine alive for the enabled background mode.
+                    result.success(moveTaskToBack(true))
                 }
                 "startMediaProjectionService", "startWirelessAudioService" -> {
                     // Dart requests capture consent first. Signal readiness only
@@ -419,16 +438,11 @@ class MainActivity : FlutterActivity() {
         }
 
 
-        // Wi-Fi Direct EventChannel
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, p2pEventChannelName).setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                eventSink = events
-                initWifiP2p()
-            }
-            override fun onCancel(arguments: Any?) {
-                eventSink = null
-            }
-        })
+        // The engine owns the EventChannel subscription across Activity
+        // recreation. Reattach native P2P management without a second listen.
+        NearbyEngineHost.onP2pListen = { initWifiP2p() }
+        initWifiP2p()
+        NearbyEngineHost.activityAttached(flutterEngine)
     }
 
     private fun checkIsWifiEnabled(): Boolean {
@@ -738,6 +752,11 @@ class MainActivity : FlutterActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         phoneTelemetry.onPermissionsResult(requestCode)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        PhoneAudioRelay.onActivityResult(this, requestCode, resultCode, data)
     }
 
     override fun onDestroy() {

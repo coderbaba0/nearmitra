@@ -83,7 +83,10 @@ class FirebasePresenceService extends ChangeNotifier {
 
   /// Toggle Internet Mode ON or OFF
   Future<void> setInternetMode(bool enable) async {
-    if (_isInternetModeEnabled == enable) return;
+    if (_isInternetModeEnabled == enable &&
+        (!enable || _connectedSub != null)) {
+      return;
+    }
     _isInternetModeEnabled = enable;
 
     if (enable) {
@@ -167,6 +170,7 @@ class FirebasePresenceService extends ChangeNotifier {
         'lastSeen': ServerValue.timestamp,
       });
       debugPrint('[FirebasePresence] onDisconnect hook registered for presence/$deviceId');
+      if (!_isInternetModeEnabled || !_isFirebaseConnected) return;
 
       // Set online presence
       await presenceRef.update({
@@ -178,6 +182,7 @@ class FirebasePresenceService extends ChangeNotifier {
         'lastSeen': ServerValue.timestamp,
       });
 
+      if (!_isInternetModeEnabled || !_isFirebaseConnected) return;
       _isPresenceOnline = true;
       debugPrint('[FirebasePresence] Device online registered in Firebase at presence/$deviceId');
 

@@ -36,8 +36,9 @@ class HistoryService extends ChangeNotifier {
       ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     final trimmed =
         unique.length > 800 ? unique.sublist(unique.length - 800) : unique;
-    await prefs.setString(
+    final saved = await prefs.setString(
         _key, jsonEncode(trimmed.map((e) => e.toJson()).toList()));
+    if (!saved) throw StateError('Chat history could not be saved');
     notifyListeners();
   }
 
