@@ -8,18 +8,20 @@ NearMitra connects Android phones and Windows PCs for chat, file and folder tran
 
 ## Latest releases
 
-Android **1.0.3** and Windows **2.1.23** are available through GitHub Releases.
+Android **1.0.4** and Windows **2.1.23** are available through GitHub Releases.
 
 | Platform | Version | Download | Release notes |
 |---|---|---|---|
-| Android | 1.0.3 · build 4 | [Download Android APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk) | [Android v1.0.3](https://github.com/coderbaba0/nearmitra/releases/tag/v1.0.3) |
+| Android | 1.0.4 · build 5 | [Universal APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.4/NearMitra-Android-1.0.4.apk) · [Smaller ARM64 APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.4/NearMitra-Android-1.0.4-arm64-v8a.apk) | [Android v1.0.4](https://github.com/coderbaba0/nearmitra/releases/tag/v1.0.4) |
 | Windows 10/11 x64 | 2.1.23 | [Download Windows setup](https://github.com/coderbaba0/nearmitra/releases/download/v2.1.23/NearMitra_Setup_2.1.23_x64.exe) | [Windows v2.1.23](https://github.com/coderbaba0/nearmitra/releases/tag/v2.1.23) |
+
+The Universal APK includes ARM32, ARM64 and x86_64 support. The smaller ARM64 APK is for ARM64 Android devices. Keep the same APK variant when updating an existing installation.
 
 [Browse all releases](https://github.com/coderbaba0/nearmitra/releases). For platform setup, see the [Windows guide](nearmitra-windows-app/README.md), [hardware and feature notes](nearmitra-windows-app/IOT_SETUP.md), and [Windows signing guide](nearmitra-windows-app/WINDOWS_SIGNING.md).
 
-## Latest updates — 24 October 2026
+## Latest updates — 16 November 2026
 
-**Windows 2.1.23** restores drag-and-drop file sending from the dashboard and chat: online devices receive dropped files through the existing Nearby-first/WAN routing, multiple files stay targeted to the selected recipient, and offline devices show a clear message. Android **1.0.3** includes background presence startup, retry and Back-to-background changes; the Recent apps swipe-away limitation is documented below.
+**Windows 2.1.23** restores drag-and-drop file sending from the dashboard and chat: online devices receive dropped files through the existing Nearby-first/WAN routing, multiple files stay targeted to the selected recipient, and offline devices show a clear message. Android **1.0.4** adds a retained background networking runtime, durable notification replies, phone app-audio sharing, smoother Wi-Fi Audio controls and discovery recovery after network loss. See the [background device checks and coverage limits](docs/background-verification.md).
 
 | Area | Current behavior |
 |---|---|
@@ -45,27 +47,27 @@ Use the release downloads above to install the app. Contributors can build from 
 |---|---|
 | Windows setup 2.1.23 | `nearmitra-windows-app/build/windows-release/NearMitra_Setup_2.1.23_x64.exe` |
 | Windows portable executable | `nearmitra-windows-app/build/windows-release/NearMitra.exe` |
-| Android distribution APK 1.0.3 | `build/releases/NearMitra-Android-1.0.3.apk` |
+| Android distribution APK 1.0.4 | `build/releases/1.0.4/NearMitra-Android-1.0.4.apk` |
 
-Windows SHA-256 hashes are recorded in [SHA256SUMS.txt](nearmitra-windows-app/SHA256SUMS.txt). Android builds also produce a local `build/releases/SHA256SUMS.txt`. Compare a downloaded artifact only with a checksum published for that exact release asset.
+Windows SHA-256 hashes are recorded in [SHA256SUMS.txt](nearmitra-windows-app/SHA256SUMS.txt). Android 1.0.4 builds also produce a local `build/releases/1.0.4/SHA256SUMS.txt`. Compare a downloaded artifact only with a checksum published for that exact release asset.
 
 </details>
 
-### Android background behavior and known issue
+### Android background behavior and device checks
 
-With **Settings → Run in Background** ON, double-Back from the home screen minimizes the Android task instead of finishing its Flutter activity. Home/minimize keeps the existing networking runtime available. Internet mode restores at startup without selecting the WAN tab; explicitly switching Internet mode OFF remains saved. Nearby remains the preferred route.
+With **Settings → Run in Background** ON, the foreground service retains the networking engine after the Activity is removed. Double-Back from the home screen minimizes the task. Internet mode restores at startup without opening the WAN tab; explicitly switching Internet mode OFF remains saved. Nearby remains the preferred route. Enable **Local Notifications** to receive message and file alerts.
 
-**Removing the app by swiping it from Recent apps still has an unresolved delivery/notification issue.** The foreground-service notification can remain while the activity-owned Flutter networking runtime is no longer available; messages may appear only after reopening. Android 1.0.3 is a rebuild of the current source and does not add an activity-independent engine or fix this reported swipe-away behavior. Automated test results do not establish reliable killed-state or screen-off delivery.
+**Device verification:** Samsung Android 14 checks covered incoming messages/files with the screen locked, delivery and notification Reply after a Recents swipe, and delivery/Reply after Wi-Fi reconnect. The tested code is included in 1.0.4. Other manufacturers, long idle Doze, OS process restart and Android Settings Force stop were not covered; see the [full verification report](docs/background-verification.md).
 
-**Unreleased source update:** Android now shares one retained Flutter engine between the foreground service and Activity, with networking startup independent of HomeScreen for sticky-service restarts. Reopening reuses the runtime; saved Background OFF remains respected. The released APK above is unchanged. See the [background-runtime checks and device-validation limits](docs/android-background-runtime.md).
+**Android 1.0.4 background runtime:** The foreground service and Activity share one retained Flutter engine, with networking startup independent of HomeScreen for sticky-service restarts. Reopening reuses the runtime; saved Background OFF remains respected. See [background-runtime behavior and limits](docs/android-background-runtime.md).
 
-**Unreleased Wi-Fi Audio update:** Speaker mode can request permitted music/video/app audio from another updated Android phone, with owner approval and Android capture consent. The source requires Android 10+ and apps that permit playback capture. PC audio and microphone streaming retain their existing paths. See [phone app audio setup and validation limits](docs/phone-app-audio.md).
+**Android 1.0.4 Wi-Fi Audio:** Speaker mode can request permitted music/video/app audio from another updated Android phone, with owner approval and Android capture consent. The source requires Android 10+ and apps that permit playback capture. PC audio and microphone streaming retain their existing paths. See [phone app audio setup and validation limits](docs/phone-app-audio.md).
 
-**Unreleased notification Reply update:** Inline replies are saved to a shared native inbox and imported by the networking runtime into the durable chat outbox, including offline recipients. Reply processing no longer requires HomeScreen. See [background Reply behavior and device checks](docs/background-notification-reply.md).
+**Android 1.0.4 notification Reply:** Inline replies are saved to a shared native inbox and imported by the networking runtime into the durable chat outbox, including offline recipients. Reply processing no longer requires HomeScreen. See [background Reply behavior and device checks](docs/background-notification-reply.md).
 
 ### First cross-device test
 
-1. Exit older Windows tray/portable copies, install Windows 2.1.23, and update the phone to Android 1.0.3 using the release downloads above.
+1. Exit older Windows tray/portable copies, install Windows 2.1.23, and update the phone to Android 1.0.4 using the release downloads above.
 2. Connect both devices through Nearby LAN or a working Wi-Fi Direct/P2P link. Approve requests on the receiving device.
 3. Test text, a file and a folder. Check the sender's Windows chat while receiving, then test reaction removal, quoted Reply, hover → Copy and Select → Forward.
 4. For PC sound, open Windows **Voice → Broadcast PC Audio to Phone**, choose **All PC apps** and the same playback output used by your player, then **Send PC audio**. Approve on Android. Without a physical output, configure a separately installed virtual playback device first. Tab mode requires selecting an audible tab and sharing its audio.
@@ -80,7 +82,7 @@ With **Settings → Run in Background** ON, double-Back from the home screen min
 - **Transport:** standalone Wi-Fi Audio and device-chat Nearby AI require a direct Nearby/P2P connection. They are not WAN-only features. Ollama has incremental host streaming; cloud engines retain their current provider response behavior.
 - **AI vision:** the warehouse/person-counting database, persistent identities, male/female classification and production object-counting pipeline were discussed and deferred. Screenshot labels and visual filters do not establish that these models or a counting database are implemented. IoT devices require the supported gateway/driver contract described in [IOT_SETUP.md](nearmitra-windows-app/IOT_SETUP.md).
 - **Security:** local TCP chat/file/AI paths use newline-delimited JSON and payload bytes; do not assume AES/end-to-end encryption for every LAN packet. WebRTC media/data-channel security is a separate transport. Owner permission is an application access control, not cryptographic device authentication.
-- **Verification:** Windows Go tests and 136 desktop/installer JavaScript checks pass. An interactive Windows test verified Explorer foreground activation with an existing folder behind a temporary app window. All 77 mobile tests pass; the Android 1.0.3 release APK and native Kotlin build succeed; source-analysis details are listed in the Windows README. Physical phone–Windows audio/call/GPS/AI behavior still needs device testing; improved buffering does not establish that every reported low-pitch/slow-playback case is resolved.
+- **Verification:** The final mobile check passed 128 Flutter tests with clean analysis, and Android 1.0.4 release APKs built successfully. Targeted Windows network/WAN Go checks and 30 desktop chat/typing JavaScript tests also passed. Samsung background checks and their limits are recorded in the [device report](docs/background-verification.md); this does not establish that every phone–Windows audio/call/GPS/AI scenario or reported low-pitch/slow-playback case is resolved.
 
 ---
 
@@ -432,7 +434,7 @@ flutter build apk --release --split-per-abi
 ```
 
 **Generated Binaries**:
-- `build/app/outputs/flutter-apk/app-release.apk` (universal APK; current distribution copy: `build/releases/NearMitra-Android-1.0.3.apk`)
+- `build/app/outputs/flutter-apk/app-release.apk` (universal APK; current distribution copy: `build/releases/1.0.4/NearMitra-Android-1.0.4.apk`)
 - `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk` (64-bit Modern Android)
 - `build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk` (32-bit Android)
 - `build/app/outputs/flutter-apk/app-x86_64-release.apk` (x86-64 Android)

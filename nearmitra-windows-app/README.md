@@ -7,16 +7,18 @@ NearMitra connects Windows PCs and Android phones for chat, file/folder transfer
 | Platform | Release | Download |
 |---|---|---|
 | Windows 10/11 x64 | 2.1.23 | [Download Windows setup](https://github.com/coderbaba0/nearmitra/releases/download/v2.1.23/NearMitra_Setup_2.1.23_x64.exe) |
-| Android companion | 1.0.3 · build 4 | [Download Android APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk) |
+| Android companion | 1.0.4 · build 5 | [Universal APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.4/NearMitra-Android-1.0.4.apk) · [Smaller ARM64 APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.4/NearMitra-Android-1.0.4-arm64-v8a.apk) |
 
-[Windows release notes](https://github.com/coderbaba0/nearmitra/releases/tag/v2.1.23) · [Android release notes](https://github.com/coderbaba0/nearmitra/releases/tag/v1.0.3) · [Website](https://coderbaba0.github.io/nearmitra/) · [All releases](https://github.com/coderbaba0/nearmitra/releases)
+[Windows release notes](https://github.com/coderbaba0/nearmitra/releases/tag/v2.1.23) · [Android release notes](https://github.com/coderbaba0/nearmitra/releases/tag/v1.0.4) · [Website](https://coderbaba0.github.io/nearmitra/) · [All releases](https://github.com/coderbaba0/nearmitra/releases)
+
+The smaller Android APK requires an ARM64 device; the Universal APK includes ARM32, ARM64 and x86_64 support. Keep the same APK variant when updating an existing installation.
 
 
 The active desktop launcher is a Go backend with an embedded HTML/CSS/JavaScript interface opened in a Windows browser app window, plus native Win32 tray, picker, audio and Explorer integrations. Older native-renderer code and historical screenshots remain in the repository; they are not the current UI specification.
 
 ## Updates included in 2.1.23
 
-Current Windows release: **2.1.23**. Android companion: **1.0.3 (versionCode 4)**. Use the GitHub Release downloads above, or follow the build instructions below to create your own binaries.
+Current Windows release: **2.1.23**. Android companion: **1.0.4 (build 5)**. Use the GitHub Release downloads above, or follow the build instructions below to create your own binaries.
 
 | Versions | Changes |
 |---|---|
@@ -35,7 +37,7 @@ Current Windows release: **2.1.23**. Android companion: **1.0.3 (versionCode 4)*
 | 2.1.23 | Restored the drag-drop upload endpoint; online drops send all selected files through the existing Nearby-first/WAN routing, while offline drops show a clear message. |
 | 2.1.22 | Versioned rebuild of the current desktop source; retains the Copy, avatar, typing and background presence fixes from 2.1.19–2.1.21. |
 
-Android 1.0.3 is available as a [GitHub Release APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.3/NearMitra-Android-1.0.3.apk). The recent-apps swipe-away notification issue remains unresolved; this rebuild does not add a fix for that Android lifecycle case.
+Android 1.0.4 is available as a [GitHub Release APK](https://github.com/coderbaba0/nearmitra/releases/download/v1.0.4/NearMitra-Android-1.0.4.apk). It includes a retained background networking runtime, durable notification Reply and discovery recovery after network loss. Samsung screen-lock, swipe-away and Wi-Fi reconnect checks are documented with their coverage limits in the [background verification report](../docs/background-verification.md).
 
 ## Install or upgrade
 
@@ -67,9 +69,9 @@ WAN uses configured Firebase presence/signaling and WebRTC sessions. It is optio
 - A WAN offline update cannot overwrite a working local connection. Temporary Firebase read failures retain cached desktop presence within its heartbeat lease; explicit offline records and lease expiry still apply.
 - LAN scans and legacy beacons preserve learned device/cloud identity and configured avatars. State requests are serialized to avoid overlapping polls.
 
-### Android background notification limitation
+### Android background notifications
 
-Android 1.0.3 restores Internet presence at startup without opening the WAN tab and respects saved Internet OFF. With Run in Background ON, double-Back on the home screen minimizes the task. **Swiping the app away from Recent apps still has an unresolved delivery/notification issue**: the foreground-service notification can outlive the activity-owned Flutter networking runtime. Messages may appear after reopening. This APK rebuild does not add an activity-independent engine; do not treat it as a verified fix for swipe-away or killed-state delivery.
+Android 1.0.4 restores Internet presence at startup and respects saved Internet OFF. With **Run in Background ON**, the foreground service retains the networking engine after Activity removal; double-Back on the home screen minimizes the task. Enable **Local Notifications** for message/file alerts. Samsung Android 14 checks covered screen-lock delivery, delivery/Reply after a Recents swipe and recovery after Wi-Fi reconnect. Other devices, long idle Doze, OS process restart and Android Settings Force stop were not covered; see the [verification report](../docs/background-verification.md).
 
 ## Chat and file handling
 
@@ -119,7 +121,7 @@ For Windows Ollama hosting, configure/enable Ollama and select an installed mode
 
 To use a phone's engine from Windows, that phone must configure its own AI and separately allow the Windows device. Denied access and unavailable devices show errors. Device-chat Nearby AI currently requires a direct Nearby/P2P peer; WAN-only AI is not added here. Ollama has incremental generation; other configured cloud providers retain their current response behavior and need their provider credentials/internet access.
 
-Mobile source also removes silent fallback to its own engine on remote failure. The Android 1.0.3 APK includes this correction and the mobile background presence fixes. The existing mobile streaming reader already understands the Windows Ollama stream packets.
+Mobile source also removes silent fallback to its own engine on remote failure. The Android 1.0.4 APK includes this correction and the mobile background presence fixes. The existing mobile streaming reader already understands the Windows Ollama stream packets.
 
 ## Phone sensors, IoT and CCTV
 
@@ -171,8 +173,8 @@ Run the build first on a fresh clone: the installer embeds `installer/NearMitra.
 - Windows Go tests cover transport/storage, peer-scoped reactions, reply metadata, forwarding, permission grants/revocation, controlled Ollama streaming, TCP-to-HTTP relay, cancellation, WASAPI format conversion, asset serving and installer extraction/payload integrity.
 - **136** JavaScript tests cover desktop/installer behavior, including capture cleanup, signaling, progress/unread badges, quoted replies, forwarding, typing refresh/expiry, Nearby-first online status, serialized polling, device AI routing and folder errors.
 - An opt-in interactive Windows Explorer test opens a unique temporary folder, places a temporary app window in front, invokes Show in Folder and verifies that the exact Explorer window becomes foreground. It closes its own test windows afterward.
-- Android Nearby service static analysis passes. All **77 mobile tests** pass, covering call media state, conversation routing, presence expiry, wireless-audio signaling and output/meter UI. Android `:app:compileDebugKotlin --offline` also succeeds; Android 1.0.3 is built at `../build/releases/NearMitra-Android-1.0.3.apk`, with startup/background presence fixes; its native release Kotlin compilation also succeeds.
-- The reported Android Recent-apps swipe-away notification issue remains unresolved. Live two-device tray, screen-off and network-switch tests are still required.
+- The final mobile check passed **128 Flutter tests** with clean analysis. Android 1.0.4 release APKs built successfully; the Universal APK is at `../build/releases/1.0.4/NearMitra-Android-1.0.4.apk` and split APKs are in the same directory.
+- Samsung screen-lock, Recents-swipe and Wi-Fi-reconnect checks passed for the tested scenarios. Their exact build history and coverage limits are documented in the [background verification report](../docs/background-verification.md); broader two-phone and manufacturer-specific checks remain necessary.
 - Actual phones, cameras, audio endpoints, drivers, GPS reception and IoT hardware still require device-specific testing. Automated mocks and successful transport connection do not establish audible playback, perfect latency or working AI vision models.
 
 ## Security and data handling
